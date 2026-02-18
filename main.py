@@ -1,4 +1,9 @@
-# Main entry point for looparchitect backend API
+# FastAPI Application
 
-if __name__ == "__main__":
-    pass
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+async def read_root():
+    return {"Hello": "World"}
