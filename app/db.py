@@ -4,6 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models.test_model import Base
+from app.models.loop import Loop  # noqa: F401 – registers Loop with Base.metadata
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
