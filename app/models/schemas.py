@@ -27,6 +27,14 @@ class LoopCreate(BaseModel):
     file_url: str | None = None
 
 
+class LoopUpdate(BaseModel):
+    name: str | None = None
+    tempo: float | None = None
+    key: str | None = None
+    genre: str | None = None
+    file_url: str | None = None
+
+
 class LoopResponse(BaseModel):
     id: int
     name: str
