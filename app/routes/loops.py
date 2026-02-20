@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.loop import Loop
-from app.models.schemas import LoopCreate, LoopResponse
+from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 
 router = APIRouter()
 
@@ -32,3 +32,41 @@ def get_loop(loop_id: int, db: Session = Depends(get_db)):
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
     return loop
+
+
+@router.patch("/loops/{loop_id}", response_model=LoopResponse, status_code=200)
+def update_loop(loop_id: int, loop_in: LoopUpdate, db: Session = Depends(get_db)):
+    """Update a loop with only the provided fields."""
+    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+    if loop is None:
+        raise HTTPException(status_code=404, detail="Loop not found")
+
+    update_data = loop_in.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(loop, field, value)
+
+    try:
+        db.commit()
+        db.refresh(loop)
+    except Exception:
+        db.rollback()
+        raise
+
+    return loop
+
+
+@router.delete("/loops/{loop_id}", status_code=200)
+def delete_loop(loop_id: int, db: Session = Depends(get_db)):
+    """Delete a loop by id."""
+    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+    if loop is None:
+        raise HTTPException(status_code=404, detail="Loop not found")
+
+    try:
+        db.delete(loop)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {"deleted": True, "id": loop_id}
