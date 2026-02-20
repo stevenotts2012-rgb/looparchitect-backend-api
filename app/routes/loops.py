@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -6,6 +8,44 @@ from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 
 router = APIRouter()
+
+# Allowed MIME types for WAV files
+ALLOWED_MIME_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
+UPLOAD_DIR = "uploads"
+
+
+@router.post("/loops/upload", status_code=201)
+async def upload_audio(file: UploadFile = File(...)):
+    """Upload a WAV audio file."""
+    # Validate file is provided
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    # Validate MIME type
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid file type. Only WAV files are allowed. Received: {file.content_type}"
+        )
+    
+    # Create uploads directory if it doesn't exist
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    
+    # Generate unique filename with UUID
+    file_extension = ".wav"
+    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    
+    try:
+        # Save the file
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Return the file URL
+    return {"file_url": f"/uploads/{unique_filename}"}
 
 
 @router.post("/loops", response_model=LoopResponse, status_code=201)
