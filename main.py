@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +17,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 
 add_cors_middleware(app)
+
+# Create uploads directory if it doesn't exist
+os.makedirs("uploads", exist_ok=True)
 
 # Mount static files directory for uploads
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
