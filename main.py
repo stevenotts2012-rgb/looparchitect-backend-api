@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from app.config import settings
 from app.db import init_db
 from app.middleware.cors import add_cors_middleware
-from app.routes import api, health, db_health
+from app.routes import api, health, db_health, loops
 
 
 @asynccontextmanager
@@ -21,3 +21,4 @@ add_cors_middleware(app)
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(db_health.router, prefix="/api/v1", tags=["database"])
 app.include_router(api.router, prefix="/api/v1", tags=["api"])
+app.include_router(loops.router, prefix="/api/v1", tags=["loops"])
