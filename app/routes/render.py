@@ -1,39 +1,41 @@
-# In app/routes/render.py
+from typing import List, Optional
 
-# Step 1: Update models
-class RenderConfig:
-    # Add this in your model definition
-    variation_styles = Column(String)
-    custom_style = Column(String)
+from pydantic import BaseModel, Field
 
-class ArrangementConfig:
-    # Add this in your model definition
-    variation_styles = Column(String)
-    custom_style = Column(String)
 
-# Step 2: Helper function for variation naming
-def compute_variation_profile(variation_styles, custom_style):
-    if variation_styles:
-        return f"Custom_{variation_styles}"
-    elif custom_style:
-        return f"Custom_{custom_style}"
-    return "Generic_Name"
-
-def slugify(value):
-    # Implementation of slugify to generate safe filenames
-    return re.sub(r'[\W_]+', '-', value).strip('-')
-
-# Step 3: Improve file_url handling
-def handle_file_url(url):
-    if url.startswith('/uploads/') or url.startswith('uploads/'):
-        # Handle URLs appropriately
+class RenderConfig(BaseModel):
+    variation_styles: Optional[List[str]] = Field(default=None, description="List of variation styles")
+    custom_style: Optional[str] = Field(default=None, description="Custom style name")
+    
+    @staticmethod
+    def compute_variation_profiles():
+        # Logic to compute variation profiles
         pass
-    else:
-        raise ValueError("Invalid URL format.")
 
-# Step 4: Wire into the render endpoint
-@app.route('/render', methods=['POST'])
-def render_endpoint():
-    # Use compute_variation_profile with request data
-    # Include logic to utilize custom names in output
-    pass
+    @classmethod
+    def slugify(cls, name: str) -> str:
+        import re
+        return re.sub(r'[^a-zA-Z0-9_-]', '', name).lower()  
+
+
+class ArrangementConfig(BaseModel):
+    variation_styles: Optional[List[str]] = Field(default=None, description="List of variation styles")
+    custom_style: Optional[str] = Field(default=None, description="Custom style name")
+    
+    @staticmethod
+    def compute_variation_profiles():
+        # Logic to compute variation profiles
+        pass
+
+    @classmethod
+    def slugify(cls, name: str) -> str:
+        import re
+        return re.sub(r'[^a-zA-Z0-9_-]', '', name).lower()  
+
+
+# Example of updating the render endpoint (this will depend on the existing code structure).
+async def render_endpoint(render_config: RenderConfig, arrangement_config: ArrangementConfig):
+    # Maintain backward compatibility by checking older fields
+    
+    # Handle rendering logic here
+    
