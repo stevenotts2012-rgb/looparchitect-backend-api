@@ -1,10 +1,17 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
+
+# Environment
 .env
-.venv/
-venv/
-*.egg-info/
-dist/
-build/
+
+# Database
+*.db
+
+# Uploads
+uploads/
+
+# OS files
+.DS_Store
+Thumbs.db
