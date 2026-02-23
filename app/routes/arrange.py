@@ -8,7 +8,7 @@ from app.db import get_db
 from app.models.loop import Loop
 from app.services.arranger import create_arrangement, create_arrangement_for_duration
 
-router = APIRouter(prefix="/api/v1", tags=["arrange"])
+router = APIRouter(tags=["arrange"])
 
 # Safety limits to protect server from realtime generation overload
 MAX_SECONDS = 21600  # 6 hours
