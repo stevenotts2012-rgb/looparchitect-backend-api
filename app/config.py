@@ -8,7 +8,11 @@ class Settings(BaseSettings):
     debug: bool = False
     environment: str = "production"
     # Override in production with a restrictive list of allowed origins
-    allowed_origins: list[str] = ["*"]
+    allowed_origins: list[str] = [
+        "https://looparchitect-backend-api.onrender.com",
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ]
     # Use DATABASE_URL from environment if available, otherwise default to writable SQLite path
     # Note: /tmp is writable on Render; local ./test.db is only for development
     database_url: str = os.getenv(

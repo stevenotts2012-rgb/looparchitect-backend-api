@@ -2,7 +2,8 @@ import os
 import uuid
 import logging
 import traceback
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -146,8 +147,39 @@ def create_loop(loop_in: LoopCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/loops/with-file", response_model=LoopResponse, status_code=201)
-async def create_loop_with_upload(loop_in: LoopCreate, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Create a loop with file upload."""
+async def create_loop_with_upload(
+    loop_in: str = Form(
+        ...,
+        description=(
+            'JSON string containing loop metadata, e.g. '
+            '{"name":"My Loop","tempo":140,"key":"C","genre":"Trap"}'
+        ),
+    ),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Create a loop with file upload.
+
+    **loop_in** must be a JSON-encoded string containing the loop metadata, for example:
+
+        {"name": "My Loop", "tempo": 140, "key": "C", "genre": "Trap"}
+
+    This design is required because the endpoint uses multipart/form-data to accept
+    both the file and the metadata in a single request.
+    """
+    # Parse the JSON string into a LoopCreate schema
+    try:
+        loop_data = LoopCreate.model_validate_json(loop_in)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid loop_in JSON: {exc.errors()}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"loop_in must be a valid JSON string: {exc}",
+        )
     # Validate MIME type
     if file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
@@ -178,7 +210,7 @@ async def create_loop_with_upload(loop_in: LoopCreate, file: UploadFile = File(.
     file_url = f"/uploads/{unique_filename}"
     try:
         loop = Loop(
-            **loop_in.model_dump(),
+            **loop_data.model_dump(exclude={"file_url"}),
             file_url=file_url
         )
         db.add(loop)
