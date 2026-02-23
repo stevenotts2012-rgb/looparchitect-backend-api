@@ -6,7 +6,7 @@ import math
 
 from app.db import get_db
 from app.models.loop import Loop
-from app.services.arranger import create_arrangement
+from app.services.arranger import create_arrangement, create_arrangement_for_duration
 
 router = APIRouter(prefix="/api/v1", tags=["arrange"])
 
@@ -18,6 +18,7 @@ MAX_BARS = 4096
 class ArrangeRequest(BaseModel):
     length_seconds: Optional[int] = None
     total_bars: Optional[int] = None
+    target_length_seconds: Optional[int] = None
     bpm: Optional[float] = None
 
 
@@ -39,15 +40,21 @@ def arrange(
     Create an arrangement blueprint for a loop.
     
     Accepts flexible length specification:
-    - total_bars: Directly specify bar count (preferred if both provided)
+    - total_bars: Directly specify bar count (preferred if provided)
+    - target_length_seconds: Generate repeating sections for exact duration (no hard limit)
     - length_seconds: Specify duration in seconds (converted to bars using BPM)
-    - bpm: Optional BPM override (defaults to loop's tempo or 140)
+    - bpm: Optional BPM override (defaults to loop's tempo or 120)
     
-    If neither length_seconds nor total_bars provided, defaults to length_seconds=180.
+    If none provided, defaults to length_seconds=180.
+    
+    When target_length_seconds is used, dynamically generates:
+    - Intro section
+    - Repeating Verse/Chorus pattern
+    - Outro section
     
     Args:
         loop_id: The ID of the loop to arrange
-        request: ArrangeRequest with optional length_seconds, total_bars, or bpm
+        request: ArrangeRequest with optional parameters
         db: Database session
     
     Returns:
@@ -55,7 +62,7 @@ def arrange(
     
     Raises:
         HTTPException 404: If loop not found
-        HTTPException 400: If arrangement parameters exceed safety limits
+        HTTPException 400: If parameters exceed safety limits
     """
     # Query database for the loop
     loop = db.query(Loop).filter(Loop.id == loop_id).first()
@@ -64,12 +71,31 @@ def arrange(
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
     
-    # Determine BPM to use
-    bpm = request.bpm or loop.tempo or 140.0
+    # Determine BPM to use (default 120 for target_length_seconds)
+    bpm = request.bpm or loop.tempo or 120.0
     
-    # Determine bars_total based on priority: total_bars > length_seconds > default
+    # Determine bars_total and arrangement type based on priority
+    # Priority: total_bars > target_length_seconds > length_seconds > default
     if request.total_bars is not None:
         bars_total = request.total_bars
+        use_dynamic_sections = False
+    elif request.target_length_seconds is not None:
+        # Calculate bars from target_length_seconds
+        target_seconds = request.target_length_seconds
+        
+        # Validate against safety limit
+        if target_seconds > MAX_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Target length {target_seconds}s exceeds maximum {MAX_SECONDS}s (6 hours). "
+                        "Please request a shorter arrangement for realtime generation."
+            )
+        if target_seconds < 1:
+            raise HTTPException(status_code=400, detail="Length must be at least 1 second")
+        
+        # Convert target_length_seconds to bars: bars = round((target_seconds / 60) * (bpm / 4))
+        bars_total = max(4, round((target_seconds / 60) * (bpm / 4)))
+        use_dynamic_sections = True
     else:
         # Use length_seconds (default to 180 if not provided)
         length_seconds = request.length_seconds or 180
@@ -86,6 +112,7 @@ def arrange(
         
         # Convert length_seconds to bars: bars = round((length_seconds / 60) * (bpm / 4))
         bars_total = max(4, round((length_seconds / 60) * (bpm / 4)))
+        use_dynamic_sections = False
     
     # Validate bars_total against safety limit
     if bars_total > MAX_BARS:
@@ -97,39 +124,44 @@ def arrange(
     if bars_total < 4:
         bars_total = 4
     
+    # Generate arrangement
+    if use_dynamic_sections:
+        # Generate repeating sections for exact duration
+        arrangement = create_arrangement_for_duration(bars_total)
+    else:
+        # Generate default arrangement and scale it
+        arrangement = create_arrangement()
+        
+        # Calculate current total bars
+        current_total_bars = sum(section.get("bars", 4) for section in arrangement)
+        
+        # Scale sections to match bars_total
+        if current_total_bars > 0 and bars_total > 0:
+            scale_factor = bars_total / current_total_bars
+            scaled_arrangement = []
+            
+            for i, section in enumerate(arrangement):
+                bars = section.get("bars", 4)
+                # For the last section, use remaining bars to ensure we hit exactly bars_total
+                if i == len(arrangement) - 1:
+                    scaled_bars = bars_total - sum(s.get("bars", 4) for s in scaled_arrangement)
+                else:
+                    scaled_bars = max(1, round(bars * scale_factor))
+                
+                scaled_section = section.copy()
+                scaled_section["bars"] = scaled_bars
+                scaled_arrangement.append(scaled_section)
+            
+            arrangement = scaled_arrangement
+    
     # Compute length_seconds from bars_total and BPM
     # seconds_per_bar = (60 / bpm) * 4
     seconds_per_bar = (60 / bpm) * 4
     length_seconds = round(bars_total * seconds_per_bar)
     
-    # Generate arrangement blueprint
-    arrangement = create_arrangement()
-    
-    # Calculate current total bars
-    current_total_bars = sum(section.get("bars", 4) for section in arrangement)
-    
-    # Scale sections to match bars_total
-    if current_total_bars > 0 and bars_total > 0:
-        scale_factor = bars_total / current_total_bars
-        scaled_arrangement = []
-        
-        for i, section in enumerate(arrangement):
-            bars = section.get("bars", 4)
-            # For the last section, use remaining bars to ensure we hit exactly bars_total
-            if i == len(arrangement) - 1:
-                scaled_bars = bars_total - sum(s.get("bars", 4) for s in scaled_arrangement)
-            else:
-                scaled_bars = max(1, round(bars * scale_factor))
-            
-            scaled_section = section.copy()
-            scaled_section["bars"] = scaled_bars
-            scaled_arrangement.append(scaled_section)
-    else:
-        scaled_arrangement = arrangement
-    
     return {
         "loop_id": loop_id,
-        "sections": scaled_arrangement,
+        "sections": arrangement,
         "bars_total": bars_total,
         "length_seconds": length_seconds,
         "bpm": bpm,
