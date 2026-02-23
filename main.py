@@ -14,7 +14,19 @@ async def lifespan(app: FastAPI):
     init_db()
     yield
 
-app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+# Determine server list for OpenAPI docs (used by Swagger UI as the base URL)
+_servers = []
+_render_url = os.getenv("RENDER_EXTERNAL_URL")
+if _render_url:
+    _servers.append({"url": _render_url, "description": "Production (Render)"})
+_servers.append({"url": "http://localhost:8000", "description": "Local development"})
+
+app = FastAPI(
+    title=settings.app_name,
+    debug=settings.debug,
+    lifespan=lifespan,
+    servers=_servers,
+)
 
 add_cors_middleware(app)
 

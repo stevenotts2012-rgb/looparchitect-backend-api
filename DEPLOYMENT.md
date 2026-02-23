@@ -2,11 +2,65 @@
 
 This document outlines the deployment process for the LoopArchitect FastAPI backend API.
 
-## Pre-Deployment Checklist
+## Running Tests
 
-- [ ] All code changes are tested locally
-- [ ] No console errors when running `uvicorn main:app --reload`
-- [ ] Database migrations (if any) are prepared
+The project ships with a minimal smoke-test suite that exercises the main API endpoints
+using an in-process SQLite database (no real server required).
+
+### Install test dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Run smoke tests
+
+```bash
+pytest tests/test_smoke.py -v
+```
+
+Expected output: all 15 tests pass.
+
+### What the tests cover
+
+| Test | Endpoint |
+|------|----------|
+| `test_health` | `GET /api/v1/health` |
+| `test_status` | `GET /api/v1/status` |
+| `test_create_loop` | `POST /api/v1/loops` |
+| `test_list_loops` | `GET /api/v1/loops` |
+| `test_get_loop_not_found` | `GET /api/v1/loops/{id}` (404) |
+| `test_upload_audio` | `POST /api/v1/loops/upload` |
+| `test_upload_file_only` | `POST /api/v1/upload` |
+| `test_upload_invalid_mime` | `POST /api/v1/loops/upload` (400) |
+| `test_create_loop_with_file_success` | `POST /api/v1/loops/with-file` ✅ primary fix |
+| `test_create_loop_with_file_invalid_json` | `POST /api/v1/loops/with-file` (422) |
+| `test_create_loop_with_file_missing_required_field` | `POST /api/v1/loops/with-file` (422) |
+| `test_create_loop_with_file_invalid_mime` | `POST /api/v1/loops/with-file` (400) |
+| `test_arrange_loop` | `POST /api/v1/loops/{id}/arrange` |
+| `test_arrange_endpoint` | `POST /api/v1/arrange/{id}` |
+| `test_delete_loop` | `DELETE /api/v1/loops/{id}` |
+
+---
+
+## Verifying POST /api/v1/loops/with-file in Swagger UI
+
+The primary bug (422 "Input should be a valid dictionary") has been fixed.
+The endpoint now accepts `loop_in` as a **JSON string** form field.
+
+To test in Swagger UI at `https://<render-url>/docs`:
+
+1. Open `POST /api/v1/loops/with-file` → click **Try it out**
+2. In the **loop_in** field, enter a JSON string such as:
+   ```
+   {"name": "My Loop", "tempo": 140, "key": "C", "genre": "Trap"}
+   ```
+3. Upload a WAV or MP3 file in the **file** field
+4. Click **Execute** — you should receive a **201 Created** response
+
+---
+
+## Pre-Deployment Checklist
 - [ ] Environment variables are documented in `.env.example` (if new variables added)
 - [ ] Dependencies are updated in `requirements.txt` (if new packages added)
 
