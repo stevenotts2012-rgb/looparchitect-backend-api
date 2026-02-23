@@ -1,0 +1,10 @@
+## Developer Workflow
+
+Whenever development work is complete:
+
+1. Stage all files
+2. Create a commit message describing changes
+3. Commit changes
+4. Push to origin main
+
+Copilot should always suggest git add, git commit, and git push after coding tasks.
