@@ -9,6 +9,8 @@ TODO: Replace simulation with real audio processing (librosa, soundfile, pydub, 
 
 import os
 import uuid
+import wave
+import struct
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -106,7 +108,8 @@ def render_and_export_instrumental(
     
     # Step 3: Generate output filename
     render_filename = f"instrumental_{loop_id}.wav"
-    render_url = f"/renders/{render_filename}"
+    output_path = Path(RENDERS_DIR) / render_filename
+    render_url = f"/api/v1/renders/{render_filename}"
     
     # Step 4: Calculate total duration from arrangement sections
     calculated_length = sum(_calculate_section_duration(bpm, section) for section in arrangement)
@@ -114,11 +117,11 @@ def render_and_export_instrumental(
     # Use the greater of calculated length or target length
     final_length = max(int(calculated_length), target_length_seconds)
     
-    # TODO: Export the actual rendered audio file
-    # output_path = Path(RENDERS_DIR) / render_filename
-    # final_audio.export(str(output_path), format="wav")
+    # Step 5: Create a simple WAV file (1 second of silence for simulation)
+    # TODO: Replace with actual rendered audio from loop processing
+    _create_silence_wav(output_path, duration_seconds=1)
     
-    # SIMULATION: Return success response (file not actually created yet)
+    # SIMULATION: Return success response with actual file created
     return {
         "render_url": render_url,
         "status": "completed",
@@ -149,6 +152,38 @@ def _resolve_local_file_path(file_path: str) -> Path:
         relative_path = file_path
     
     return Path(UPLOADS_DIR) / relative_path
+
+
+def _create_silence_wav(output_path: Path, duration_seconds: int = 1, sample_rate: int = 44100):
+    """
+    Create a simple WAV file containing silence using Python's built-in wave module.
+    
+    Args:
+        output_path: Path where the WAV file should be created
+        duration_seconds: Duration of silence in seconds (default: 1)
+        sample_rate: Sample rate in Hz (default: 44100)
+    
+    NOTE: This is a placeholder for simulation. Real implementation should:
+    1. Take actual rendered audio data from the processing pipeline
+    2. Export using professional audio libraries (soundfile, pydub, etc.)
+    3. Apply proper audio encoding and compression
+    """
+    num_channels = 2  # Stereo
+    sample_width = 2  # 16-bit audio (2 bytes per sample)
+    num_frames = sample_rate * duration_seconds
+    
+    # Create WAV file
+    with wave.open(str(output_path), 'wb') as wav_file:
+        wav_file.setnchannels(num_channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        
+        # Write silence (zeros) for the specified duration
+        # Each frame consists of num_channels samples
+        for _ in range(num_frames):
+            for _ in range(num_channels):
+                # Write a 16-bit zero (silence)
+                wav_file.writeframes(struct.pack('<h', 0))
 
 
 def _calculate_section_duration(bpm: int, section_name: str) -> float:

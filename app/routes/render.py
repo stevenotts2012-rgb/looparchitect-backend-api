@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from pydub import AudioSegment
 from pydub.effects import normalize
@@ -280,7 +281,7 @@ async def render_arrangement(
                 VariationResult(
                     name=profile["name"],
                     style_hint=profile.get("style_hint"),
-                    file_url=f"/renders/{filename}"
+                    file_url=f"/api/v1/renders/{filename}"
                 )
             )
         
@@ -309,7 +310,7 @@ async def render_arrangement(
             VariationResult(
                 name=profile["name"],
                 style_hint=profile["style_hint"],
-                file_url=f"/renders/{filename}",
+                file_url=f"/api/v1/renders/{filename}",
             )
         )
 
@@ -365,7 +366,7 @@ def render_loop(
         filename = f"instrumental_{loop_id}.wav"
         # TODO: Actually download and process remote file
         return RenderResponse(
-            render_url=f"/renders/{filename}",
+            render_url=f"/api/v1/renders/{filename}",
             loop_id=loop_id
         )
     
@@ -475,7 +476,7 @@ def render_loop(
         raise HTTPException(status_code=500, detail=f"Failed to export render: {exc}") from exc
 
     return RenderResponse(
-        render_url=f"/renders/{filename}",
+        render_url=f"/api/v1/renders/{filename}",
         loop_id=loop_id
     )
 
@@ -552,5 +553,51 @@ def render_loop_simulated(
         "status": result["status"],
         "loop_id": loop_id
     }
+
+
+@router.get("/renders/{filename}")
+def download_render(filename: str):
+    """
+    Download a rendered audio file.
+    
+    Security features:
+    - Prevents path traversal attacks (rejects ".." and "/")
+    - Only serves files from the renders directory
+    - Returns 404 if file doesn't exist
+    - Sets correct audio/wav media type
+    
+    Args:
+        filename: Name of the rendered file (e.g., "instrumental_123.wav")
+    
+    Returns:
+        FileResponse with the audio file
+    
+    Raises:
+        HTTPException 400: If filename contains invalid characters
+        HTTPException 404: If file not found
+    """
+    # Security: Prevent path traversal attacks
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid filename: path traversal not allowed"
+        )
+    
+    # Construct safe file path
+    file_path = Path(RENDERS_DIR) / filename
+    
+    # Check if file exists
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Rendered file not found: {filename}"
+        )
+    
+    # Return file with correct media type
+    return FileResponse(
+        path=str(file_path),
+        media_type="audio/wav",
+        filename=filename
+    )
 
 

@@ -25,8 +25,7 @@ os.makedirs("renders", exist_ok=True)
 # Mount static files directory for uploads
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# Mount static files directory for renders
-app.mount("/renders", StaticFiles(directory="renders"), name="renders")
+# Note: /renders files are served via secure endpoint in render.py (GET /api/v1/renders/{filename})
 
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(db_health.router, prefix="/api/v1", tags=["database"])
