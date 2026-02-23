@@ -1,6 +1,7 @@
 import os
 import uuid
 import re
+import math
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.loop import Loop
+from app.services.arranger import create_arrangement
 
 UPLOADS_DIR = "uploads"
 RENDERS_DIR = "renders"
@@ -29,6 +31,10 @@ class RenderConfig(BaseModel):
     variations: Optional[int] = 3
     variation_styles: Optional[List[str]] = None
     custom_style: Optional[str] = None
+
+
+class RenderRequest(BaseModel):
+    length_seconds: Optional[int] = 180
 
 
 class ArrangementConfig(BaseModel):
@@ -68,6 +74,11 @@ class VariationResult(BaseModel):
 class MultiRenderResponse(BaseModel):
     loop_id: int
     variations: List[VariationResult]
+
+
+class RenderResponse(BaseModel):
+    render_url: str
+    loop_id: int
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -267,4 +278,121 @@ async def render_arrangement(
         )
 
     return MultiRenderResponse(loop_id=loop_id, variations=results)
+
+
+@router.post("/render/{loop_id}", response_model=RenderResponse)
+def render_loop(
+    loop_id: int,
+    request: RenderRequest = Body(default=RenderRequest()),
+    db: Session = Depends(get_db),
+):
+    """
+    Render a loop by arranging it into sections.
+    
+    Creates a full instrumental track by extending the loop audio to match
+    the arrangement sections, concatenates them, and saves as WAV.
+    
+    Args:
+        loop_id: The ID of the loop to render
+        request: RenderRequest with optional length_seconds
+        db: Database session
+    
+    Returns:
+        URL of the rendered audio file and loop_id
+    """
+    # Load loop from database
+    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+    if loop is None:
+        raise HTTPException(status_code=404, detail="Loop not found")
+
+    if not loop.file_url:
+        raise HTTPException(status_code=400, detail="Loop has no associated audio file")
+
+    # Load loop audio file
+    audio_path = _resolve_audio_file_path(loop.file_url)
+    try:
+        loop_audio = AudioSegment.from_file(str(audio_path))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Failed to load audio file: {exc}") from exc
+
+    # Get parameters
+    length_seconds = request.length_seconds or 180
+    bpm = loop.tempo or 140.0  # Default BPM is 140
+
+    # Calculate total bars
+    # seconds_per_bar = (60 / bpm) * 4
+    seconds_per_bar = (60 / bpm) * 4
+    bars_total = math.ceil(length_seconds / seconds_per_bar)
+    
+    # Get arrangement sections
+    try:
+        sections = create_arrangement()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to generate arrangement: {exc}") from exc
+
+    # Scale sections to match bars_total
+    current_total_bars = sum(section.get("bars", 4) for section in sections)
+    
+    if current_total_bars > 0 and bars_total > 0:
+        scale_factor = bars_total / current_total_bars
+        scaled_sections = []
+        
+        for i, section in enumerate(sections):
+            bars = section.get("bars", 4)
+            # For the last section, use remaining bars to ensure we hit exactly bars_total
+            if i == len(sections) - 1:
+                scaled_bars = bars_total - sum(s.get("bars", 4) for s in scaled_sections)
+            else:
+                scaled_bars = max(1, round(bars * scale_factor))
+            
+            scaled_section = section.copy()
+            scaled_section["bars"] = scaled_bars
+            scaled_sections.append(scaled_section)
+    else:
+        scaled_sections = sections
+
+    # Calculate ms per bar
+    ms_per_bar = (4 * 60 * 1000) / bpm
+    
+    # Concatenate sections
+    final_audio = AudioSegment.empty()
+    
+    try:
+        for section in scaled_sections:
+            bars = section.get("bars", 4)
+            section_duration_ms = int(bars * ms_per_bar)
+            
+            # Extend loop audio to match section duration by looping
+            section_audio = AudioSegment.empty()
+            current_duration = 0
+            
+            while current_duration < section_duration_ms:
+                remaining = section_duration_ms - current_duration
+                if remaining >= len(loop_audio):
+                    section_audio += loop_audio
+                    current_duration += len(loop_audio)
+                else:
+                    section_audio += loop_audio[:remaining]
+                    current_duration += remaining
+            
+            # Concatenate to final track
+            final_audio += section_audio
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to build arrangement: {exc}") from exc
+
+    # Export final render
+    os.makedirs(RENDERS_DIR, exist_ok=True)
+    filename = f"render_{loop_id}_{uuid.uuid4().hex[:8]}.wav"
+    out_path = Path(RENDERS_DIR) / filename
+    
+    try:
+        final_audio.export(str(out_path), format="wav")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to export render: {exc}") from exc
+
+    return RenderResponse(
+        render_url=f"/renders/{filename}",
+        loop_id=loop_id
+    )
+
 
