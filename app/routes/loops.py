@@ -84,6 +84,51 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
+@router.post("/upload", status_code=201)
+async def upload_file(file: UploadFile = File(...)):
+    """Upload a WAV or MP3 audio file. Returns file URL only, no database record."""
+    # Max file size: 50MB
+    MAX_FILE_SIZE = 50 * 1024 * 1024
+    
+    # Validate file is provided
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    # Validate MIME type
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid file type. Only WAV and MP3 files are allowed. Received: {file.content_type}"
+        )
+    
+    # Create uploads directory if it doesn't exist
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    
+    # Get the appropriate file extension based on MIME type
+    file_extension = MIME_TO_EXTENSION.get(file.content_type, ".wav")
+    
+    # Generate unique filename with UUID while preserving extension
+    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    
+    try:
+        # Save the file with size validation
+        content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail=f"File too large. Maximum size is 50MB.")
+        
+        with open(file_path, "wb") as buffer:
+            buffer.write(content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to save file")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    file_url = f"/uploads/{unique_filename}"
+    return {"file_url": file_url}
+
+
 @router.post("/loops", response_model=LoopResponse, status_code=201)
 def create_loop(loop_in: LoopCreate, db: Session = Depends(get_db)):
     """Create a new loop record."""
