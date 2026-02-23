@@ -19,6 +19,10 @@ UPLOADS_DIR = "uploads"
 RENDERS_DIR = "renders"
 GENERIC_VARIATIONS = ["Commercial", "Creative", "Experimental"]
 
+# Safety limits to protect server from realtime generation overload
+MAX_SECONDS = 21600  # 6 hours
+MAX_BARS = 4096
+
 router = APIRouter()
 
 
@@ -34,7 +38,9 @@ class RenderConfig(BaseModel):
 
 
 class RenderRequest(BaseModel):
-    length_seconds: Optional[int] = 180
+    length_seconds: Optional[int] = None
+    total_bars: Optional[int] = None
+    bpm: Optional[float] = None
 
 
 class ArrangementConfig(BaseModel):
@@ -292,13 +298,24 @@ def render_loop(
     Creates a full instrumental track by extending the loop audio to match
     the arrangement sections, concatenates them, and saves as WAV.
     
+    Accepts flexible length specification (same as arrange endpoint):
+    - total_bars: Directly specify bar count (preferred if both provided)
+    - length_seconds: Specify duration in seconds (converted to bars using BPM)
+    - bpm: Optional BPM override (defaults to loop's tempo or 140)
+    
     Args:
         loop_id: The ID of the loop to render
-        request: RenderRequest with optional length_seconds
+        request: RenderRequest with optional length_seconds, total_bars, or bpm
         db: Database session
     
     Returns:
         URL of the rendered audio file and loop_id
+    
+    Raises:
+        HTTPException 404: If loop not found
+        HTTPException 400: If loop has no audio file or parameters exceed safety limits
+        HTTPException 422: If audio file cannot be loaded
+        HTTPException 500: If arrangement generation or audio export fails
     """
     # Load loop from database
     loop = db.query(Loop).filter(Loop.id == loop_id).first()
@@ -315,14 +332,38 @@ def render_loop(
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Failed to load audio file: {exc}") from exc
 
-    # Get parameters
-    length_seconds = request.length_seconds or 180
-    bpm = loop.tempo or 140.0  # Default BPM is 140
-
-    # Calculate total bars
-    # seconds_per_bar = (60 / bpm) * 4
-    seconds_per_bar = (60 / bpm) * 4
-    bars_total = math.ceil(length_seconds / seconds_per_bar)
+    # Determine BPM to use
+    bpm = request.bpm or loop.tempo or 140.0
+    
+    # Determine bars_total based on priority: total_bars > length_seconds > default
+    if request.total_bars is not None:
+        bars_total = request.total_bars
+    else:
+        # Use length_seconds (default to 180 if not provided)
+        length_seconds = request.length_seconds or 180
+        
+        # Validate length_seconds against safety limit
+        if length_seconds > MAX_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Length {length_seconds}s exceeds maximum {MAX_SECONDS}s (6 hours). "
+                        "Please request a shorter render for realtime generation."
+            )
+        if length_seconds < 1:
+            raise HTTPException(status_code=400, detail="Length must be at least 1 second")
+        
+        # Convert length_seconds to bars: bars = round((length_seconds / 60) * (bpm / 4))
+        bars_total = max(4, round((length_seconds / 60) * (bpm / 4)))
+    
+    # Validate bars_total against safety limit
+    if bars_total > MAX_BARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Arrangement size {bars_total} bars exceeds maximum {MAX_BARS} bars. "
+                    "Please request a shorter render for realtime generation."
+        )
+    if bars_total < 4:
+        bars_total = 4
     
     # Get arrangement sections
     try:
