@@ -98,10 +98,16 @@ def _slugify(text: str) -> str:
     return text
 
 
-def _resolve_audio_file_path(file_url: str) -> Path:
-    """Resolve loop audio file path from file_url."""
+def _resolve_audio_file_path(file_url: str) -> Optional[Path]:
+    """Resolve loop audio file path from file_url.
+    
+    Returns:
+        Path object for local files, None for remote URLs (http/https)
+    """
     if file_url.startswith("http"):
-        raise HTTPException(status_code=400, detail="Remote file_url not supported yet")
+        # Remote URL - return None to indicate simulation mode
+        # TODO: In real implementation, download the file
+        return None
 
     if file_url.startswith("/uploads/"):
         file_path = file_url.replace("/uploads/", "")
@@ -258,6 +264,29 @@ async def render_arrangement(
         raise HTTPException(status_code=400, detail="Loop has no associated audio file")
 
     audio_path = _resolve_audio_file_path(loop.file_url)
+    
+    # Handle remote URLs with simulation
+    if audio_path is None:
+        # SIMULATION: Remote file - generate fake renders
+        os.makedirs(RENDERS_DIR, exist_ok=True)
+        profiles = _compute_variation_profiles(config)
+        results: List[VariationResult] = []
+        
+        for profile in profiles:
+            slug = _slugify(profile["name"])
+            filename = f"instrumental_{loop_id}_{slug}.wav"
+            # TODO: Actually download and process remote file
+            results.append(
+                VariationResult(
+                    name=profile["name"],
+                    style_hint=profile.get("style_hint"),
+                    file_url=f"/renders/{filename}"
+                )
+            )
+        
+        return MultiRenderResponse(loop_id=loop_id, variations=results)
+    
+    # Local file processing (existing code)
     try:
         audio = AudioSegment.from_file(str(audio_path))
     except Exception as exc:
@@ -328,6 +357,19 @@ def render_loop(
 
     # Load loop audio file
     audio_path = _resolve_audio_file_path(loop.file_url)
+    
+    # Handle remote URLs with simulation
+    if audio_path is None:
+        # SIMULATION: Remote file - generate fake render
+        os.makedirs(RENDERS_DIR, exist_ok=True)
+        filename = f"instrumental_{loop_id}.wav"
+        # TODO: Actually download and process remote file
+        return RenderResponse(
+            render_url=f"/renders/{filename}",
+            loop_id=loop_id
+        )
+    
+    # Local file processing (existing code)
     try:
         loop_audio = AudioSegment.from_file(str(audio_path))
     except Exception as exc:

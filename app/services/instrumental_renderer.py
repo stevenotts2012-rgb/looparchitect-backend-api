@@ -23,38 +23,51 @@ def render_and_export_instrumental(
     arrangement: List[str],
     bpm: int,
     target_length_seconds: int
-) -> Dict[str, str]:
+) -> Dict[str, object]:
     """
-    Simulates rendering an instrumental arrangement from an uploaded audio file.
+    Simulates rendering an instrumental arrangement from an uploaded audio file or remote URL.
     
     Args:
         loop_id: Unique identifier for the loop being rendered
-        file_path: Local path to the uploaded audio file (e.g., "/uploads/abc123.wav" or "uploads/abc123.wav")
+        file_path: Local path to uploaded file (e.g., "/uploads/abc123.wav") or remote URL (http/https)
         arrangement: List of song sections (e.g., ["Intro", "Verse", "Chorus", "Verse", "Chorus", "Outro"])
         bpm: Tempo in beats per minute
         target_length_seconds: Desired total length of the rendered file
     
     Returns:
         Dictionary containing:
-        - render_url: Path to the rendered file (e.g., "/renders/render_123_abc.wav")
+        - render_url: Path to the rendered file (e.g., "/renders/instrumental_123.wav")
         - status: Rendering completion status ("completed" or "failed")
+        - length_seconds: Calculated duration of the rendered file
     
     Raises:
-        FileNotFoundError: If the uploaded audio file does not exist locally
+        FileNotFoundError: If the uploaded audio file does not exist locally (only for local files)
     
     NOTE: This is a simulation. Real implementation should:
-    1. Load actual audio samples from file_path using pydub/librosa
+    1. Download remote files or load local audio samples using pydub/librosa
     2. Apply BPM tempo stretching/compression
     3. Chain sections together with proper crossfading
     4. Apply mixing, effects, and normalization
     5. Export to WAV/MP3 format using soundfile or ffmpeg
     """
     
-    # Step 1: Validate that the uploaded file exists locally
-    resolved_path = _resolve_local_file_path(file_path)
+    # Step 1: Check if file_path is remote (http/https)
+    is_remote = file_path.startswith("http://") or file_path.startswith("https://")
     
-    if not resolved_path.exists():
-        raise FileNotFoundError(f"Audio file not found: {file_path}")
+    if is_remote:
+        # SIMULATION: Remote file handling
+        # TODO: In real implementation, download the file
+        # import requests
+        # response = requests.get(file_path)
+        # temp_file = Path(UPLOADS_DIR) / f"temp_{uuid.uuid4().hex[:8]}.wav"
+        # temp_file.write_bytes(response.content)
+        pass
+    else:
+        # Step 1b: Validate that the uploaded file exists locally
+        resolved_path = _resolve_local_file_path(file_path)
+        
+        if not resolved_path.exists():
+            raise FileNotFoundError(f"Audio file not found: {file_path}")
     
     # Step 2: Create renders directory if it doesn't exist
     os.makedirs(RENDERS_DIR, exist_ok=True)
@@ -91,9 +104,15 @@ def render_and_export_instrumental(
     #     padding_ms = (target_length_seconds - total_duration) * 1000
     #     final_audio += AudioSegment.silent(duration=padding_ms)
     
-    # Step 3: Generate output filename with UUID for uniqueness
-    render_filename = f"render_{loop_id}_{uuid.uuid4().hex[:8]}.wav"
+    # Step 3: Generate output filename
+    render_filename = f"instrumental_{loop_id}.wav"
     render_url = f"/renders/{render_filename}"
+    
+    # Step 4: Calculate total duration from arrangement sections
+    calculated_length = sum(_calculate_section_duration(bpm, section) for section in arrangement)
+    
+    # Use the greater of calculated length or target length
+    final_length = max(int(calculated_length), target_length_seconds)
     
     # TODO: Export the actual rendered audio file
     # output_path = Path(RENDERS_DIR) / render_filename
@@ -102,7 +121,8 @@ def render_and_export_instrumental(
     # SIMULATION: Return success response (file not actually created yet)
     return {
         "render_url": render_url,
-        "status": "completed"
+        "status": "completed",
+        "length_seconds": final_length
     }
 
 
