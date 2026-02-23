@@ -1,5 +1,7 @@
 import os
 import uuid
+import logging
+import traceback
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
@@ -8,6 +10,9 @@ from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 
 router = APIRouter()
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Allowed MIME types for WAV and MP3 files
 ALLOWED_MIME_TYPES = {
@@ -62,76 +67,83 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
             content = await file.read()
             buffer.write(content)
     except Exception as e:
+        logger.exception("Failed to save file")
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
     # Create Loop database record
     file_url = f"/uploads/{unique_filename}"
-    new_loop = Loop(name=unique_filename, file_url=file_url)
-    db.add(new_loop)
     try:
+        new_loop = Loop(name=unique_filename, file_url=file_url)
+        db.add(new_loop)
         db.commit()
         db.refresh(new_loop)
+        return {"loop_id": new_loop.id, "file_url": new_loop.file_url}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to save loop record: {str(e)}")
-    
-    # Return loop_id and file_url
-    return {"loop_id": new_loop.id, "file_url": new_loop.file_url}
+        logger.exception("Failed to save loop record")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @router.post("/loops", response_model=LoopResponse, status_code=201)
 def create_loop(loop_in: LoopCreate, db: Session = Depends(get_db)):
-    loop = Loop(**loop_in.model_dump())
-    db.add(loop)
+    """Create a new loop record."""
     try:
+        loop = Loop(**loop_in.model_dump())
+        db.add(loop)
         db.commit()
         db.refresh(loop)
-    except Exception:
+        return loop
+    except Exception as e:
         db.rollback()
-        raise
-    @router.post("/loops", response_model=LoopResponse, status_code=201)
-    def create_loop(loop_in: LoopCreate, file: UploadFile = File(...), db: Session = Depends(get_db)):
-        # Validate MIME type
-        if file.content_type not in ALLOWED_MIME_TYPES:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid file type. Only WAV and MP3 files are allowed. Received: {file.content_type}"
-            )
-        
-        # Create uploads directory if it doesn't exist
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        
-        # Get the appropriate file extension based on MIME type
-        file_extension = MIME_TO_EXTENSION.get(file.content_type, ".wav")
-        
-        # Generate unique filename with UUID
-        unique_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = os.path.join(UPLOAD_DIR, unique_filename)
-        
-        try:
-            # Save the file
-            with open(file_path, "wb") as buffer:
-                content = file.file.read()
-                buffer.write(content)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
-        
-        # Create loop with file info
-        file_url = f"/uploads/{unique_filename}"
+        traceback.print_exc()
+        logger.exception("Failed to create loop")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/loops/with-file", response_model=LoopResponse, status_code=201)
+async def create_loop_with_upload(loop_in: LoopCreate, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Create a loop with file upload."""
+    # Validate MIME type
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid file type. Only WAV and MP3 files are allowed. Received: {file.content_type}"
+        )
+    
+    # Create uploads directory if it doesn't exist
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    
+    # Get the appropriate file extension based on MIME type
+    file_extension = MIME_TO_EXTENSION.get(file.content_type, ".wav")
+    
+    # Generate unique filename with UUID
+    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    
+    try:
+        # Save the file
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+    except Exception as e:
+        logger.exception("Failed to save file")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Create loop with file info
+    file_url = f"/uploads/{unique_filename}"
+    try:
         loop = Loop(
             **loop_in.model_dump(),
-            filename=unique_filename,
             file_url=file_url
         )
         db.add(loop)
-        try:
-            db.commit()
-            db.refresh(loop)
-        except Exception:
-            db.rollback()
-            raise
-        
+        db.commit()
+        db.refresh(loop)
         return loop
+    except Exception as e:
+        db.rollback()
+        logger.exception("Failed to create loop with upload")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @router.get("/loops", response_model=list[LoopResponse])
@@ -161,11 +173,11 @@ def update_loop(loop_id: int, loop_in: LoopUpdate, db: Session = Depends(get_db)
     try:
         db.commit()
         db.refresh(loop)
-    except Exception:
+        return loop
+    except Exception as e:
         db.rollback()
-        raise
-
-    return loop
+        logger.exception("Failed to update loop")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @router.delete("/loops/{loop_id}", status_code=200)
@@ -178,8 +190,8 @@ def delete_loop(loop_id: int, db: Session = Depends(get_db)):
     try:
         db.delete(loop)
         db.commit()
-    except Exception:
+        return {"deleted": True, "id": loop_id}
+    except Exception as e:
         db.rollback()
-        raise
-
-    return {"deleted": True, "id": loop_id}
+        logger.exception("Failed to delete loop")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
