@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     environment: str = "production"
     # Override in production with a restrictive list of allowed origins
     allowed_origins: list[str] = ["*"]
+    database_url: str = "sqlite:///./test.db"
 
     class Config:
         env_file = ".env"

@@ -1,14 +1,12 @@
-import os
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.config import settings
 from app.models.test_model import Base
 from app.models.loop import Loop  # noqa: F401 – registers Loop with Base.metadata
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is not set")
+# Get DATABASE_URL from settings (loaded from .env with default fallback)
+DATABASE_URL = settings.database_url
 
 # Render (and older Heroku) provides postgres:// URLs; SQLAlchemy 1.4+ requires postgresql://
 if DATABASE_URL.startswith("postgres://"):

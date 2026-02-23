@@ -33,7 +33,7 @@ UPLOAD_DIR = "uploads"
 
 
 @router.post("/loops/upload", status_code=201)
-async def upload_audio(file: UploadFile = File(...)):
+async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Upload a WAV or MP3 audio file."""
     # Validate file is provided
     if not file:
@@ -64,8 +64,19 @@ async def upload_audio(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
-    # Return the file URL
-    return {"file_url": f"/uploads/{unique_filename}"}
+    # Create Loop database record
+    file_url = f"/uploads/{unique_filename}"
+    new_loop = Loop(name=unique_filename, file_url=file_url)
+    db.add(new_loop)
+    try:
+        db.commit()
+        db.refresh(new_loop)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save loop record: {str(e)}")
+    
+    # Return loop_id and file_url
+    return {"loop_id": new_loop.id, "file_url": new_loop.file_url}
 
 
 @router.post("/loops", response_model=LoopResponse, status_code=201)
@@ -78,7 +89,49 @@ def create_loop(loop_in: LoopCreate, db: Session = Depends(get_db)):
     except Exception:
         db.rollback()
         raise
-    return loop
+    @router.post("/loops", response_model=LoopResponse, status_code=201)
+    def create_loop(loop_in: LoopCreate, file: UploadFile = File(...), db: Session = Depends(get_db)):
+        # Validate MIME type
+        if file.content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid file type. Only WAV and MP3 files are allowed. Received: {file.content_type}"
+            )
+        
+        # Create uploads directory if it doesn't exist
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        
+        # Get the appropriate file extension based on MIME type
+        file_extension = MIME_TO_EXTENSION.get(file.content_type, ".wav")
+        
+        # Generate unique filename with UUID
+        unique_filename = f"{uuid.uuid4()}{file_extension}"
+        file_path = os.path.join(UPLOAD_DIR, unique_filename)
+        
+        try:
+            # Save the file
+            with open(file_path, "wb") as buffer:
+                content = file.file.read()
+                buffer.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        
+        # Create loop with file info
+        file_url = f"/uploads/{unique_filename}"
+        loop = Loop(
+            **loop_in.model_dump(),
+            filename=unique_filename,
+            file_url=file_url
+        )
+        db.add(loop)
+        try:
+            db.commit()
+            db.refresh(loop)
+        except Exception:
+            db.rollback()
+            raise
+        
+        return loop
 
 
 @router.get("/loops", response_model=list[LoopResponse])
