@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.loop import Loop
 from app.services.arranger import create_arrangement
+from app.services.instrumental_renderer import render_and_export_instrumental
 
 UPLOADS_DIR = "uploads"
 RENDERS_DIR = "renders"
@@ -435,5 +436,79 @@ def render_loop(
         render_url=f"/renders/{filename}",
         loop_id=loop_id
     )
+
+
+@router.post("/render-simulated/{loop_id}")
+def render_loop_simulated(
+    loop_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Simulated render endpoint using the upgraded instrumental_renderer service.
+    
+    This endpoint demonstrates the new file upload support:
+    1. Validates that the loop exists and has an uploaded audio file
+    2. Checks that the file exists locally in /uploads
+    3. Simulates rendering by calling render_and_export_instrumental
+    4. Returns render_url and status
+    
+    NOTE: This is a simulation. No actual audio file is created yet.
+    The real audio processing will be added later (see TODOs in instrumental_renderer.py).
+    
+    Args:
+        loop_id: The ID of the loop to render
+        db: Database session
+    
+    Returns:
+        {
+            "render_url": "/renders/render_<loop_id>_<uuid>.wav",
+            "status": "completed",
+            "loop_id": <loop_id>
+        }
+    
+    Raises:
+        HTTPException 404: If loop not found
+        HTTPException 400: If loop has no associated audio file
+        HTTPException 404: If audio file not found locally
+    """
+    # Step 1: Load loop from database
+    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+    if loop is None:
+        raise HTTPException(status_code=404, detail="Loop not found")
+
+    # Step 2: Validate that loop has an uploaded file
+    if not loop.file_url:
+        raise HTTPException(status_code=400, detail="Loop has no associated audio file")
+
+    # Step 3: Define arrangement (hardcoded for simulation)
+    # TODO: Accept arrangement from request body or generate dynamically
+    arrangement = ["Intro", "Verse", "Chorus", "Verse", "Chorus", "Outro"]
+    
+    # Step 4: Get BPM (use loop's tempo or default)
+    bpm = int(loop.tempo) if loop.tempo else 140
+    
+    # Step 5: Set target length (default 180 seconds = 3 minutes)
+    target_length_seconds = 180
+    
+    # Step 6: Call the upgraded instrumental renderer service
+    try:
+        result = render_and_export_instrumental(
+            loop_id=loop_id,
+            file_path=loop.file_url,
+            arrangement=arrangement,
+            bpm=bpm,
+            target_length_seconds=target_length_seconds
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Render failed: {str(e)}")
+    
+    # Step 7: Return success response
+    return {
+        "render_url": result["render_url"],
+        "status": result["status"],
+        "loop_id": loop_id
+    }
 
 
