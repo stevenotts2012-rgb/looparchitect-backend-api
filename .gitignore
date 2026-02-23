@@ -9,8 +9,9 @@ __pycache__/
 # Database
 *.db
 
-# Uploads
+# Uploads and renders (runtime-generated files)
 uploads/
+renders/
 
 # OS files
 .DS_Store
