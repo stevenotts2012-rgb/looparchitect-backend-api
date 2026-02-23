@@ -227,7 +227,7 @@ def _build_variation(audio: AudioSegment, transformations: List[str]) -> AudioSe
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/loops/{loop_id}/arrange", response_model=ArrangementPlan)
-def create_arrangement(
+def arrange_loop(
     loop_id: int,
     config: ArrangementConfig = Body(default=ArrangementConfig()),
     db: Session = Depends(get_db),

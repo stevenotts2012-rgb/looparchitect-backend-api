@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.db import init_db
 from app.middleware.cors import add_cors_middleware
-from app.routes import api, health, db_health, loops, render
+from app.routes import api, health, db_health, loops, render, arrange
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,3 +32,4 @@ app.include_router(db_health.router, prefix="/api/v1", tags=["database"])
 app.include_router(api.router, prefix="/api/v1", tags=["api"])
 app.include_router(loops.router, prefix="/api/v1", tags=["loops"])
 app.include_router(render.router, prefix="/api/v1", tags=["render"])
+app.include_router(arrange.router, prefix="/api/v1", tags=["arrange"])
