@@ -5,7 +5,13 @@ This script directly adds missing columns to the loops table.
 """
 
 import sys
+import os
 from pathlib import Path
+
+# Set UTF-8 encoding for output
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -30,10 +36,10 @@ def add_missing_columns():
     
     missing_cols = required_cols - current_cols
     if not missing_cols:
-        print("✅ All required columns already exist")
+        print("[OK] All required columns already exist")
         return True
     
-    print(f"❌ Missing columns: {', '.join(sorted(missing_cols))}")
+    print(f"[ERROR] Missing columns: {', '.join(sorted(missing_cols))}")
     
     # Map columns to their SQL definitions
     col_definitions = {
@@ -84,12 +90,12 @@ def add_missing_columns():
 def verify_schema():
     """Verify the schema is complete."""
     print("\n" + "="*60)
-    print("✅ VERIFICATION")
+    print("[OK] VERIFICATION")
     print("="*60)
     
     inspector = inspect(engine)
     if "loops" not in inspector.get_table_names():
-        print("❌ loops table does not exist")
+        print("[ERROR] loops table does not exist")
         return False
     
     current_cols = get_current_columns()
@@ -100,22 +106,22 @@ def verify_schema():
     
     missing = required_cols - current_cols
     if missing:
-        print(f"❌ Still missing: {', '.join(sorted(missing))}")
+        print(f"[ERROR] Still missing: {', '.join(sorted(missing))}")
         return False
     
-    print("✅ All required columns present in loops table:")
+    print("[OK] All required columns present in loops table:")
     for col in sorted(current_cols):
         print(f"   - {col}")
     return True
 
 def main():
     """Main schema fix workflow."""
-    print("\n╔═══════════════════════════════════════════════════════════╗")
-    print("║      LoopArchitect Database Schema Direct Fix             ║")
-    print("╚═══════════════════════════════════════════════════════════╝")
+    print("\n" + "="*60)
+    print("LoopArchitect Database Schema Direct Fix")
+    print("="*60)
     
     current_cols = get_current_columns()
-    print(f"\n📊 Current columns in loops table: {', '.join(sorted(current_cols))}")
+    print(f"\nCurrent columns in loops table: {', '.join(sorted(current_cols))}")
     
     if not add_missing_columns():
         return False
@@ -126,10 +132,10 @@ if __name__ == "__main__":
     try:
         success = main()
         if success:
-            print("\n🎉 Database schema update complete!")
+            print("\n[OK] Database schema update complete!")
         else:
-            print("\n⚠️  Database schema update failed")
+            print("\n[WARN] Database schema update failed")
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\n[ERROR] Unexpected error: {e}")
         sys.exit(1)
