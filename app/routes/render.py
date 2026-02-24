@@ -2,6 +2,8 @@ import os
 import uuid
 import re
 import math
+import asyncio
+import logging
 from pathlib import Path
 from typing import List, Optional
 
@@ -16,6 +18,7 @@ from app.db import get_db
 from app.models.loop import Loop
 from app.services.arranger import create_arrangement
 from app.services.instrumental_renderer import render_and_export_instrumental
+from app.services.render_service import render_loop as render_loop_async
 
 UPLOADS_DIR = "uploads"
 RENDERS_DIR = "renders"
@@ -24,6 +27,8 @@ GENERIC_VARIATIONS = ["Commercial", "Creative", "Experimental"]
 # Safety limits to protect server from realtime generation overload
 MAX_SECONDS = 21600  # 6 hours
 MAX_BARS = 4096
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -87,6 +92,17 @@ class MultiRenderResponse(BaseModel):
 class RenderResponse(BaseModel):
     render_url: str
     loop_id: int
+
+
+class RenderPipelineResponse(BaseModel):
+    """Response from full render pipeline."""
+    status: str
+    render_id: str
+    loop_id: int
+    download_url: str
+    analysis: Optional[dict] = None
+    arrangement: Optional[dict] = None
+    error: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -553,6 +569,96 @@ def render_loop_simulated(
         "status": result["status"],
         "loop_id": loop_id
     }
+
+
+@router.post("/render-pipeline/{loop_id}", response_model=RenderPipelineResponse)
+async def render_with_pipeline(
+    loop_id: int,
+    request: Optional[RenderRequest] = Body(default=RenderRequest()),
+    db: Session = Depends(get_db),
+):
+    """
+    Render loop using full AI music pipeline.
+    
+    Complete processing pipeline:
+    1. Analyze loop (detect BPM, key, duration)
+    2. Slice loop into bar segments
+    3. Generate song structure arrangement (Intro→Hook→Verse→Bridge→Outro)
+    4. Render individual stems (drums, bass, melody, etc.)
+    5. Mix down stems into final instrumental
+    
+    Args:
+        loop_id: The ID of the loop to render
+        request: RenderRequest with optional length_seconds override
+        db: Database session
+    
+    Returns:
+        RenderPipelineResponse with:
+        - status: "render_started" or "completed"
+        - render_id: Unique render session ID
+        - download_url: URL to download final file
+        - analysis: Detected BPM, key, duration, confidence
+        - arrangement: Song structure with section timings
+    
+    Raises:
+        HTTPException 404: If loop not found
+        HTTPException 400: If loop has no audio file
+    """
+    # Load loop from database
+    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+    if loop is None:
+        raise HTTPException(status_code=404, detail="Loop not found")
+
+    if not loop.file_url:
+        raise HTTPException(status_code=400, detail="Loop has no associated audio file")
+
+    # Resolve audio file path
+    file_path_obj = _resolve_audio_file_path(loop.file_url)
+    if file_path_obj:
+        file_path = str(file_path_obj)
+    else:
+        # For remote URLs, use the URL directly
+        file_path = loop.file_url
+
+    # Get target duration (default 180 seconds / 3 minutes)
+    target_duration = request.length_seconds if request else 180
+    if target_duration and target_duration > MAX_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duration {target_duration}s exceeds maximum {MAX_SECONDS}s"
+        )
+
+    # Run async render pipeline
+    logger.info(f"Starting render pipeline for loop {loop_id}")
+    
+    try:
+        result = await render_loop_async(
+            loop_id=loop_id,
+            file_path=file_path,
+            target_duration_seconds=target_duration or 180
+        )
+        
+        if result.get("status") == "failed":
+            raise HTTPException(status_code=500, detail=result.get("error", "Render failed"))
+        
+        return RenderPipelineResponse(
+            status="completed",
+            render_id=result.get("render_id", "unknown"),
+            loop_id=loop_id,
+            download_url=result.get("download_url", ""),
+            analysis=result.get("analysis"),
+            arrangement=result.get("arrangement")
+        )
+        
+    except Exception as e:
+        logger.error(f"Render pipeline failed: {e}")
+        return RenderPipelineResponse(
+            status="failed",
+            render_id="error",
+            loop_id=loop_id,
+            download_url="",
+            error=str(e)
+        )
 
 
 @router.get("/renders/{filename}")
