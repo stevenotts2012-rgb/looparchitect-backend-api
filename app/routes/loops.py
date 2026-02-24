@@ -236,6 +236,28 @@ def get_loop(loop_id: int, db: Session = Depends(get_db)):
     return loop
 
 
+@router.put("/loops/{loop_id}", response_model=LoopResponse, status_code=200)
+def replace_loop(loop_id: int, loop_in: LoopCreate, db: Session = Depends(get_db)):
+    """Fully replace a loop record (all optional fields not provided are set to null)."""
+    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+    if loop is None:
+        raise HTTPException(status_code=404, detail="Loop not found")
+
+    # model_dump(exclude_unset=False) includes defaults (None) so that omitted
+    # optional fields are explicitly cleared – correct PUT (full-replace) semantics.
+    for field, value in loop_in.model_dump(exclude_unset=False).items():
+        setattr(loop, field, value)
+
+    try:
+        db.commit()
+        db.refresh(loop)
+        return loop
+    except Exception as e:
+        db.rollback()
+        logger.exception("Failed to replace loop")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
 @router.patch("/loops/{loop_id}", response_model=LoopResponse, status_code=200)
 def update_loop(loop_id: int, loop_in: LoopUpdate, db: Session = Depends(get_db)):
     """Update a loop with only the provided fields."""
