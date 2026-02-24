@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
+from app.services.analyzer import AudioAnalyzer
 
 router = APIRouter()
 
@@ -206,16 +207,46 @@ async def create_loop_with_upload(
         logger.exception("Failed to save file")
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
-    # Create loop with file info
+    # Run audio analysis
+    logger.info(f"Running audio analysis for uploaded file: {file_path}")
+    analysis_result = None
+    try:
+        analysis_result = AudioAnalyzer.analyze_audio(file_path)
+        logger.info(
+            f"Analysis complete - BPM: {analysis_result['bpm']}, "
+            f"Key: {analysis_result['musical_key']}, "
+            f"Duration: {analysis_result['duration_seconds']:.2f}s"
+        )
+    except Exception as e:
+        logger.warning(
+            f"Audio analysis failed: {str(e)}. Proceeding with loop creation "
+            "without analysis data."
+        )
+        # Continue without analysis - don't fail the entire upload
+
+    # Create loop with file info and analysis data
     file_url = f"/uploads/{unique_filename}"
     try:
+        loop_data_dict = loop_data.model_dump(exclude={"file_url"})
+        
+        # Add analysis results to loop if available
+        if analysis_result:
+            loop_data_dict["bpm"] = analysis_result["bpm"]
+            loop_data_dict["musical_key"] = analysis_result["musical_key"]
+            loop_data_dict["duration_seconds"] = analysis_result["duration_seconds"]
+            logger.info(
+                f"Loop enhanced with analysis: BPM={analysis_result['bpm']}, "
+                f"Key={analysis_result['musical_key']}"
+            )
+        
         loop = Loop(
-            **loop_data.model_dump(exclude={"file_url"}),
+            **loop_data_dict,
             file_url=file_url
         )
         db.add(loop)
         db.commit()
         db.refresh(loop)
+        logger.info(f"Loop created successfully with ID: {loop.id}")
         return loop
     except Exception as e:
         db.rollback()
