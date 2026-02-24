@@ -1,5 +1,16 @@
 # 🚀 Quick Test Reference Card
 
+## Local Development
+
+**Start the dev server:**
+```powershell
+.\dev.ps1
+```
+
+Then open: **http://127.0.0.1:8000/docs**
+
+---
+
 ## One-Minute Testing Guide
 
 ### In Swagger UI (`/docs`)
