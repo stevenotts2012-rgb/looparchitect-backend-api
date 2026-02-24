@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from app.schemas.loop import LoopCreate, LoopResponse, LoopUpdate  # noqa: F401
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -18,31 +20,3 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str
 
-
-class LoopCreate(BaseModel):
-    name: str
-    tempo: float | None = None
-    key: str | None = None
-    genre: str | None = None
-    file_url: str | None = None
-
-
-class LoopUpdate(BaseModel):
-    name: str | None = None
-    tempo: float | None = None
-    key: str | None = None
-    genre: str | None = None
-    file_url: str | None = None
-
-
-class LoopResponse(BaseModel):
-    id: int
-    name: str
-    tempo: float | None
-    key: str | None
-    genre: str | None
-    file_url: str | None
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
