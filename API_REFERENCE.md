@@ -416,6 +416,230 @@ All POST endpoints (generate-beat, extend-loop, analyze-loop) use FastAPI Backgr
 
 ---
 
+## Loop CRUD API
+
+### Create Loop (Metadata Only)
+```http
+POST /api/v1/loops
+```
+
+**Description:** Create a new loop record with metadata only (no file upload)
+
+**Request Body:** (Only `name` is required)
+```json
+{
+  "name": "My Loop",
+  "bpm": 140,
+  "bars": 16,
+  "genre": "Trap",
+  "duration_seconds": 8.0
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/api/v1/loops \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Trap Beat",
+    "bpm": 140,
+    "bars": 16,
+    "genre": "Trap"
+  }'
+```
+
+**Response (201 Created):**
+```json
+{
+  "id": 1,
+  "name": "Trap Beat",
+  "bpm": 140,
+  "bars": 16,
+  "genre": "Trap",
+  "created_at": "2026-02-25T10:30:00Z"
+}
+```
+
+---
+
+### Create Loop with File Upload
+```http
+POST /api/v1/loops/with-file
+```
+
+**Description:** Create a loop AND upload audio file to S3 in one multipart request
+
+**Request:** (Content-Type: multipart/form-data)
+- `file` (required) - Audio file (WAV or MP3)
+- `loop_in` (required) - JSON string with loop metadata
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/api/v1/loops/with-file \
+  -F "file=@my-loop.wav" \
+  -F 'loop_in={"name":"My Loop","bpm":140,"bars":16,"genre":"Trap"}'
+```
+
+**Response (201 Created):**
+```json
+{
+  "id": 2,
+  "name": "My Loop",
+  "file_key": "uploads/abc123def456.wav",
+  "bpm": 140,
+  "bars": 16,
+  "genre": "Trap",
+  "created_at": "2026-02-25T10:35:00Z"
+}
+```
+
+---
+
+### List All Loops
+```http
+GET /api/v1/loops
+```
+
+**Description:** List loops with optional filtering and pagination
+
+**Query Parameters:**
+- `status` (optional) - Filter by status: "pending", "processing", "complete", "failed"
+- `genre` (optional) - Filter by genre
+- `limit` (default=100) - Max results (1-1000)
+- `offset` (default=0) - Pagination offset
+
+**Examples:**
+```bash
+# Get all loops
+curl http://localhost:8000/api/v1/loops
+
+# Filter by genre
+curl "http://localhost:8000/api/v1/loops?genre=Trap&limit=10"
+
+# Filter by status
+curl "http://localhost:8000/api/v1/loops?status=complete"
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": 1,
+    "name": "Trap Beat",
+    "bpm": 140,
+    "bars": 16,
+    "genre": "Trap",
+    "file_key": "uploads/abc123.wav",
+    "created_at": "2026-02-25T10:30:00Z"
+  }
+]
+```
+
+---
+
+### Get Single Loop
+```http
+GET /api/v1/loops/{loop_id}
+```
+
+**Description:** Get detailed loop information
+
+**Example:**
+```bash
+curl http://localhost:8000/api/v1/loops/1
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": 1,
+  "name": "Trap Beat",
+  "file_key": "uploads/abc123.wav",
+  "bpm": 140,
+  "bars": 16,
+  "genre": "Trap",
+  "duration_seconds": 8.0,
+  "status": "pending",
+  "created_at": "2026-02-25T10:30:00Z"
+}
+```
+
+---
+
+### Update Loop (Full Update)
+```http
+PUT /api/v1/loops/{loop_id}
+```
+
+**Description:** Fully update a loop record
+
+**Example:**
+```bash
+curl -X PUT http://localhost:8000/api/v1/loops/1 \
+  -H "Content-Type: application/json" \
+  -d '{"bpm": 160, "bars": 32, "genre": "House"}'
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": 1,
+  "name": "Trap Beat",
+  "bpm": 160,
+  "bars": 32,
+  "genre": "House",
+  "created_at": "2026-02-25T10:30:00Z"
+}
+```
+
+---
+
+### Partially Update Loop (PATCH)
+```http
+PATCH /api/v1/loops/{loop_id}
+```
+
+**Description:** Partially update a loop record (only specified fields)
+
+**Example:**
+```bash
+curl -X PATCH http://localhost:8000/api/v1/loops/1 \
+  -H "Content-Type: application/json" \
+  -d '{"bpm": 150}'
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": 1,
+  "bpm": 150
+}
+```
+
+---
+
+### Delete Loop
+```http
+DELETE /api/v1/loops/{loop_id}
+```
+
+**Description:** Delete a loop record (note: S3 file is NOT deleted)
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8000/api/v1/loops/1
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": 1,
+  "message": "Loop deleted successfully"
+}
+```
+
+---
+
 ## Environment Variables
 
 ### Required for S3

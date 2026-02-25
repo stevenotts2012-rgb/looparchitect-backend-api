@@ -21,6 +21,7 @@ class Loop(Base):
     file_key = Column(String, nullable=True)  # S3 key (e.g., "uploads/uuid.wav")
     title = Column(String, nullable=True)
     bpm = Column(Integer, nullable=True)
+    bars = Column(Integer, nullable=True)  # Number of bars in the loop
     musical_key = Column(String, nullable=True)
     genre = Column(String, nullable=True)
     duration_seconds = Column(Float, nullable=True)
