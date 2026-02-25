@@ -34,6 +34,9 @@ class LoopUpdate(BaseModel):
     musical_key: Optional[str] = None
     genre: Optional[str] = None
     duration_seconds: Optional[float] = None
+    status: Optional[str] = None
+    processed_file_url: Optional[str] = None
+    analysis_json: Optional[str] = None
 
 
 class LoopResponse(BaseModel):
@@ -50,6 +53,9 @@ class LoopResponse(BaseModel):
     musical_key: Optional[str]
     genre: Optional[str]
     duration_seconds: Optional[float]
+    status: Optional[str]
+    processed_file_url: Optional[str]
+    analysis_json: Optional[str]
     created_at: datetime
 
     class Config:

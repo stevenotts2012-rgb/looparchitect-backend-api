@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Float, Integer, String
+from sqlalchemy import Column, DateTime, Float, Integer, String, Text
 
 from app.models.base import Base
 
@@ -24,3 +24,8 @@ class Loop(Base):
     genre = Column(String, nullable=True)
     duration_seconds = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Background task processing fields
+    status = Column(String, default="pending", nullable=True)  # pending | processing | complete | failed
+    processed_file_url = Column(String, nullable=True)  # URL to generated/processed audio
+    analysis_json = Column(Text, nullable=True)  # JSON string with analysis results

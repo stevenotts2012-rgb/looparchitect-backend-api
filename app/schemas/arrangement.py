@@ -1,6 +1,8 @@
 """Pydantic schemas for arrangement generation API."""
 
+from datetime import datetime
 from typing import Optional, List
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -154,5 +156,74 @@ class ArrangementInfo(BaseModel):
     total_bars: int
     sections: List[dict]
     
+    class Config:
+        from_attributes = True
+
+
+# ============================================================================
+# Audio Arrangement Generation Schemas (Phase B)
+# ============================================================================
+
+class AudioArrangementGenerateRequest(BaseModel):
+    """Request to generate an audio arrangement from a loop."""
+
+    loop_id: int = Field(..., ge=1, description="ID of the source loop")
+    target_seconds: int = Field(
+        ...,
+        ge=10,
+        le=3600,
+        description="Target duration in seconds (10s to 60 minutes)",
+    )
+    genre: Optional[str] = Field(
+        default=None,
+        description="Genre hint for arrangement (optional)",
+    )
+    intensity: Optional[str] = Field(
+        default=None,
+        description="Intensity level: low, medium, high (optional)",
+    )
+    include_stems: bool = Field(
+        default=False,
+        description="Whether to generate separate audio stems (future feature)",
+    )
+
+
+class AudioArrangementGenerateResponse(BaseModel):
+    """Response from audio arrangement generation request."""
+
+    arrangement_id: int = Field(..., description="ID of created arrangement")
+    loop_id: int = Field(..., description="ID of source loop")
+    status: str = Field(..., description="Current status: queued, processing, complete, failed")
+    created_at: datetime = Field(..., description="Timestamp of creation")
+
+    class Config:
+        from_attributes = True
+
+
+class AudioArrangementResponse(BaseModel):
+    """Full arrangement status and details."""
+
+    id: int = Field(..., description="Arrangement ID")
+    loop_id: int = Field(..., description="Source loop ID")
+    status: str = Field(..., description="Status: queued, processing, complete, failed")
+    target_seconds: int = Field(..., description="Requested duration")
+    genre: Optional[str] = Field(default=None, description="Genre hint")
+    intensity: Optional[str] = Field(default=None, description="Intensity level")
+    include_stems: bool = Field(default=False, description="Stems included")
+    output_file_url: Optional[str] = Field(
+        default=None, description="URL to download generated audio"
+    )
+    stems_zip_url: Optional[str] = Field(
+        default=None, description="URL to download stems ZIP (if generated)"
+    )
+    arrangement_json: Optional[str] = Field(
+        default=None, description="JSON timeline with sections"
+    )
+    error_message: Optional[str] = Field(
+        default=None, description="Error message if status=failed"
+    )
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: datetime = Field(..., description="Last update timestamp")
+
     class Config:
         from_attributes = True

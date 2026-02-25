@@ -1,15 +1,25 @@
 from contextlib import asynccontextmanager
 import os
 import logging
+import traceback
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 from app.config import settings
 from app.db import init_db, engine, SessionLocal
 from app.middleware.cors import add_cors_middleware
-from app.routes import api, health, db_health, loops, render, arrange
+from app.middleware.logging import add_request_logging
+from app.routes import api, health, db_health, loops, render, arrange, arrangements, audio
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 def run_migrations():
@@ -33,11 +43,23 @@ def run_migrations():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("🚀 Starting LoopArchitect API...")
+    logger.info(f"Environment: {settings.environment}")
+    logger.info(f"Debug mode: {settings.debug}")
+    
     # Run migrations on startup
     run_migrations()
+    
     # Initialize database tables
     init_db()
+    
+    logger.info("✅ Application startup complete")
+    
     yield
+    
+    # Shutdown
+    logger.info("👋 Shutting down LoopArchitect API")
 
 # Determine server list for OpenAPI docs (used by Swagger UI as the base URL)
 _servers = []
@@ -53,11 +75,59 @@ app = FastAPI(
     servers=_servers,
 )
 
+# Add middleware
 add_cors_middleware(app)
+add_request_logging(app)
+
+# Global exception handlers
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle Pydantic validation errors."""
+    logger.error(f"Validation error on {request.url.path}: {exc.errors()}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "Validation Error",
+            "detail": exc.errors(),
+            "path": str(request.url.path)
+        }
+    )
+
+
+@app.exception_handler(ValidationError)
+async def pydantic_exception_handler(request: Request, exc: ValidationError):
+    """Handle Pydantic validation errors."""
+    logger.error(f"Pydantic validation error on {request.url.path}: {exc.errors()}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "Validation Error",
+            "detail": exc.errors(),
+            "path": str(request.url.path)
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle all unhandled exceptions."""
+    logger.error(
+        f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}\n"
+        f"{traceback.format_exc()}"
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": "Internal Server Error",
+            "detail": "An unexpected error occurred. Please try again later.",
+            "path": str(request.url.path)
+        }
+    )
 
 # Create uploads and renders directories if they don't exist
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("renders", exist_ok=True)
+os.makedirs("renders/arrangements", exist_ok=True)
 
 # Mount static files directory for uploads
 from pathlib import Path
@@ -72,5 +142,7 @@ app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(db_health.router, prefix="/api/v1", tags=["database"])
 app.include_router(api.router, prefix="/api/v1", tags=["api"])
 app.include_router(loops.router, prefix="/api/v1", tags=["loops"])
+app.include_router(audio.router, prefix="/api/v1", tags=["audio"])
 app.include_router(render.router, prefix="/api/v1", tags=["render"])
 app.include_router(arrange.router, prefix="/api/v1", tags=["arrange"])
+app.include_router(arrangements.router, prefix="/api/v1/arrangements", tags=["arrangements"])

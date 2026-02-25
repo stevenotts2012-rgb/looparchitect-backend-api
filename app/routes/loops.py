@@ -2,7 +2,8 @@ import os
 import uuid
 import logging
 import traceback
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, Query
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -10,75 +11,65 @@ from app.db import get_db
 from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 from app.services.analyzer import AudioAnalyzer
+from app.services.storage_service import storage_service
+from app.services.loop_service import loop_service
 
 router = APIRouter()
-
-# Configure logging
 logger = logging.getLogger(__name__)
-
-# Allowed MIME types for WAV and MP3 files
-ALLOWED_MIME_TYPES = {
-    "audio/wav", 
-    "audio/x-wav", 
-    "audio/wave", 
-    "audio/vnd.wave",
-    "audio/mpeg",
-    "audio/mp3"
-}
-
-# MIME type to extension mapping
-MIME_TO_EXTENSION = {
-    "audio/wav": ".wav",
-    "audio/x-wav": ".wav",
-    "audio/wave": ".wav",
-    "audio/vnd.wave": ".wav",
-    "audio/mpeg": ".mp3",
-    "audio/mp3": ".mp3"
-}
-
-UPLOAD_DIR = "uploads"
 
 
 @router.post("/loops/upload", status_code=201)
 async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Upload a WAV or MP3 audio file."""
+    """Upload a WAV or MP3 audio file.
+    
+    Args:
+        file: Audio file (WAV or MP3)
+        db: Database session
+        
+    Returns:
+        dict: Contains loop_id and file_url
+        
+    Raises:
+        HTTPException: If file type invalid or upload fails
+    """
     # Validate file is provided
     if not file:
         raise HTTPException(status_code=400, detail="No file provided")
     
-    # Validate MIME type
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid file type. Only WAV and MP3 files are allowed. Received: {file.content_type}"
-        )
+    # Read file content
+    content = await file.read()
     
-    # Create uploads directory if it doesn't exist
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    # Sanitize filename
+    safe_filename = loop_service.sanitize_filename(file.filename or "audio.wav")
     
-    # Get the appropriate file extension based on MIME type
-    file_extension = MIME_TO_EXTENSION.get(file.content_type, ".wav")
+    # Validate file
+    is_valid, error_msg = loop_service.validate_audio_file(
+        filename=safe_filename,
+        content_type=file.content_type or "audio/wav",
+        file_size=len(content)
+    )
     
-    # Generate unique filename with UUID while preserving extension
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
     
     try:
-        # Save the file
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        # Upload file using service
+        unique_filename, file_url = loop_service.upload_loop_file(
+            file_content=content,
+            filename=safe_filename,
+            content_type=file.content_type or "audio/wav"
+        )
     except Exception as e:
-        logger.exception("Failed to save file")
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        logger.exception("Failed to upload file")
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
     
     # Create Loop database record
-    file_url = f"/uploads/{unique_filename}"
     try:
-        new_loop = Loop(name=unique_filename, file_url=file_url)
+        new_loop = Loop(name=safe_filename, file_url=file_url, filename=unique_filename)
         db.add(new_loop)
         db.commit()
         db.refresh(new_loop)
+        logger.info(f"Loop uploaded: {new_loop.id} - {safe_filename}")
         return {"loop_id": new_loop.id, "file_url": new_loop.file_url}
     except Exception as e:
         db.rollback()
@@ -88,61 +79,70 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
 
 @router.post("/upload", status_code=201)
 async def upload_file(file: UploadFile = File(...)):
-    """Upload a WAV or MP3 audio file. Returns file URL only, no database record."""
-    # Max file size: 50MB
-    MAX_FILE_SIZE = 50 * 1024 * 1024
+    """Upload a WAV or MP3 audio file. Returns file URL only, no database record.
     
+    Args:
+        file: Audio file (WAV or MP3)
+        
+    Returns:
+        dict: Contains file_url
+        
+    Raises:
+        HTTPException: If file type invalid, too large, or upload fails
+    """
     # Validate file is provided
     if not file:
         raise HTTPException(status_code=400, detail="No file provided")
     
-    # Validate MIME type
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid file type. Only WAV and MP3 files are allowed. Received: {file.content_type}"
-        )
+    # Read file content
+    content = await file.read()
     
-    # Create uploads directory if it doesn't exist
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    # Sanitize filename
+    safe_filename = loop_service.sanitize_filename(file.filename or "audio.wav")
     
-    # Get the appropriate file extension based on MIME type
-    file_extension = MIME_TO_EXTENSION.get(file.content_type, ".wav")
+    # Validate file (max 50MB)
+    is_valid, error_msg = loop_service.validate_audio_file(
+        filename=safe_filename,
+        content_type=file.content_type or "audio/wav",
+        file_size=len(content),
+        max_size_mb=50
+    )
     
-    # Generate unique filename with UUID while preserving extension
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
     
     try:
-        # Save the file with size validation
-        content = await file.read()
-        if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=400, detail="File too large. Maximum size is 50MB.")
-        
-        with open(file_path, "wb") as buffer:
-            buffer.write(content)
-    except HTTPException:
-        raise
+        # Upload using service
+        unique_filename, file_url = loop_service.upload_loop_file(
+            file_content=content,
+            filename=safe_filename,
+            content_type=file.content_type or "audio/wav"
+        )
+        logger.info(f"File uploaded (no DB record): {unique_filename}")
+        return {"file_url": file_url}
     except Exception as e:
-        logger.exception("Failed to save file")
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
-    
-    file_url = f"/uploads/{unique_filename}"
-    return {"file_url": file_url}
+        logger.exception("Failed to upload file")
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
 
 @router.post("/loops", response_model=LoopResponse, status_code=201)
 def create_loop(loop_in: LoopCreate, db: Session = Depends(get_db)):
-    """Create a new loop record."""
+    """Create a new loop record.
+    
+    Args:
+        loop_in: Loop creation data
+        db: Database session
+        
+    Returns:
+        Created loop record
+        
+    Raises:
+        HTTPException: If creation fails
+    """
     try:
-        loop = Loop(**loop_in.model_dump())
-        db.add(loop)
-        db.commit()
-        db.refresh(loop)
+        loop = loop_service.create_loop(db, loop_in)
         return loop
     except Exception as e:
-        db.rollback()
-        traceback.print_exc()
         logger.exception("Failed to create loop")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -160,13 +160,23 @@ async def create_loop_with_upload(
     db: Session = Depends(get_db),
 ):
     """Create a loop with file upload.
+    
+    Args:
+        loop_in: JSON-encoded string containing loop metadata
+        file: Audio file (WAV or MP3)
+        db: Database session
 
     **loop_in** must be a JSON-encoded string containing the loop metadata, for example:
-
         {"name": "My Loop", "tempo": 140, "key": "C", "genre": "Trap"}
 
     This design is required because the endpoint uses multipart/form-data to accept
     both the file and the metadata in a single request.
+    
+    Returns:
+        Created loop record with analysis data if successful
+        
+    Raises:
+        HTTPException: If JSON invalid, file type invalid, or creation fails
     """
     # Parse the JSON string into a LoopCreate schema
     try:
@@ -181,51 +191,58 @@ async def create_loop_with_upload(
             status_code=422,
             detail=f"loop_in must be a valid JSON string: {exc}",
         )
-    # Validate MIME type
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid file type. Only WAV and MP3 files are allowed. Received: {file.content_type}"
-        )
     
-    # Create uploads directory if it doesn't exist
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    # Read file content
+    content = await file.read()
     
-    # Get the appropriate file extension based on MIME type
-    file_extension = MIME_TO_EXTENSION.get(file.content_type, ".wav")
+    # Sanitize filename
+    safe_filename = loop_service.sanitize_filename(file.filename or "audio.wav")
     
-    # Generate unique filename with UUID
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    # Validate file
+    is_valid, error_msg = loop_service.validate_audio_file(
+        filename=safe_filename,
+        content_type=file.content_type or "audio/wav",
+        file_size=len(content)
+    )
+    
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
     
     try:
-        # Save the file
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        # Upload using service
+        unique_filename, file_url = loop_service.upload_loop_file(
+            file_content=content,
+            filename=safe_filename,
+            content_type=file.content_type or "audio/wav"
+        )
     except Exception as e:
-        logger.exception("Failed to save file")
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        logger.exception("Failed to upload file")
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
     
-    # Run audio analysis
-    logger.info(f"Running audio analysis for uploaded file: {file_path}")
+    # Get local file path for analysis (works in local mode, None in S3 mode)
+    file_path = storage_service.get_file_path(unique_filename)
+    
+    # Run audio analysis if file is local
+    logger.info(f"Running audio analysis for uploaded file: {unique_filename}")
     analysis_result = None
-    try:
-        analysis_result = AudioAnalyzer.analyze_audio(file_path)
-        logger.info(
-            f"Analysis complete - BPM: {analysis_result['bpm']}, "
-            f"Key: {analysis_result['musical_key']}, "
-            f"Duration: {analysis_result['duration_seconds']:.2f}s"
-        )
-    except Exception as e:
-        logger.warning(
-            f"Audio analysis failed: {str(e)}. Proceeding with loop creation "
-            "without analysis data."
-        )
-        # Continue without analysis - don't fail the entire upload
+    if file_path:
+        # File is stored locally, we can analyze it
+        try:
+            analysis_result = AudioAnalyzer.analyze_audio(str(file_path))
+            logger.info(
+                f"Analysis complete - BPM: {analysis_result['bpm']}, "
+                f"Key: {analysis_result['musical_key']}, "
+                f"Duration: {analysis_result['duration_seconds']:.2f}s"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Audio analysis failed: {str(e)}. Proceeding with loop creation "
+                "without analysis data."
+            )
+    else:
+        logger.info("File stored in S3, skipping immediate analysis (use analyze endpoint instead)")
 
     # Create loop with file info and analysis data
-    file_url = f"/uploads/{unique_filename}"
     try:
         loop_data_dict = loop_data.model_dump(exclude={"file_url"})
         
@@ -254,14 +271,51 @@ async def create_loop_with_upload(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
-@router.get("/loops", response_model=list[LoopResponse])
-def list_loops(db: Session = Depends(get_db)):
-    return db.query(Loop).all()
+@router.get("/loops", response_model=List[LoopResponse])
+def list_loops(
+    status: Optional[str] = Query(None, description="Filter by status: pending, processing, complete, failed"),
+    genre: Optional[str] = Query(None, description="Filter by genre"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    db: Session = Depends(get_db)
+):
+    """List all loops with optional filters and pagination.
+    
+    Args:
+        status: Optional status filter
+        genre: Optional genre filter
+        limit: Maximum results (1-1000)
+        offset: Pagination offset
+        db: Database session
+        
+    Returns:
+        List of loop records
+    """
+    loops = loop_service.list_loops(
+        db=db,
+        status=status,
+        genre=genre,
+        limit=limit,
+        offset=offset
+    )
+    return loops
 
 
 @router.get("/loops/{loop_id}", response_model=LoopResponse)
 def get_loop(loop_id: int, db: Session = Depends(get_db)):
-    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+    """Get a single loop by ID.
+    
+    Args:
+        loop_id: Loop ID
+        db: Database session
+        
+    Returns:
+        Loop record with all fields including status, processed_file_url, analysis_json
+        
+    Raises:
+        HTTPException: If loop not found
+    """
+    loop = loop_service.get_loop(db, loop_id)
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
     return loop
@@ -269,7 +323,19 @@ def get_loop(loop_id: int, db: Session = Depends(get_db)):
 
 @router.put("/loops/{loop_id}", response_model=LoopResponse, status_code=200)
 def replace_loop(loop_id: int, loop_in: LoopCreate, db: Session = Depends(get_db)):
-    """Fully replace a loop record (all optional fields not provided are set to null)."""
+    """Fully replace a loop record (all optional fields not provided are set to null).
+    
+    Args:
+        loop_id: Loop ID to replace
+        loop_in: New loop data
+        db: Database session
+        
+    Returns:
+        Updated loop record
+        
+    Raises:
+        HTTPException: If loop not found or update fails
+    """
     loop = db.query(Loop).filter(Loop.id == loop_id).first()
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
@@ -291,37 +357,57 @@ def replace_loop(loop_id: int, loop_in: LoopCreate, db: Session = Depends(get_db
 
 @router.patch("/loops/{loop_id}", response_model=LoopResponse, status_code=200)
 def update_loop(loop_id: int, loop_in: LoopUpdate, db: Session = Depends(get_db)):
-    """Update a loop with only the provided fields."""
-    loop = db.query(Loop).filter(Loop.id == loop_id).first()
-    if loop is None:
-        raise HTTPException(status_code=404, detail="Loop not found")
-
-    update_data = loop_in.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(loop, field, value)
-
+    """Update a loop with only the provided fields.
+    
+    Args:
+        loop_id: Loop ID to update
+        loop_in: Partial update data
+        db: Database session
+        
+    Returns:
+        Updated loop record
+        
+    Raises:
+        HTTPException: If loop not found or update fails
+    """
     try:
-        db.commit()
-        db.refresh(loop)
+        loop = loop_service.update_loop(db, loop_id, loop_in)
+        if loop is None:
+            raise HTTPException(status_code=404, detail="Loop not found")
         return loop
+    except HTTPException:
+        raise
     except Exception as e:
-        db.rollback()
         logger.exception("Failed to update loop")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @router.delete("/loops/{loop_id}", status_code=200)
-def delete_loop(loop_id: int, db: Session = Depends(get_db)):
-    """Delete a loop by id."""
-    loop = db.query(Loop).filter(Loop.id == loop_id).first()
-    if loop is None:
-        raise HTTPException(status_code=404, detail="Loop not found")
-
+def delete_loop(
+    loop_id: int,
+    delete_file: bool = Query(True, description="Also delete the audio file"),
+    db: Session = Depends(get_db)
+):
+    """Delete a loop by id.
+    
+    Args:
+        loop_id: Loop ID to delete
+        delete_file: Whether to also delete the associated file
+        db: Database session
+        
+    Returns:
+        Confirmation with deleted flag and ID
+        
+    Raises:
+        HTTPException: If loop not found or deletion fails
+    """
     try:
-        db.delete(loop)
-        db.commit()
+        deleted = loop_service.delete_loop(db, loop_id, delete_file=delete_file)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Loop not found")
         return {"deleted": True, "id": loop_id}
+    except HTTPException:
+        raise
     except Exception as e:
-        db.rollback()
         logger.exception("Failed to delete loop")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
