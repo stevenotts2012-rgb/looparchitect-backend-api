@@ -13,6 +13,7 @@ from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 from app.services.analyzer import AudioAnalyzer
 from app.services.storage import storage
 from app.services.loop_service import loop_service
+from app.services.loop_analyzer import loop_analyzer
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -63,12 +64,32 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
     
-    # Create Loop database record
+    # Analyze audio from S3
+    analysis_result = {
+        'bpm': None,
+        'key': None,
+        'duration': None,
+        'bars': None
+    }
+    
+    try:
+        logger.info(f"Starting audio analysis for file_key: {file_key}")
+        analysis_result = await loop_analyzer.analyze_from_s3(file_key)
+        logger.info(f"Analysis complete: BPM={analysis_result.get('bpm')}, Key={analysis_result.get('key')}, Bars={analysis_result.get('bars')}, Duration={analysis_result.get('duration')}")
+    except Exception as e:
+        logger.warning(f"Audio analysis failed (non-fatal): {e}")
+        logger.info("Loop will be created with null analysis fields")
+    
+    # Create Loop database record with analysis results
     try:
         new_loop = Loop(
             name=safe_filename,
             filename=safe_filename,
-            file_key=file_key  # Store S3 key
+            file_key=file_key,  # Store S3 key
+            bpm=analysis_result.get('bpm'),
+            musical_key=analysis_result.get('key'),
+            duration_seconds=analysis_result.get('duration'),
+            bars=analysis_result.get('bars')
         )
         db.add(new_loop)
         db.commit()
@@ -229,19 +250,37 @@ async def create_loop_with_upload(
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
     
-    # Audio analysis is skipped for S3 uploads - use /analyze-loop endpoint instead
-    logger.info(f"File uploaded with key: {file_key}")
-    logger.info("Note: For S3 storage, use POST /analyze-loop/{id} endpoint for audio analysis")
+    # Analyze audio from S3
+    analysis_result = {
+        'bpm': None,
+        'key': None,
+        'duration': None,
+        'bars': None
+    }
+    
+    try:
+        logger.info(f"Starting audio analysis for file_key: {file_key}")
+        analysis_result = await loop_analyzer.analyze_from_s3(file_key)
+        logger.info(f"Analysis complete: BPM={analysis_result.get('bpm')}, Key={analysis_result.get('key')}, Bars={analysis_result.get('bars')}, Duration={analysis_result.get('duration')}")
+    except Exception as e:
+        logger.warning(f"Audio analysis failed (non-fatal): {e}")
+        logger.info("Loop will be created with null analysis fields")
 
-    # Create loop with file key
+    # Create loop with file key and analysis results
     try:
         loop_data_dict = loop_data.model_dump(exclude={"file_url"})
         
-        loop = Loop(
-            **loop_data_dict,
-            file_key=file_key,
-            filename=safe_filename
-        )
+        # Merge analysis results into loop data
+        loop_data_dict.update({
+            'file_key': file_key,
+            'filename': safe_filename,
+            'bpm': analysis_result.get('bpm'),
+            'musical_key': analysis_result.get('key'),  # Use musical_key field
+            'duration_seconds': analysis_result.get('duration'),
+            'bars': analysis_result.get('bars')
+        })
+        
+        loop = Loop(**loop_data_dict)
         db.add(loop)
         db.commit()
         db.refresh(loop)
