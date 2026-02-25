@@ -122,9 +122,9 @@ class TestArrangementGeneration:
         assert "Intro" in names
         # Should have outro (always last)
         assert names[-1] == "Outro"
-        # Should have verses and choruses
+        # Should have verses, hooks, and potentially bridges
         assert "Verse" in names
-        assert "Chorus" in names
+        assert "Hook" in names
 
     def test_generate_arrangement_intro_bars(self):
         """Test intro is always 4 bars."""
@@ -174,18 +174,16 @@ class TestArrangementGeneration:
         assert len(sections) >= 4  # Intro + repeats + outro
 
     def test_generate_arrangement_verse_chorus_pattern(self):
-        """Test that middle sections alternate verse/chorus."""
+        """Test that middle sections contain verse/hook/bridge pattern."""
         sections, _ = generate_arrangement(64, 140)
         
         # Skip intro and outro
         middle = sections[1:-1]
         
-        # Check for verse/chorus alternation
-        for i in range(0, len(middle) - 1, 2):
-            if i + 1 < len(middle):
-                # Typically verse followed by chorus (may have variations)
-                assert middle[i]["name"] in ["Verse", "Chorus"]
-                assert middle[i + 1]["name"] in ["Verse", "Chorus"]
+        # Check that middle sections are valid types
+        valid_section_types = ["Verse", "Hook", "Bridge"]
+        for section in middle:
+            assert section["name"] in valid_section_types, f"Invalid section type: {section['name']}"
 
     def test_generate_arrangement_bar_sums(self):
         """Test that section bar sums equal total bars."""

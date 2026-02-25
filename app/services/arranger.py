@@ -77,7 +77,7 @@ def create_default_arrangement() -> List[Dict]:
     sections = [
         {"name": "Intro", "bars": 4},
         {"name": "Verse", "bars": 8},
-        {"name": "Chorus", "bars": 8},
+        {"name": "Hook", "bars": 8},
         {"name": "Bridge", "bars": 8},
         {"name": "Chorus", "bars": 8},
         {"name": "Outro", "bars": 4},
@@ -92,13 +92,13 @@ def generate_arrangement(
 
     Structure:
     1. Intro (4 bars) - sets up the groove
-    2. Repeating Verse/Chorus cycle:
+    2. Repeating Verse/Hook cycle:
        - Verse (8 bars)
-       - Chorus/Hook (8 bars)
-    3. Optional Bridge (if space allows)
+       - Hook (8 bars)
+    3. Bridge (8 bars) - appears after every 2 Verse/Hook cycles
     4. Outro (4 bars) - always ends the arrangement
 
-    The function fills the middle with verse/chorus cycles,
+    The function fills the middle with verse/hook/bridge cycles,
     then trims the last section to fit exactly.
 
     Args:
@@ -114,7 +114,7 @@ def generate_arrangement(
         >>> total
         56
         >>> len(sections)
-        5
+        7
         >>> sections[0]
         {'name': 'Intro', 'bars': 4, 'start_bar': 0, 'end_bar': 3}
     """
@@ -141,61 +141,19 @@ def generate_arrangement(
     )
     current_bar += intro_bars
 
-    # --- Middle: Repeating Verse + Chorus pattern ---
+    # --- Middle: Repeating Verse + Hook pattern with Bridge ---
     # Reserve 4 bars for outro
     remaining_bars = target_bars - current_bar - 4
 
-    # Pattern: Verse (8) + Chorus (8) = 16 bars per cycle
-    pattern_bars = 16
-    full_cycles = remaining_bars // pattern_bars
-    remainder_bars = remaining_bars % pattern_bars
+    # Build sections dynamically: Verse → Hook → Verse → Hook → Bridge → repeat
+    # Pattern: 2x(Verse+Hook) + Bridge = 2x(8+8) + 8 = 40 bars per super-cycle
+    verse_hook_cycle = 0  # Track how many Verse-Hook pairs we've added
+    
+    logger.debug(f"Middle section: {remaining_bars} bars available")
 
-    logger.debug(
-        f"Middle section: {remaining_bars} bars"
-        f" = {full_cycles} full cycles + {remainder_bars} remainder"
-    )
-
-    # Add full cycles
-    for cycle in range(full_cycles):
-        # Verse
-        verse_bars = 8
-        sections.append(
-            {
-                "name": "Verse",
-                "bars": verse_bars,
-                "start_bar": current_bar,
-                "end_bar": current_bar + verse_bars - 1,
-            }
-        )
-        current_bar += verse_bars
-
-        # Chorus
-        chorus_bars = 8
-        sections.append(
-            {
-                "name": "Chorus",
-                "bars": chorus_bars,
-                "start_bar": current_bar,
-                "end_bar": current_bar + chorus_bars - 1,
-            }
-        )
-        current_bar += chorus_bars
-
-    # Handle remainder bars
-    if remainder_bars > 0:
-        if remainder_bars <= 8:
-            # Add as extended verse
-            sections.append(
-                {
-                    "name": "Verse",
-                    "bars": remainder_bars,
-                    "start_bar": current_bar,
-                    "end_bar": current_bar + remainder_bars - 1,
-                }
-            )
-            current_bar += remainder_bars
-        else:
-            # Add verse (8) + partial chorus
+    while remaining_bars > 0:
+        # Add Verse (8 bars) if space available
+        if remaining_bars >= 8:
             sections.append(
                 {
                     "name": "Verse",
@@ -205,17 +163,60 @@ def generate_arrangement(
                 }
             )
             current_bar += 8
-
-            chorus_remainder = remainder_bars - 8
+            remaining_bars -= 8
+        elif remaining_bars > 0:
+            # Partial verse to fill remaining
             sections.append(
                 {
-                    "name": "Chorus",
-                    "bars": chorus_remainder,
+                    "name": "Verse",
+                    "bars": remaining_bars,
                     "start_bar": current_bar,
-                    "end_bar": current_bar + chorus_remainder - 1,
+                    "end_bar": current_bar + remaining_bars - 1,
                 }
             )
-            current_bar += chorus_remainder
+            current_bar += remaining_bars
+            remaining_bars = 0
+            break
+
+        # Add Hook (8 bars) if space available
+        if remaining_bars >= 8:
+            sections.append(
+                {
+                    "name": "Hook",
+                    "bars": 8,
+                    "start_bar": current_bar,
+                    "end_bar": current_bar + 7,
+                }
+            )
+            current_bar += 8
+            remaining_bars -= 8
+            verse_hook_cycle += 1
+        elif remaining_bars > 0:
+            # Partial hook to fill remaining
+            sections.append(
+                {
+                    "name": "Hook",
+                    "bars": remaining_bars,
+                    "start_bar": current_bar,
+                    "end_bar": current_bar + remaining_bars - 1,
+                }
+            )
+            current_bar += remaining_bars
+            remaining_bars = 0
+            break
+
+        # Add Bridge every 2 Verse-Hook cycles (if space available)
+        if verse_hook_cycle % 2 == 0 and remaining_bars >= 8:
+            sections.append(
+                {
+                    "name": "Bridge",
+                    "bars": 8,
+                    "start_bar": current_bar,
+                    "end_bar": current_bar + 7,
+                }
+            )
+            current_bar += 8
+            remaining_bars -= 8
 
     # --- Outro (4 bars) ---
     outro_bars = 4

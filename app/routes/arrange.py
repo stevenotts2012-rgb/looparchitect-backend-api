@@ -58,7 +58,7 @@ async def arrange_loop(
 
     **Arrangement Structure:**
     - Intro: 4 bars (intro section)
-    - Body: Repeating Verse (8 bars) + Chorus (8 bars)
+    - Body: Repeating Verse (8 bars) + Hook (8 bars), with Bridge (8 bars) every 2 cycles
     - Outro: 4 bars (always ends the arrangement)
 
     The arrangement is built to fill exactly the target duration,
