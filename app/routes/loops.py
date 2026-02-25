@@ -11,7 +11,7 @@ from app.db import get_db
 from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 from app.services.analyzer import AudioAnalyzer
-from app.services.storage_service import storage_service
+from app.services.storage import storage
 from app.services.loop_service import loop_service
 
 router = APIRouter()
@@ -20,14 +20,14 @@ logger = logging.getLogger(__name__)
 
 @router.post("/loops/upload", status_code=201)
 async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Upload a WAV or MP3 audio file.
+    """Upload a WAV or MP3 audio file to S3.
     
     Args:
         file: Audio file (WAV or MP3)
         db: Database session
         
     Returns:
-        dict: Contains loop_id and file_url
+        dict: Contains loop_id, play_url, and download_url
         
     Raises:
         HTTPException: If file type invalid or upload fails
@@ -53,8 +53,8 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail=error_msg)
     
     try:
-        # Upload file using service
-        unique_filename, file_url = loop_service.upload_loop_file(
+        # Upload file using service (returns file_key like "uploads/uuid.wav")
+        file_key, _ = loop_service.upload_loop_file(
             file_content=content,
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
@@ -65,12 +65,22 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
     
     # Create Loop database record
     try:
-        new_loop = Loop(name=safe_filename, file_url=file_url, filename=unique_filename)
+        new_loop = Loop(
+            name=safe_filename,
+            filename=safe_filename,
+            file_key=file_key  # Store S3 key
+        )
         db.add(new_loop)
         db.commit()
         db.refresh(new_loop)
-        logger.info(f"Loop uploaded: {new_loop.id} - {safe_filename}")
-        return {"loop_id": new_loop.id, "file_url": new_loop.file_url}
+        logger.info(f"Loop uploaded: {new_loop.id} - {file_key}")
+        
+        # Return endpoints instead of direct file URLs
+        return {
+            "loop_id": new_loop.id,
+            "play_url": f"/api/v1/loops/{new_loop.id}/play",
+            "download_url": f"/api/v1/loops/{new_loop.id}/download"
+        }
     except Exception as e:
         db.rollback()
         logger.exception("Failed to save loop record")
@@ -79,13 +89,13 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
 
 @router.post("/upload", status_code=201)
 async def upload_file(file: UploadFile = File(...)):
-    """Upload a WAV or MP3 audio file. Returns file URL only, no database record.
+    """Upload a WAV or MP3 audio file to S3. Returns file key only, no database record.
     
     Args:
         file: Audio file (WAV or MP3)
         
     Returns:
-        dict: Contains file_url
+        dict: Contains file_key (S3 key like "uploads/uuid.wav")
         
     Raises:
         HTTPException: If file type invalid, too large, or upload fails
@@ -113,13 +123,13 @@ async def upload_file(file: UploadFile = File(...)):
     
     try:
         # Upload using service
-        unique_filename, file_url = loop_service.upload_loop_file(
+        file_key, _ = loop_service.upload_loop_file(
             file_content=content,
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
         )
-        logger.info(f"File uploaded (no DB record): {unique_filename}")
-        return {"file_url": file_url}
+        logger.info(f"File uploaded (no DB record): {file_key}")
+        return {"file_key": file_key}
     except Exception as e:
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
@@ -209,8 +219,8 @@ async def create_loop_with_upload(
         raise HTTPException(status_code=400, detail=error_msg)
     
     try:
-        # Upload using service
-        unique_filename, file_url = loop_service.upload_loop_file(
+        # Upload using service (returns file_key like "uploads/uuid.wav")
+        file_key, _ = loop_service.upload_loop_file(
             file_content=content,
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
@@ -219,46 +229,18 @@ async def create_loop_with_upload(
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
     
-    # Get local file path for analysis (works in local mode, None in S3 mode)
-    file_path = storage_service.get_file_path(unique_filename)
-    
-    # Run audio analysis if file is local
-    logger.info(f"Running audio analysis for uploaded file: {unique_filename}")
-    analysis_result = None
-    if file_path:
-        # File is stored locally, we can analyze it
-        try:
-            analysis_result = AudioAnalyzer.analyze_audio(str(file_path))
-            logger.info(
-                f"Analysis complete - BPM: {analysis_result['bpm']}, "
-                f"Key: {analysis_result['musical_key']}, "
-                f"Duration: {analysis_result['duration_seconds']:.2f}s"
-            )
-        except Exception as e:
-            logger.warning(
-                f"Audio analysis failed: {str(e)}. Proceeding with loop creation "
-                "without analysis data."
-            )
-    else:
-        logger.info("File stored in S3, skipping immediate analysis (use analyze endpoint instead)")
+    # Audio analysis is skipped for S3 uploads - use /analyze-loop endpoint instead
+    logger.info(f"File uploaded with key: {file_key}")
+    logger.info("Note: For S3 storage, use POST /analyze-loop/{id} endpoint for audio analysis")
 
-    # Create loop with file info and analysis data
+    # Create loop with file key
     try:
         loop_data_dict = loop_data.model_dump(exclude={"file_url"})
         
-        # Add analysis results to loop if available
-        if analysis_result:
-            loop_data_dict["bpm"] = analysis_result["bpm"]
-            loop_data_dict["musical_key"] = analysis_result["musical_key"]
-            loop_data_dict["duration_seconds"] = analysis_result["duration_seconds"]
-            logger.info(
-                f"Loop enhanced with analysis: BPM={analysis_result['bpm']}, "
-                f"Key={analysis_result['musical_key']}"
-            )
-        
         loop = Loop(
             **loop_data_dict,
-            file_url=file_url
+            file_key=file_key,
+            filename=safe_filename
         )
         db.add(loop)
         db.commit()

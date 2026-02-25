@@ -18,6 +18,7 @@ class Loop(Base):
     # New fields added as part of Loop Library CRUD
     filename = Column(String, nullable=True)
     file_url = Column(String, nullable=True)
+    file_key = Column(String, nullable=True)  # S3 key (e.g., "uploads/uuid.wav")
     title = Column(String, nullable=True)
     bpm = Column(Integer, nullable=True)
     musical_key = Column(String, nullable=True)

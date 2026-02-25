@@ -12,6 +12,7 @@ class LoopCreate(BaseModel):
     name: str
     filename: Optional[str] = None
     file_url: Optional[str] = None
+    file_key: Optional[str] = None
     title: Optional[str] = None
     tempo: Optional[float] = None
     bpm: Optional[int] = None
@@ -27,6 +28,7 @@ class LoopUpdate(BaseModel):
     name: Optional[str] = None
     filename: Optional[str] = None
     file_url: Optional[str] = None
+    file_key: Optional[str] = None
     title: Optional[str] = None
     tempo: Optional[float] = None
     bpm: Optional[int] = None
@@ -46,6 +48,7 @@ class LoopResponse(BaseModel):
     name: str
     filename: Optional[str]
     file_url: Optional[str]
+    file_key: Optional[str]
     title: Optional[str]
     tempo: Optional[float]
     bpm: Optional[int]

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopUpdate
-from app.services.storage_service import storage_service
+from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
 
@@ -172,10 +172,10 @@ class LoopService:
         
         try:
             # Delete file if requested
-            if delete_file and loop.file_url:
+            if delete_file and loop.file_key:
                 try:
-                    storage_service.delete_file(loop.file_url)
-                    logger.info(f"Deleted file for loop {loop_id}: {loop.file_url}")
+                    storage.delete_file(loop.file_key)
+                    logger.info(f"Deleted file for loop {loop_id}: {loop.file_key}")
                 except Exception as e:
                     logger.error(f"Failed to delete file for loop {loop_id}: {e}")
                     # Continue with database deletion even if file deletion fails
@@ -197,7 +197,7 @@ class LoopService:
         content_type: str
     ) -> Tuple[str, str]:
         """
-        Upload a loop file to storage.
+        Upload a loop file to storage (S3 or local).
 
         Args:
             file_content: Raw file bytes
@@ -205,23 +205,27 @@ class LoopService:
             content_type: MIME type
 
         Returns:
-            Tuple of (unique_filename, file_url)
+            Tuple of (file_key, file_url)
+            - file_key: S3 key like "uploads/{uuid}.wav"
+            - file_url: Empty string (deprecated, use /play or /download endpoints)
 
         Raises:
             Exception: If upload fails
         """
-        # Generate unique filename preserving extension
+        # Generate unique S3 key with uploads/ prefix
         ext = Path(filename).suffix or ".wav"
-        unique_filename = f"{uuid.uuid4()}{ext}"
+        file_key = f"uploads/{uuid.uuid4()}{ext}"
         
         try:
-            file_url = storage_service.upload_file(
-                file_content=file_content,
-                filename=unique_filename,
+            # Upload to S3 or local storage
+            storage.upload_file(
+                file_bytes=file_content,
+                key=file_key,
                 content_type=content_type
             )
-            logger.info(f"File uploaded: {unique_filename}")
-            return unique_filename, file_url
+            logger.info(f"File uploaded with key: {file_key}")
+            # Return empty file_url - clients should use /play or /download endpoints
+            return file_key, ""
         except Exception as e:
             logger.error(f"Failed to upload file: {e}")
             raise
