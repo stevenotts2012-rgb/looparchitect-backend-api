@@ -193,8 +193,40 @@ class AudioArrangementGenerateResponse(BaseModel):
 
     arrangement_id: int = Field(..., description="ID of created arrangement")
     loop_id: int = Field(..., description="ID of source loop")
-    status: str = Field(..., description="Current status: queued, processing, complete, failed")
+    status: str = Field(..., description="Current status: queued, processing, done, failed")
     created_at: datetime = Field(..., description="Timestamp of creation")
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================================================
+# Phase B: Async Arrangement Pipeline Schemas
+# ============================================================================
+
+class ArrangementCreateRequest(BaseModel):
+    """Request to create an arrangement generation job."""
+
+    loop_id: int = Field(..., ge=1, description="ID of the source loop")
+    target_duration_seconds: int = Field(
+        default=180,
+        ge=30,
+        le=3600,
+        description="Target duration in seconds (default 180)",
+    )
+
+
+class ArrangementResponse(BaseModel):
+    """Response schema for arrangement records."""
+
+    id: int
+    loop_id: int
+    status: str
+    error_message: Optional[str] = None
+    output_s3_key: Optional[str] = None
+    output_url: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True

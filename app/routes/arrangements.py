@@ -5,7 +5,6 @@ Handles creation, status tracking, and downloads of generated audio arrangements
 """
 
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -16,13 +15,66 @@ from app.models.loop import Loop
 from app.schemas.arrangement import (
     AudioArrangementGenerateRequest,
     AudioArrangementGenerateResponse,
-    AudioArrangementResponse,
+    ArrangementCreateRequest,
+    ArrangementResponse,
 )
 from app.services.arrangement_jobs import run_arrangement_job
+from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.post(
+    "/",
+    response_model=ArrangementResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Create an arrangement job",
+    description="Create an arrangement job and process it asynchronously.",
+)
+def create_arrangement(
+    request: ArrangementCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Create an arrangement job and enqueue background processing."""
+    loop = db.query(Loop).filter(Loop.id == request.loop_id).first()
+    if not loop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Loop with ID {request.loop_id} not found",
+        )
+
+    arrangement = Arrangement(
+        loop_id=request.loop_id,
+        status="queued",
+        target_seconds=request.target_duration_seconds,
+    )
+    db.add(arrangement)
+    db.commit()
+    db.refresh(arrangement)
+
+    background_tasks.add_task(run_arrangement_job, arrangement.id)
+    return ArrangementResponse.from_orm(arrangement)
+
+
+@router.get(
+    "/",
+    response_model=list[ArrangementResponse],
+    summary="List arrangements",
+    description="List arrangements with optional loop_id filter.",
+)
+def list_arrangements(
+    loop_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """List arrangements with optional filtering by loop_id."""
+    query = db.query(Arrangement)
+    if loop_id is not None:
+        query = query.filter(Arrangement.loop_id == loop_id)
+    arrangements = query.order_by(Arrangement.created_at.desc()).all()
+    return [ArrangementResponse.from_orm(item) for item in arrangements]
 
 
 @router.post(
@@ -84,7 +136,7 @@ def generate_arrangement(
 
 @router.get(
     "/{arrangement_id}",
-    response_model=AudioArrangementResponse,
+    response_model=ArrangementResponse,
     summary="Get arrangement status",
     description="Get the current status and details of an arrangement generation job.",
 )
@@ -96,7 +148,7 @@ def get_arrangement(
     Get status and details of an arrangement.
 
     Returns the arrangement record including:
-    - Current status (queued/processing/complete/failed)
+    - Current status (queued/processing/done/failed)
     - Download URL (if complete)
     - Error message (if failed)
     """
@@ -112,7 +164,7 @@ def get_arrangement(
             detail=f"Arrangement with ID {arrangement_id} not found",
         )
 
-    return AudioArrangementResponse.from_orm(arrangement)
+    return ArrangementResponse.from_orm(arrangement)
 
 
 @router.get(
@@ -129,7 +181,7 @@ def download_arrangement(
 
     Returns 409 Conflict if the arrangement is still being processed.
     Returns 404 if the arrangement doesn't exist.
-    Returns 200 with audio/wav if complete.
+    Returns 307 redirect if done.
     """
     arrangement = (
         db.query(Arrangement)
@@ -149,38 +201,34 @@ def download_arrangement(
             detail=f"Arrangement generation failed: {arrangement.error_message}",
         )
 
-    if arrangement.status != "complete":
+    if arrangement.status != "done":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Arrangement is still {arrangement.status}. Try again later.",
         )
 
-    # File should exist at output_file_url
-    if not arrangement.output_file_url:
+    if not arrangement.output_url and not arrangement.output_s3_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Arrangement is complete but output file is missing",
+            detail="Arrangement is complete but output URL is missing",
         )
 
-    # Resolve file path from URL
-    # output_file_url is like "/renders/arrangements/uuid.wav"
-    file_path = Path(arrangement.output_file_url.lstrip("/"))
+    # Redirect to presigned URL
+    if arrangement.output_url:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=arrangement.output_url)
 
-    # For local renders, construct full path assuming renders/ is relative to cwd
-    full_path = Path.cwd() / file_path
-
-    if not full_path.exists():
-        logger.error(f"Output file not found: {full_path}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Output file not found on disk",
+    # Generate URL on-demand if missing but key exists
+    if arrangement.output_s3_key:
+        download_url = storage.create_presigned_get_url(
+            arrangement.output_s3_key,
+            expires_seconds=3600,
+            download_filename=f"arrangement_{arrangement_id}.wav",
         )
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=download_url)
 
-    # Return file
-    from fastapi.responses import FileResponse
-
-    return FileResponse(
-        path=full_path,
-        media_type="audio/wav",
-        filename=f"arrangement_{arrangement_id}.wav",
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Arrangement output URL missing",
     )

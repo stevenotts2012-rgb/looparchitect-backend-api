@@ -7,13 +7,127 @@ Handles loading loops, applying effects, and generating full-length arrangements
 import json
 import logging
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List, Dict
 
 import numpy as np
 from pydub import AudioSegment
 from pydub.generators import Sine
 
 logger = logging.getLogger(__name__)
+
+
+def build_phase_b_sections(target_seconds: int, bpm: float) -> List[Dict[str, int]]:
+    """
+    Build a standard arrangement timeline using bar counts.
+
+    Structure (bars):
+    - Intro: 8
+    - Hook: 16
+    - Verse: 16
+    - Hook: 16
+    - Bridge: 8
+    - Hook: 16
+    - Outro: 8
+
+    If target duration doesn't match, the last section is trimmed to fit.
+    """
+    if bpm <= 0:
+        raise ValueError("BPM must be positive")
+    if target_seconds <= 0:
+        raise ValueError("target_seconds must be positive")
+
+    bar_duration_seconds = (60.0 / bpm) * 4.0
+    target_bars = max(4, int(round(target_seconds / bar_duration_seconds)))
+
+    sections_template = [
+        ("Intro", 8),
+        ("Hook", 16),
+        ("Verse", 16),
+        ("Hook", 16),
+        ("Bridge", 8),
+        ("Hook", 16),
+        ("Outro", 8),
+    ]
+
+    sections: List[Dict[str, int]] = []
+    current_bar = 0
+
+    for name, bars in sections_template:
+        if current_bar >= target_bars:
+            break
+
+        remaining = target_bars - current_bar
+        section_bars = bars if remaining >= bars else remaining
+        sections.append(
+            {
+                "name": name,
+                "bars": section_bars,
+                "start_bar": current_bar,
+                "end_bar": current_bar + section_bars - 1,
+            }
+        )
+        current_bar += section_bars
+
+    return sections
+
+
+def render_phase_b_arrangement(
+    loop_audio: AudioSegment,
+    bpm: float,
+    target_seconds: int,
+) -> Tuple[AudioSegment, str]:
+    """
+    Render the Phase B arrangement by repeating the loop per section.
+
+    Returns:
+        Tuple of (audio_segment, timeline_json)
+    """
+    sections = build_phase_b_sections(target_seconds, bpm)
+    bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
+
+    arranged = AudioSegment.silent(duration=0)
+    for section in sections:
+        section_ms = section["bars"] * bar_duration_ms
+        section_audio = _repeat_audio_to_duration(loop_audio, section_ms)
+        arranged += section_audio
+
+    timeline_json = _generate_phase_b_timeline_json(sections, bpm)
+    return arranged, timeline_json
+
+
+def _repeat_audio_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
+    """Repeat and trim audio to exactly target_ms."""
+    if target_ms <= 0:
+        return AudioSegment.silent(duration=0)
+
+    repeats = (target_ms // len(audio)) + 1
+    extended = audio * repeats
+    return extended[:target_ms]
+
+
+def _generate_phase_b_timeline_json(sections: List[Dict[str, int]], bpm: float) -> str:
+    """Generate JSON timeline for Phase B arrangement sections."""
+    bar_duration_seconds = (60.0 / bpm) * 4.0
+    timeline = {
+        "bpm": bpm,
+        "sections": [],
+    }
+
+    for section in sections:
+        start_seconds = section["start_bar"] * bar_duration_seconds
+        end_seconds = (section["end_bar"] + 1) * bar_duration_seconds
+        timeline["sections"].append(
+            {
+                "name": section["name"],
+                "bars": section["bars"],
+                "start_bar": section["start_bar"],
+                "end_bar": section["end_bar"],
+                "start_seconds": round(start_seconds, 3),
+                "end_seconds": round(end_seconds, 3),
+            }
+        )
+
+    return json.dumps(timeline)
 
 
 def generate_arrangement(

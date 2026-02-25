@@ -14,14 +14,16 @@ class Arrangement(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     loop_id = Column(Integer, ForeignKey("loops.id"), nullable=False, index=True)
-    status = Column(String, default="queued", nullable=False)  # queued, processing, complete, failed
+    status = Column(String, default="queued", nullable=False)  # queued, processing, done, failed
     target_seconds = Column(Integer, nullable=False)  # User-requested duration
     genre = Column(String, nullable=True)
     intensity = Column(String, nullable=True)
     include_stems = Column(Boolean, default=False)
     
     # Output paths
-    output_file_url = Column(String, nullable=True)  # Path to generated WAV
+    output_s3_key = Column(String, nullable=True)  # S3 key like "arrangements/{id}.wav"
+    output_url = Column(String, nullable=True)  # Presigned URL to download
+    output_file_url = Column(String, nullable=True)  # Legacy local path (deprecated)
     stems_zip_url = Column(String, nullable=True)  # Path to stems ZIP (if generated)
     
     # Metadata

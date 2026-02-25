@@ -2,6 +2,67 @@
 
 ## New Endpoints
 
+### Create Arrangement (Async)
+```http
+POST /api/v1/arrangements
+```
+
+**Description:** Create an arrangement job from a loop (async)  
+**Body:**
+```json
+{
+  "loop_id": 1,
+  "target_duration_seconds": 180
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/api/v1/arrangements \
+  -H "Content-Type: application/json" \
+  -d '{"loop_id":1,"target_duration_seconds":180}'
+```
+
+**Response:**
+```json
+{
+  "id": 12,
+  "loop_id": 1,
+  "status": "queued",
+  "output_url": null
+}
+```
+
+---
+
+### Get Arrangement
+```http
+GET /api/v1/arrangements/{id}
+```
+
+**Description:** Get arrangement job status and output URL (if done)
+
+**Example:**
+```bash
+curl http://localhost:8000/api/v1/arrangements/12
+```
+
+---
+
+### List Arrangements
+```http
+GET /api/v1/arrangements?loop_id={loop_id}
+```
+
+**Description:** List arrangements, optionally filtered by loop_id
+
+**Example:**
+```bash
+curl "http://localhost:8000/api/v1/arrangements?loop_id=1"
+```
+
+---
+
 ### Download Loop File
 ```http
 GET /api/v1/loops/{loop_id}/download
