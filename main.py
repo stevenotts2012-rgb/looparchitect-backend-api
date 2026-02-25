@@ -60,7 +60,11 @@ os.makedirs("uploads", exist_ok=True)
 os.makedirs("renders", exist_ok=True)
 
 # Mount static files directory for uploads
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+
+UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 # Note: /renders files are served via secure endpoint in render.py (GET /api/v1/renders/{filename})
 
