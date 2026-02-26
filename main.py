@@ -124,6 +124,22 @@ async def general_exception_handler(request: Request, exc: Exception):
         }
     )
 
+
+# Root health check endpoint
+@app.get("/health")
+async def root_health():
+    """
+    Simple root-level health check.
+    
+    Returns immediately without dependencies.
+    Used for load balancers and basic health monitoring.
+    
+    Returns:
+        {"ok": true}
+    """
+    return {"ok": True}
+
+
 # Create uploads and renders directories if they don't exist
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("renders", exist_ok=True)
