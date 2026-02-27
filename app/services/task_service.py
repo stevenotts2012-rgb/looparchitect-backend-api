@@ -9,8 +9,6 @@ Handles:
 
 import logging
 import traceback
-from typing import Callable, Dict, Optional
-from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

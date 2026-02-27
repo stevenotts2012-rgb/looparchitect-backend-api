@@ -8,11 +8,10 @@ TODO: Replace simulation with real audio processing (librosa, soundfile, pydub, 
 """
 
 import os
-import uuid
 import wave
 import struct
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 # Directory constants
 UPLOADS_DIR = "uploads"

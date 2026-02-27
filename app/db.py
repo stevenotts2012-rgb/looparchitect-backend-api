@@ -3,8 +3,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
 from app.models.test_model import Base
-from app.models.loop import Loop  # noqa: F401 – registers Loop with Base.metadata
-from app.models.arrangement import Arrangement  # noqa: F401 – registers Arrangement with Base.metadata
+from app.models.loop import Loop  # noqa: F401 - register Loop with Base.metadata
+from app.models.arrangement import Arrangement  # noqa: F401 - register Arrangement with Base.metadata
 
 # Get DATABASE_URL from settings (loaded from .env with default fallback)
 DATABASE_URL = settings.database_url

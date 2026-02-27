@@ -1,6 +1,5 @@
 import os
 import logging
-from typing import BinaryIO
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError

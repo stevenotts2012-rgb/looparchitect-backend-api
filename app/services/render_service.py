@@ -8,18 +8,14 @@ Handles audio analysis, slicing, arrangement generation, and stem rendering.
 import os
 import logging
 import asyncio
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import uuid
 
 import librosa
 import numpy as np
 from pydub import AudioSegment
 from pydub.effects import normalize
-from sqlalchemy.orm import Session
 
-from app.models.loop import Loop
-from app.db import SessionLocal
 
 logger = logging.getLogger(__name__)
 

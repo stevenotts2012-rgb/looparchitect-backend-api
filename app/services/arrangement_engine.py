@@ -11,7 +11,6 @@ from typing import Tuple, List, Dict
 
 import numpy as np
 from pydub import AudioSegment
-from pydub.generators import Sine
 
 logger = logging.getLogger(__name__)
 

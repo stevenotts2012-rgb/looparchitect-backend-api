@@ -1,7 +1,4 @@
-import os
-import uuid
 import logging
-import traceback
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, Query
 from pydantic import ValidationError
@@ -10,8 +7,6 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
-from app.services.analyzer import AudioAnalyzer
-from app.services.storage import storage
 from app.services.loop_service import loop_service
 from app.services.loop_analyzer import loop_analyzer
 

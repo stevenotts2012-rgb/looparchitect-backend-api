@@ -126,6 +126,24 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 
 # Root health check endpoint
+@app.get("/")
+async def root():
+    """
+    Root endpoint.
+    
+    Returns API status and basic information.
+    
+    Returns:
+        {"status": "ok", "message": "LoopArchitect API"}
+    """
+    return {
+        "status": "ok",
+        "message": "LoopArchitect API",
+        "version": settings.app_version,
+        "docs": "/docs"
+    }
+
+
 @app.get("/health")
 async def root_health():
     """

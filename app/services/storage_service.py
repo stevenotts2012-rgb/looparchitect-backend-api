@@ -9,8 +9,7 @@ Automatically detects environment and uses:
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Tuple
-from urllib.parse import quote
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

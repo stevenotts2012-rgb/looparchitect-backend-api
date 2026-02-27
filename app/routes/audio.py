@@ -10,10 +10,9 @@ Handles:
 
 import logging
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse, FileResponse, StreamingResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -186,19 +185,22 @@ async def stream_loop(
         )
 
 
-@router.get("/loops/{loop_id}")
-async def get_loop(
+@router.get("/loops/{loop_id}/info")
+async def get_loop_audio_info(
     loop_id: int,
     db: Session = Depends(get_db)
 ):
     """
-    Get loop metadata and status.
+    Get loop metadata and audio status.
+    
+    This endpoint is part of the audio router and provides
+    loop information in the context of audio operations.
 
     Args:
         loop_id: ID of the loop
 
     Returns:
-        Loop record with all fields
+        Loop record with all fields including audio status
 
     Raises:
         404: If loop not found

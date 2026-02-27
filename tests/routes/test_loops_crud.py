@@ -5,17 +5,13 @@ Tests POST, GET, PUT, PATCH, DELETE operations with S3 mocking.
 
 import io
 import json
-from unittest.mock import patch, MagicMock, Mock
-from datetime import datetime
+from unittest.mock import patch
 
 import pytest
-from fastapi import UploadFile
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from main import app
 from app.models.loop import Loop
-from app.schemas.loop import LoopCreate, LoopUpdate, LoopResponse
 from app.db import get_db
 
 

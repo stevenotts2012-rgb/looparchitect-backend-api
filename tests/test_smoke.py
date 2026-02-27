@@ -9,7 +9,6 @@ Run with:
 
 import io
 import json
-import struct
 import wave
 
 import pytest
@@ -17,7 +16,11 @@ from fastapi.testclient import TestClient
 
 from main import app
 
-client = TestClient(app)
+
+@pytest.fixture
+def client():
+    """Create a TestClient for the FastAPI app."""
+    return TestClient(app)
 
 
 # ---------------------------------------------------------------------------
@@ -43,13 +46,13 @@ WAV_BYTES = _make_wav_bytes()
 # Health checks
 # ---------------------------------------------------------------------------
 
-def test_health():
+def test_health(client):
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 
-def test_status():
+def test_status(client):
     response = client.get("/api/v1/status")
     assert response.status_code == 200
     data = response.json()
@@ -61,7 +64,7 @@ def test_status():
 # Loops CRUD
 # ---------------------------------------------------------------------------
 
-def test_create_loop():
+def test_create_loop(client):
     response = client.post(
         "/api/v1/loops",
         json={"name": "Smoke Test Loop", "tempo": 120.0, "key": "C", "genre": "Trap"},
@@ -72,13 +75,13 @@ def test_create_loop():
     assert data["id"] > 0
 
 
-def test_list_loops():
+def test_list_loops(client):
     response = client.get("/api/v1/loops")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
 
 
-def test_get_loop_not_found():
+def test_get_loop_not_found(client):
     response = client.get("/api/v1/loops/999999")
     assert response.status_code == 404
 
@@ -87,7 +90,7 @@ def test_get_loop_not_found():
 # File upload endpoints
 # ---------------------------------------------------------------------------
 
-def test_upload_audio():
+def test_upload_audio(client):
     response = client.post(
         "/api/v1/loops/upload",
         files={"file": ("test.wav", WAV_BYTES, "audio/wav")},
@@ -99,7 +102,7 @@ def test_upload_audio():
     assert data["file_url"].startswith("/uploads/")
 
 
-def test_upload_file_only():
+def test_upload_file_only(client):
     response = client.post(
         "/api/v1/upload",
         files={"file": ("test.wav", WAV_BYTES, "audio/wav")},
@@ -110,7 +113,7 @@ def test_upload_file_only():
     assert data["file_url"].startswith("/uploads/")
 
 
-def test_upload_invalid_mime():
+def test_upload_invalid_mime(client):
     response = client.post(
         "/api/v1/loops/upload",
         files={"file": ("test.txt", b"not audio", "text/plain")},
@@ -122,7 +125,7 @@ def test_upload_invalid_mime():
 # POST /api/v1/loops/with-file  (the primary bug fix)
 # ---------------------------------------------------------------------------
 
-def test_create_loop_with_file_success():
+def test_create_loop_with_file_success(client):
     loop_meta = json.dumps({"name": "WithFile Loop", "tempo": 140.0, "key": "Am", "genre": "Lofi"})
     response = client.post(
         "/api/v1/loops/with-file",
@@ -136,7 +139,7 @@ def test_create_loop_with_file_success():
     assert data["file_url"].startswith("/uploads/")
 
 
-def test_create_loop_with_file_invalid_json():
+def test_create_loop_with_file_invalid_json(client):
     """Malformed JSON in loop_in should return 422 with a clear message."""
     response = client.post(
         "/api/v1/loops/with-file",
@@ -146,7 +149,7 @@ def test_create_loop_with_file_invalid_json():
     assert response.status_code == 422, response.text
 
 
-def test_create_loop_with_file_missing_required_field():
+def test_create_loop_with_file_missing_required_field(client):
     """JSON that is valid but missing required 'name' field should return 422."""
     loop_meta = json.dumps({"tempo": 140.0})
     response = client.post(
@@ -157,7 +160,7 @@ def test_create_loop_with_file_missing_required_field():
     assert response.status_code == 422, response.text
 
 
-def test_create_loop_with_file_invalid_mime():
+def test_create_loop_with_file_invalid_mime(client):
     loop_meta = json.dumps({"name": "Bad MIME", "tempo": 100.0})
     response = client.post(
         "/api/v1/loops/with-file",
@@ -171,7 +174,7 @@ def test_create_loop_with_file_invalid_mime():
 # Arrange + Render pipeline
 # ---------------------------------------------------------------------------
 
-def _create_loop_with_file() -> int:
+def _create_loop_with_file(client) -> int:
     """Helper: create a loop with an uploaded file and return its id."""
     loop_meta = json.dumps({"name": "Pipeline Loop", "tempo": 120.0})
     resp = client.post(
@@ -183,8 +186,8 @@ def _create_loop_with_file() -> int:
     return resp.json()["id"]
 
 
-def test_arrange_loop():
-    loop_id = _create_loop_with_file()
+def test_arrange_loop(client):
+    loop_id = _create_loop_with_file(client)
     response = client.post(
         f"/api/v1/loops/{loop_id}/arrange",
         json={"genre": "Trap", "length_seconds": 30},
@@ -195,8 +198,8 @@ def test_arrange_loop():
     assert len(data["sections"]) > 0
 
 
-def test_arrange_endpoint():
-    loop_id = _create_loop_with_file()
+def test_arrange_endpoint(client):
+    loop_id = _create_loop_with_file(client)
     response = client.post(
         f"/api/v1/arrange/{loop_id}",
         json={"length_seconds": 30},
@@ -207,8 +210,8 @@ def test_arrange_endpoint():
     assert data["bars_total"] > 0
 
 
-def test_delete_loop():
-    loop_id = _create_loop_with_file()
+def test_delete_loop(client):
+    loop_id = _create_loop_with_file(client)
     response = client.delete(f"/api/v1/loops/{loop_id}")
     assert response.status_code == 200, response.text
     assert response.json()["deleted"] is True

@@ -6,10 +6,9 @@ production-ready with proper error handling and logging.
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Tuple
 import numpy as np
 import librosa
-import soundfile as sf
 
 logger = logging.getLogger(__name__)
 

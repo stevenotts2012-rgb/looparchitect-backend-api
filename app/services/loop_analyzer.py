@@ -14,12 +14,11 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 import boto3
 from botocore.exceptions import ClientError
 import librosa
 import numpy as np
-from pydub import AudioSegment
 import httpx
 
 from app.services.storage import storage

@@ -3,8 +3,7 @@ Tests for audio arrangement generation engine.
 """
 
 import json
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from pydub import AudioSegment

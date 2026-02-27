@@ -5,7 +5,7 @@ Uses moto for realistic S3 mocking without requiring real AWS credentials.
 
 import io
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from moto import mock_s3
 import boto3
 import pytest

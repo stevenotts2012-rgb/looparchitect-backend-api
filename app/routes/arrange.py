@@ -10,7 +10,6 @@ repeating verse/chorus patterns that fill the target exactly.
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
