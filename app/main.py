@@ -6,12 +6,12 @@ import logging
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.config import settings
 from app.db import init_db
-from app.middleware.cors import add_cors_middleware
 from app.middleware.logging import add_request_logging
 from app.routes import register_routers
 
@@ -21,6 +21,90 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _is_railway_environment() -> bool:
+    """Detect Railway runtime using Railway metadata or PORT availability."""
+    return bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("PORT"))
+
+
+def _normalize_origin(origin: str) -> str:
+    """Normalize origin values for consistent CORS/server configuration."""
+    return origin.strip().rstrip("/")
+
+
+def _to_absolute_url(value: str) -> str:
+    """Ensure URL has a scheme and no trailing slash."""
+    normalized = value.strip().rstrip("/")
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+    return f"https://{normalized}"
+
+
+def _get_public_base_url() -> str | None:
+    """Resolve the public deployment URL from common hosting environment variables."""
+    railway_public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if railway_public_domain:
+        return _to_absolute_url(railway_public_domain)
+
+    for env_var in (
+        "RAILWAY_PUBLIC_URL",
+        "RAILWAY_STATIC_URL",
+        "RENDER_EXTERNAL_URL",
+    ):
+        value = os.getenv(env_var)
+        if value:
+            return _to_absolute_url(value)
+
+    return None
+
+
+def _build_openapi_servers() -> list[dict[str, str]]:
+    """Build OpenAPI servers for production and local development."""
+    servers: list[dict[str, str]] = []
+    public_url = _get_public_base_url()
+    local_port = os.getenv("PORT", "8000")
+
+    if public_url:
+        servers.append(
+            {
+                "url": public_url,
+                "description": "Production (Railway)" if _is_railway_environment() else "Public",
+            }
+        )
+
+    servers.extend(
+        [
+            {"url": f"http://localhost:{local_port}", "description": "Local development"},
+            {"url": f"http://127.0.0.1:{local_port}", "description": "Local loopback"},
+        ]
+    )
+    return servers
+
+
+def _build_cors_origins() -> list[str]:
+    """Build CORS origins for production and local development safely."""
+    origins = {_normalize_origin(origin) for origin in settings.allowed_origins if origin}
+
+    public_url = _get_public_base_url()
+    if public_url:
+        origins.add(_normalize_origin(public_url))
+
+    local_port = os.getenv("PORT", "8000")
+    origins.update(
+        {
+            f"http://localhost:{local_port}",
+            f"http://127.0.0.1:{local_port}",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+        }
+    )
+
+    return sorted(origins)
 
 
 def run_migrations():
@@ -45,6 +129,8 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting LoopArchitect API...")
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Debug mode: {settings.debug}")
+    logger.info(f"Railway environment detected: {_is_railway_environment()}")
+    logger.info(f"Configured PORT: {os.getenv('PORT', '8000')}")
     
     # Run migrations on startup
     run_migrations()
@@ -61,11 +147,7 @@ async def lifespan(app: FastAPI):
 
 
 # Determine server list for OpenAPI docs
-_servers = []
-_render_url = os.getenv("RENDER_EXTERNAL_URL")
-if _render_url:
-    _servers.append({"url": _render_url, "description": "Production (Render)"})
-_servers.append({"url": "http://localhost:8000", "description": "Local development"})
+_servers = _build_openapi_servers()
 
 # Create FastAPI application
 app = FastAPI(
@@ -77,7 +159,15 @@ app = FastAPI(
 )
 
 # Add middleware
-add_cors_middleware(app)
+_cors_origins = _build_cors_origins()
+_allow_credentials = "*" not in _cors_origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 add_request_logging(app)
 
 
