@@ -2,10 +2,14 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
 .Python
+.eggs/
 
 # Virtual Environment
 .venv/
@@ -14,19 +18,31 @@ ENV/
 env/
 .env.local
 .env.*.local
+virtualenv/
 
-# IDE
+# Python version management tools
+.python-version
+.pyenv/
+.rye/
+.uv/
+
+# IDE & Editor
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+*.sublime-*
+.vim/
+.emacs.d/
 
 # Database
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 
 # Uploads and renders (runtime-generated files)
 uploads/
@@ -35,22 +51,53 @@ renders/
 # OS files
 .DS_Store
 Thumbs.db
+.AppleDouble
+.LSOverride
+ehthumbs.db
+Desktop.ini
 
 # Testing
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.tox/
+.mypy_cache/
+.hypothesis/
+
+# Type checking
+*.pyi
+.dmypy.json
+dmypy.json
 
 # Logs
 *.log
 logs/
+*.log.*.gz
 
 # Temporary files
 *.tmp
 *.temp
 .cache/
+.tmp/
+*.swp
+*~
 
-# Environment specific
+# Environment & secrets
 .env
+.env.local
+.env.*.local
 .env.production
 .env.development
+
+# Build artifacts
+.next/
+.nuxt/
+dist/
+
+# IDE database files
+.cache
+
+# Miscellaneous
+.dirlocals
+.projectlocals
