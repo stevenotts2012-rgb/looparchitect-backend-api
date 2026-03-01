@@ -17,6 +17,7 @@ from app.models.loop import Loop
 from app.services.arranger import create_arrangement
 from app.services.instrumental_renderer import render_and_export_instrumental
 from app.services.render_service import render_loop as render_loop_async
+from app.services.storage import storage
 
 UPLOADS_DIR = "uploads"
 RENDERS_DIR = "renders"
@@ -137,6 +138,23 @@ def _resolve_audio_file_path(file_url: str) -> Optional[Path]:
         raise HTTPException(status_code=400, detail=f"Audio file not found: {file_path}")
 
     return full_path
+
+
+def _get_loop_audio_source(loop: Loop) -> str:
+    """Resolve loop audio source with file_key as primary and file_url as fallback."""
+    if loop.file_key:
+        try:
+            return storage.create_presigned_get_url(
+                key=loop.file_key,
+                expires_seconds=3600,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to resolve audio from file_key for loop {loop.id}: {exc}")
+
+    if loop.file_url:
+        return loop.file_url
+
+    raise HTTPException(status_code=400, detail="Loop has no associated audio file")
 
 
 def _generate_sections(structure: str, length_seconds: int) -> List[Section]:
@@ -275,10 +293,11 @@ async def render_arrangement(
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
 
-    if not loop.file_url:
+    if not (loop.file_key or loop.file_url):
         raise HTTPException(status_code=400, detail="Loop has no associated audio file")
 
-    audio_path = _resolve_audio_file_path(loop.file_url)
+    audio_source = _get_loop_audio_source(loop)
+    audio_path = _resolve_audio_file_path(audio_source)
     
     # Handle remote URLs with simulation
     if audio_path is None:
@@ -367,11 +386,12 @@ def render_loop(
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
 
-    if not loop.file_url:
+    if not (loop.file_key or loop.file_url):
         raise HTTPException(status_code=400, detail="Loop has no associated audio file")
 
     # Load loop audio file
-    audio_path = _resolve_audio_file_path(loop.file_url)
+    audio_source = _get_loop_audio_source(loop)
+    audio_path = _resolve_audio_file_path(audio_source)
     
     # Handle remote URLs with simulation
     if audio_path is None:
@@ -534,7 +554,7 @@ def render_loop_simulated(
         raise HTTPException(status_code=404, detail="Loop not found")
 
     # Step 2: Validate that loop has an uploaded file
-    if not loop.file_url:
+    if not (loop.file_key or loop.file_url):
         raise HTTPException(status_code=400, detail="Loop has no associated audio file")
 
     # Step 3: Define arrangement (hardcoded for simulation)
@@ -548,10 +568,14 @@ def render_loop_simulated(
     target_length_seconds = 180
     
     # Step 6: Call the upgraded instrumental renderer service
+    audio_source = _get_loop_audio_source(loop)
+    audio_path = _resolve_audio_file_path(audio_source)
+    resolved_source = str(audio_path) if audio_path else audio_source
+
     try:
         result = render_and_export_instrumental(
             loop_id=loop_id,
-            file_path=loop.file_url,
+            file_path=resolved_source,
             arrangement=arrangement,
             bpm=bpm,
             target_length_seconds=target_length_seconds
@@ -607,16 +631,17 @@ async def render_with_pipeline(
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
 
-    if not loop.file_url:
+    if not (loop.file_key or loop.file_url):
         raise HTTPException(status_code=400, detail="Loop has no associated audio file")
 
     # Resolve audio file path
-    file_path_obj = _resolve_audio_file_path(loop.file_url)
+    audio_source = _get_loop_audio_source(loop)
+    file_path_obj = _resolve_audio_file_path(audio_source)
     if file_path_obj:
         file_path = str(file_path_obj)
     else:
         # For remote URLs, use the URL directly
-        file_path = loop.file_url
+        file_path = audio_source
 
     # Get target duration (default 180 seconds / 3 minutes)
     target_duration = request.length_seconds if request else 180
