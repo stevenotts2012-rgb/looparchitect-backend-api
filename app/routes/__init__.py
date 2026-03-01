@@ -17,6 +17,7 @@ ROUTE_CONFIG = {
     "loops": {"prefix": "/api/v1", "tags": ["loops"]},
     "audio": {"prefix": "/api/v1", "tags": ["audio"]},
     "render": {"prefix": "/api/v1", "tags": ["render"]},
+    "render_jobs": {"prefix": "/api/v1", "tags": ["jobs"]},
     "arrange": {"prefix": "/api/v1", "tags": ["arrange"]},
     "arrangements": {"prefix": "/api/v1/arrangements", "tags": ["arrangements"]},
 }

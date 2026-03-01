@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from pydub import AudioSegment
@@ -18,6 +18,8 @@ from app.services.arranger import create_arrangement
 from app.services.instrumental_renderer import render_and_export_instrumental
 from app.services.render_service import render_loop as render_loop_async
 from app.services.storage import storage
+from app.services.job_service import create_render_job, get_job_status, list_loop_jobs
+from app.schemas.job import RenderJobRequest, RenderJobResponse, RenderJobStatusResponse, RenderJobHistoryResponse
 
 UPLOADS_DIR = "uploads"
 RENDERS_DIR = "renders"
