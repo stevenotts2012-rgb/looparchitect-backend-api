@@ -1,4 +1,18 @@
 
+"""Async render job endpoints - Redis queue-based background processing."""
+
+from fastapi import APIRouter, Body, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.models.loop import Loop
+from app.queue import is_redis_available
+from app.routes.render import RenderConfig
+from app.schemas.job import RenderJobRequest, RenderJobResponse, RenderJobStatusResponse, RenderJobHistoryResponse
+from app.services.job_service import create_render_job, get_job_status, list_loop_jobs
+
+router = APIRouter()
+
 
 # ── Async Job Endpoints ───────────────────────────────────────────────────────────
 # New async render pipeline using Redis queue
@@ -13,6 +27,13 @@ async def render_arrangement_async(
     
     Returns immediately with job_id. Poll GET /api/v1/jobs/{job_id} for status.
     """
+    # Check Redis availability first
+    if not is_redis_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Background job queue is unavailable. Redis service may be offline."
+        )
+    
     loop = db.query(Loop).filter(Loop.id == loop_id).first()
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")

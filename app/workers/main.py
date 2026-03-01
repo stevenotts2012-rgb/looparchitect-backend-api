@@ -13,9 +13,15 @@ logger = logging.getLogger("app.workers.main")
 
 
 def _heartbeat_loop() -> None:
+    """Background heartbeat to show worker is alive (logs once per minute)."""
+    tick_count = 0
     while True:
-        logger.info("Worker heartbeat")
-        time.sleep(10)
+        time.sleep(10)  # Check every 10s
+        tick_count += 1
+        # Only log every 6th tick (once per minute)
+        if tick_count % 6 == 0:
+            logger.info("Worker heartbeat - alive and processing jobs")
+            tick_count = 0  # Reset to prevent overflow
 
 
 def _run_rq_worker() -> None:
