@@ -127,10 +127,15 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan (startup and shutdown)."""
     # Startup
     logger.info("🚀 Starting LoopArchitect API...")
-    logger.info(f"Environment: {settings.environment}")
-    logger.info(f"Debug mode: {settings.debug}")
-    logger.info(f"Railway environment detected: {_is_railway_environment()}")
-    logger.info(f"Configured PORT: {os.getenv('PORT', '8000')}")
+    settings.validate_startup()
+    logger.info(
+        "Startup configuration: environment=%s debug=%s storage_backend=%s railway=%s port=%s",
+        settings.environment,
+        settings.debug,
+        settings.storage_backend,
+        _is_railway_environment(),
+        os.getenv("PORT", "8000"),
+    )
     
     # Run migrations on startup
     run_migrations()

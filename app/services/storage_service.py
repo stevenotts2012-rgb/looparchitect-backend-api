@@ -28,17 +28,28 @@ class StorageService:
 
     def _should_use_s3(self) -> bool:
         """Determine if S3 should be used based on environment variables."""
+        backend = os.getenv("STORAGE_BACKEND", "local").strip().lower()
+        if backend == "local":
+            logger.info("📁 Using local file storage")
+            return False
+
+        if backend != "s3":
+            raise RuntimeError("Invalid STORAGE_BACKEND. Allowed values: local or s3")
+
         bucket = os.getenv("AWS_S3_BUCKET")
         access_key = os.getenv("AWS_ACCESS_KEY_ID")
         secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+        region = os.getenv("AWS_REGION")
         
         # Use S3 if all required variables are present
-        has_s3_config = all([bucket, access_key, secret_key])
+        has_s3_config = all([bucket, access_key, secret_key, region])
         
         if has_s3_config:
             logger.info("✅ AWS S3 storage configured")
         else:
-            logger.info("📁 Using local file storage")
+            raise RuntimeError(
+                "S3 backend selected but required variables are missing: AWS_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION"
+            )
         
         return has_s3_config
 
@@ -49,7 +60,7 @@ class StorageService:
             from botocore.config import Config
             
             self.bucket_name = os.getenv("AWS_S3_BUCKET")
-            self.region = os.getenv("AWS_REGION", "us-east-1")
+            self.region = os.getenv("AWS_REGION")
             
             # Create S3 client with signature version v4
             self.s3_client = boto3.client(

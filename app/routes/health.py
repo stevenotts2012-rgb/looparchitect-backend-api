@@ -6,124 +6,94 @@ Provides basic health check and detailed readiness check.
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException
+import boto3
+from botocore.exceptions import ClientError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
-from app.models.schemas import HealthResponse
-from app.services.storage_service import storage_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.get("/health", response_model=HealthResponse)
-async def health_check():
-    """
-    Basic health check.
+@router.get("/health/live")
+async def health_live():
+    """Liveness probe: process is running."""
+    return {"ok": True}
 
-    Returns 200 OK if service is running.
 
-    Returns:
-        Status message
-    """
-    return HealthResponse(status="ok", message="Service is healthy")
+@router.get("/health/ready")
+async def health_ready(db: Session = Depends(get_db)):
+    """Readiness probe: DB + Redis + optional S3 checks."""
+    db_ok = False
+    redis_ok = False
+    s3_ok = settings.storage_backend.lower() != "s3"
+
+    try:
+        db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        logger.exception("Readiness DB check failed")
+
+    try:
+        from app.queue import get_redis_conn
+        redis_conn = get_redis_conn()
+        redis_ok = bool(redis_conn.ping())
+    except Exception:
+        logger.exception("Readiness Redis check failed")
+
+    if settings.storage_backend.lower() == "s3":
+        try:
+            missing = []
+            if not settings.aws_access_key_id:
+                missing.append("AWS_ACCESS_KEY_ID")
+            if not settings.aws_secret_access_key:
+                missing.append("AWS_SECRET_ACCESS_KEY")
+            if not settings.aws_region:
+                missing.append("AWS_REGION")
+            if not settings.aws_s3_bucket:
+                missing.append("AWS_S3_BUCKET")
+
+            if missing:
+                s3_ok = False
+            else:
+                s3_client = boto3.client(
+                    "s3",
+                    aws_access_key_id=settings.aws_access_key_id,
+                    aws_secret_access_key=settings.aws_secret_access_key,
+                    region_name=settings.aws_region,
+                )
+                s3_client.head_bucket(Bucket=settings.aws_s3_bucket)
+                s3_ok = True
+        except ClientError:
+            logger.exception("Readiness S3 check failed")
+            s3_ok = False
+        except Exception:
+            logger.exception("Readiness S3 check failed")
+            s3_ok = False
+
+    payload = {
+        "ok": bool(db_ok and redis_ok and s3_ok),
+        "db_ok": db_ok,
+        "redis_ok": redis_ok,
+        "s3_ok": s3_ok,
+        "storage_backend": settings.storage_backend.lower(),
+    }
+
+    if not payload["ok"]:
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
+
+
+@router.get("/health")
+async def health_check_legacy():
+    """Backward-compatible health endpoint."""
+    return {"status": "ok", "message": "Service is healthy"}
 
 
 @router.get("/ready")
-async def readiness_check(db: Session = Depends(get_db)):
-    """
-    Detailed readiness check.
-
-    Checks:
-    - Database connectivity
-    - Storage accessibility
-
-    Returns:
-        Detailed system status
-
-    Raises:
-        503: If system is not ready
-    """
-    health_status = {
-        "status": "ready",
-        "checks": {}
-    }
-    
-    all_healthy = True
-    
-    # Check database
-    try:
-        db.execute(text("SELECT 1"))
-        health_status["checks"]["database"] = {
-            "status": "healthy",
-            "message": "Database connection OK"
-        }
-        logger.debug("Database check: OK")
-    except Exception as e:
-        all_healthy = False
-        health_status["checks"]["database"] = {
-            "status": "unhealthy",
-            "message": f"Database error: {str(e)}"
-        }
-        logger.error(f"Database check failed: {e}")
-    
-    # Check storage
-    try:
-        if storage_service.use_s3:
-            # For S3, check if we can list objects (minimal check)
-            try:
-                storage_service.s3_client.list_objects_v2(
-                    Bucket=storage_service.bucket_name,
-                    MaxKeys=1
-                )
-                health_status["checks"]["storage"] = {
-                    "status": "healthy",
-                    "type": "s3",
-                    "bucket": storage_service.bucket_name,
-                    "message": "S3 storage accessible"
-                }
-                logger.debug("S3 storage check: OK")
-            except Exception as e:
-                all_healthy = False
-                health_status["checks"]["storage"] = {
-                    "status": "unhealthy",
-                    "type": "s3",
-                    "message": f"S3 error: {str(e)}"
-                }
-                logger.error(f"S3 check failed: {e}")
-        else:
-            # For local storage, check if directory is writable
-            if storage_service.upload_dir.exists() and storage_service.upload_dir.is_dir():
-                health_status["checks"]["storage"] = {
-                    "status": "healthy",
-                    "type": "local",
-                    "path": str(storage_service.upload_dir),
-                    "message": "Local storage accessible"
-                }
-                logger.debug("Local storage check: OK")
-            else:
-                all_healthy = False
-                health_status["checks"]["storage"] = {
-                    "status": "unhealthy",
-                    "type": "local",
-                    "message": "Upload directory not accessible"
-                }
-                logger.error("Local storage check failed")
-    except Exception as e:
-        all_healthy = False
-        health_status["checks"]["storage"] = {
-            "status": "unhealthy",
-            "message": f"Storage check error: {str(e)}"
-        }
-        logger.error(f"Storage check failed: {e}")
-    
-    # Set overall status
-    if not all_healthy:
-        health_status["status"] = "degraded"
-        raise HTTPException(
-            status_code=503,
-            detail=health_status
-        )
-    
-    return health_status
+async def readiness_check_legacy(db: Session = Depends(get_db)):
+    """Backward-compatible readiness endpoint."""
+    return await health_ready(db)

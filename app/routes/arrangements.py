@@ -7,6 +7,7 @@ Handles creation, status tracking, and downloads of generated audio arrangements
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
@@ -15,6 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
+from app.config import settings
 from app.db import get_db
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
@@ -217,17 +219,65 @@ def download_arrangement(
     if not arrangement.output_s3_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Arrangement is complete but S3 object key is missing",
+            detail="Arrangement is complete but output file key is missing",
         )
 
-    # Validate and read required environment variables
+    storage_backend = settings.storage_backend.lower()
+    output_key_filename = arrangement.output_s3_key.rsplit("/", maxsplit=1)[-1]
+    download_filename = output_key_filename or f"arrangement_{arrangement_id}.wav"
+    content_type = "audio/wav"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_filename}"',
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
+
+    referer = request.headers.get("referer", "")
+    is_swagger_request = "/docs" in referer or "/redoc" in referer
+
+    if storage_backend == "local":
+        local_filename = arrangement.output_s3_key.split("/")[-1]
+        local_path = Path("uploads") / local_filename
+        if not local_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Arrangement file not found in local storage",
+            )
+
+        if is_swagger_request:
+            return FileResponse(
+                path=str(local_path),
+                media_type=content_type,
+                filename=download_filename,
+                headers=headers,
+            )
+
+        def iter_local_stream():
+            with open(local_path, "rb") as local_file:
+                while True:
+                    chunk = local_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return StreamingResponse(
+            iter_local_stream(),
+            media_type=content_type,
+            headers=headers,
+        )
+
+    if storage_backend != "s3":
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Invalid STORAGE_BACKEND: {storage_backend}",
+        )
+
     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
     aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
     aws_region = os.getenv("AWS_REGION")
-    # Fallback: S3_BUCKET → AWS_S3_BUCKET
-    s3_bucket = os.getenv("S3_BUCKET") or os.getenv("AWS_S3_BUCKET")
+    s3_bucket = os.getenv("AWS_S3_BUCKET")
 
-    # Collect missing variables for detailed error message
     missing_vars = []
     if not aws_access_key_id:
         missing_vars.append("AWS_ACCESS_KEY_ID")
@@ -236,7 +286,7 @@ def download_arrangement(
     if not aws_region:
         missing_vars.append("AWS_REGION")
     if not s3_bucket:
-        missing_vars.append("S3_BUCKET (or AWS_S3_BUCKET)")
+        missing_vars.append("AWS_S3_BUCKET")
 
     if missing_vars:
         raise HTTPException(
@@ -266,19 +316,7 @@ def download_arrangement(
             detail="Failed to fetch arrangement file from storage",
         ) from exc
 
-    content_type = s3_object.get("ContentType") or "audio/wav"
-    output_key_filename = arrangement.output_s3_key.rsplit("/", maxsplit=1)[-1]
-    download_filename = output_key_filename or f"arrangement_{arrangement_id}.wav"
-
-    headers = {
-        "Content-Disposition": f'attachment; filename="{download_filename}"',
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Disposition",
-    }
-
-    referer = request.headers.get("referer", "")
-    is_swagger_request = "/docs" in referer or "/redoc" in referer
-
+    content_type = s3_object.get("ContentType") or content_type
     body = s3_object["Body"]
 
     if is_swagger_request:

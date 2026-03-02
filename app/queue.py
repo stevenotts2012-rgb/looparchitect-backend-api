@@ -26,11 +26,13 @@ def is_redis_available() -> bool:
 
 def get_redis_conn() -> redis.Redis:
     """Get or create redis connection."""
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        raise RuntimeError("REDIS_URL is required for queue connectivity")
     try:
         conn = redis.from_url(redis_url, decode_responses=True)
         conn.ping()
-        logger.info(f"✅ Redis connected: {redis_url}")
+        logger.info("✅ Redis connection established")
         return conn
     except Exception as e:
         logger.error(f"❌ Redis connection failed: {e}")

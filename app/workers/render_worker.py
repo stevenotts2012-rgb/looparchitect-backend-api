@@ -55,13 +55,16 @@ def _download_loop_audio(loop: Loop, temp_dir: Path) -> Path:
     if loop.file_key:
         # Download from S3
         try:
+            region = os.getenv("AWS_REGION")
+            bucket = os.getenv("AWS_S3_BUCKET")
+            if not region or not bucket:
+                raise ValueError("Missing AWS_REGION or AWS_S3_BUCKET for S3 download")
             s3_client = boto3.client(
                 's3',
                 aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-                region_name=os.getenv("AWS_REGION", "us-east-1"),
+                region_name=region,
             )
-            bucket = os.getenv("AWS_S3_BUCKET")
             s3_client.download_file(bucket, audio_key, str(temp_file))
             logger.info(f"Downloaded S3:{bucket}/{audio_key} to {temp_file}")
         except Exception as e:

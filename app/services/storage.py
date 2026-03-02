@@ -29,15 +29,29 @@ class S3Storage:
     
     def __init__(self):
         """Initialize S3 client based on environment variables."""
+        self.storage_backend = os.getenv("STORAGE_BACKEND", "local").strip().lower()
         self.bucket = os.getenv("AWS_S3_BUCKET")
         self.access_key = os.getenv("AWS_ACCESS_KEY_ID")
         self.secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        self.region = os.getenv("AWS_REGION", "us-east-1")
+        self.region = os.getenv("AWS_REGION")
         
         # Determine if S3 is configured
-        self.use_s3 = all([self.bucket, self.access_key, self.secret_key])
+        self.use_s3 = self.storage_backend == "s3"
         
         if self.use_s3:
+            missing = []
+            if not self.bucket:
+                missing.append("AWS_S3_BUCKET")
+            if not self.access_key:
+                missing.append("AWS_ACCESS_KEY_ID")
+            if not self.secret_key:
+                missing.append("AWS_SECRET_ACCESS_KEY")
+            if not self.region:
+                missing.append("AWS_REGION")
+            if missing:
+                raise StorageNotConfiguredError(
+                    f"S3 backend selected but missing environment variables: {', '.join(missing)}"
+                )
             self._init_s3_client()
             logger.info(f"✅ S3 storage configured: bucket={self.bucket}, region={self.region}")
         else:
