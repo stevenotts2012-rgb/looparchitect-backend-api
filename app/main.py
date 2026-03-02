@@ -108,6 +108,13 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 Starting LoopArchitect API...")
     settings.validate_startup()
+    
+    # Log CORS configuration for verification
+    cors_origins = settings.allowed_origins
+    logger.info(f"✅ CORS allowed origins: {cors_origins}")
+    if "http://localhost:3000" not in cors_origins:
+        logger.warning("⚠️  http://localhost:3000 is NOT in allowed CORS origins!")
+    
     logger.info(
         "Startup configuration: environment=%s debug=%s storage_backend=%s railway=%s port=%s",
         settings.environment,
