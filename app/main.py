@@ -83,28 +83,8 @@ def _build_openapi_servers() -> list[dict[str, str]]:
 
 
 def _build_cors_origins() -> list[str]:
-    """Build CORS origins for production and local development safely."""
-    origins = {_normalize_origin(origin) for origin in settings.allowed_origins if origin}
-
-    public_url = _get_public_base_url()
-    if public_url:
-        origins.add(_normalize_origin(public_url))
-
-    local_port = os.getenv("PORT", "8000")
-    origins.update(
-        {
-            f"http://localhost:{local_port}",
-            f"http://127.0.0.1:{local_port}",
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:8080",
-            "http://127.0.0.1:8080",
-        }
-    )
-
-    return sorted(origins)
+    """Build CORS origins - only allow specified frontend origins."""
+    return list(settings.allowed_origins)
 
 
 def run_migrations():
@@ -163,13 +143,13 @@ app = FastAPI(
     servers=_servers,
 )
 
-# Add middleware
+# Add CORS middleware - must be added before routes
 _cors_origins = _build_cors_origins()
-_allow_credentials = "*" not in _cors_origins
+logger.info(f"✅ CORS configured for origins: {_cors_origins}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=_allow_credentials,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

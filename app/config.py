@@ -17,20 +17,19 @@ class Settings(BaseSettings):
     @property
     def allowed_origins(self) -> list[str]:
         """
-        Build allowed origins from default list + FRONTEND_ORIGIN env var.
+        Build allowed origins for CORS policy.
         
-        Defaults include localhost for dev and production Render domain.
-        FRONTEND_ORIGIN env var allows adding additional production domains.
+        Defaults include localhost:3000 for development and production Railway domain.
+        FRONTEND_ORIGIN env var can override production domain if needed.
         """
         origins = [
-            "https://looparchitect-backend-api.onrender.com",
             "http://localhost:3000",
-            "http://localhost:5173",
+            "https://web-production-3afc5.up.railway.app",
         ]
-        # Add production frontend domain if specified
+        # Allow overriding production domain via environment variable if needed
         frontend_origin = os.getenv("FRONTEND_ORIGIN")
         if frontend_origin:
-            origins.append(frontend_origin)
+            origins = ["http://localhost:3000", frontend_origin]
         return origins
     # Use DATABASE_URL from environment if available, otherwise local SQLite for development
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
