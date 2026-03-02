@@ -82,9 +82,6 @@ def _build_openapi_servers() -> list[dict[str, str]]:
     return servers
 
 
-def _build_cors_origins() -> list[str]:
-    """Build CORS origins - get from settings."""
-    return settings.allowed_origins
 
 
 def run_migrations():
@@ -109,12 +106,21 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting LoopArchitect API...")
     settings.validate_startup()
     
-    # Log CORS configuration for verification
+    # Log CORS origins for verification
     cors_origins = settings.allowed_origins
-    logger.info(f"✅ CORS allowed origins: {cors_origins}")
-    if "http://localhost:3000" not in cors_origins:
-        logger.warning("⚠️  http://localhost:3000 is NOT in allowed CORS origins!")
+    logger.info(f"🔒 CORS Configuration:")
+    logger.info(f"   Allowed origins: {cors_origins}")
+    logger.info(f"   Credentials: True")
+    logger.info(f"   Methods: all")
+    logger.info(f"   Headers: all")
     
+    # Verify localhost is present
+    if "http://localhost:3000" not in cors_origins:
+        logger.error("❌ CRITICAL: http://localhost:3000 is NOT in allowed CORS origins!")
+    else:
+        logger.info("✅ http://localhost:3000 is allowed")
+    
+    # Log environment
     logger.info(
         "Startup configuration: environment=%s debug=%s storage_backend=%s railway=%s port=%s",
         settings.environment,
@@ -150,9 +156,12 @@ app = FastAPI(
     servers=_servers,
 )
 
-# Add CORS middleware - must be added before routes
-_cors_origins = _build_cors_origins()
-logger.info(f"✅ CORS configured for origins: {_cors_origins}")
+# *** CRITICAL: CORS middleware MUST be first ***
+# Get allowed origins from config
+_cors_origins = settings.allowed_origins
+logger.info(f"📋 CORS allowed origins: {_cors_origins}")
+
+# Add CORS middleware FIRST and BEFORE all other middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -160,6 +169,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add request logging AFTER CORS
 add_request_logging(app)
 
 
