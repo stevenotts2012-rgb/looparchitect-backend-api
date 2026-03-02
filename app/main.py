@@ -83,17 +83,8 @@ def _build_openapi_servers() -> list[dict[str, str]]:
 
 
 def _build_cors_origins() -> list[str]:
-    """Build CORS origins - only allow explicit frontend origins."""
-    deduped: list[str] = []
-    seen: set[str] = set()
-
-    for origin in settings.allowed_origins:
-        normalized = _normalize_origin(origin)
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            deduped.append(normalized)
-
-    return deduped
+    """Build CORS origins - get from settings."""
+    return settings.allowed_origins
 
 
 def run_migrations():
@@ -117,12 +108,6 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 Starting LoopArchitect API...")
     settings.validate_startup()
-    invalid_frontend_origins = settings.invalid_frontend_origins
-    if invalid_frontend_origins:
-        logger.warning(
-            "Ignoring invalid FRONTEND_ORIGIN value(s): %s",
-            ", ".join(invalid_frontend_origins),
-        )
     logger.info(
         "Startup configuration: environment=%s debug=%s storage_backend=%s railway=%s port=%s",
         settings.environment,

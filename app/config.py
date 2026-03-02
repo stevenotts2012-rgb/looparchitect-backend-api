@@ -1,5 +1,4 @@
 import os
-from urllib.parse import urlparse
 from pydantic_settings import BaseSettings
 
 
@@ -16,77 +15,32 @@ class Settings(BaseSettings):
     aws_s3_bucket: str = os.getenv("AWS_S3_BUCKET", "")
     frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "")
 
-    _default_frontend_origins: tuple[str, ...] = (
-        "http://localhost:3000",
-        "https://web-production-3afc5.up.railway.app",
-    )
-
-    @staticmethod
-    def _normalize_origin(origin: str) -> str:
-        return origin.strip().rstrip("/")
-
-    @staticmethod
-    def _is_valid_origin(origin: str) -> bool:
-        parsed = urlparse(origin)
-        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-    @staticmethod
-    def _parse_frontend_origin_env(frontend_origin: str) -> list[str]:
-        """Support one origin or a comma-separated list in FRONTEND_ORIGIN."""
-        if not frontend_origin.strip():
-            return []
-        parsed_origins: list[str] = []
-        for item in frontend_origin.split(","):
-            normalized = Settings._normalize_origin(item)
-            if not normalized:
-                continue
-            if Settings._is_valid_origin(normalized):
-                parsed_origins.append(normalized)
-        return parsed_origins
-
-    @property
-    def invalid_frontend_origins(self) -> list[str]:
-        """Return invalid FRONTEND_ORIGIN entries for startup diagnostics."""
-        if not self.frontend_origin.strip():
-            return []
-
-        invalid: list[str] = []
-        for item in self.frontend_origin.split(","):
-            normalized = self._normalize_origin(item)
-            if not normalized:
-                continue
-            if not self._is_valid_origin(normalized):
-                invalid.append(normalized)
-        return invalid
-    
     @property
     def allowed_origins(self) -> list[str]:
         """Build allowed origins for CORS policy.
 
-        - Always allow local Next.js development on localhost:3000.
-        - Allow Railway production frontend by default.
-        - If FRONTEND_ORIGIN is set, use its value(s) in addition to localhost.
+        - Always allow http://localhost:3000 for local development.
+        - Add production origins from FRONTEND_ORIGIN env var (comma-separated).
+        - If FRONTEND_ORIGIN not set, use Railway default.
         """
-        configured_origins = self._parse_frontend_origin_env(self.frontend_origin)
-        origins = [self._normalize_origin("http://localhost:3000")]
-
-        if configured_origins:
-            origins.extend(configured_origins)
+        # Always include localhost for development
+        origins: list[str] = ["http://localhost:3000"]
+        
+        # Add production origins from environment or use default
+        frontend_env = self.frontend_origin.strip()
+        if frontend_env:
+            # Parse comma-separated origins from FRONTEND_ORIGIN
+            for origin in frontend_env.split(","):
+                origin = origin.strip().rstrip("/")
+                if origin and origin not in origins:
+                    origins.append(origin)
         else:
-            origins.extend(
-                self._normalize_origin(origin)
-                for origin in self._default_frontend_origins
-                if origin
-            )
-
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for origin in origins:
-            if origin and origin not in seen:
-                seen.add(origin)
-                deduped.append(origin)
-
-        return deduped
+            # Default Railway frontend
+            default_origin = "https://web-production-3afc5.up.railway.app"
+            if default_origin not in origins:
+                origins.append(default_origin)
+        
+        return origins
     # Use DATABASE_URL from environment if available, otherwise local SQLite for development
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
