@@ -6,12 +6,14 @@ Handles creation, status tracking, and downloads of generated audio arrangements
 
 import logging
 import os
+import tempfile
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from app.db import get_db
 from app.models.arrangement import Arrangement
@@ -172,11 +174,13 @@ def get_arrangement(
 
 @router.get(
     "/{arrangement_id}/download",
+    response_class=FileResponse,
     summary="Download generated arrangement",
-    description="Download the generated audio file. Returns 307 redirect to presigned S3 URL (5-minute expiry). Returns 409 if not yet complete.",
+    description="Download the generated audio file. Returns FileResponse for Swagger UI requests and StreamingResponse for normal browser requests. Returns 409 if not yet complete.",
 )
 def download_arrangement(
     arrangement_id: int,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -184,7 +188,7 @@ def download_arrangement(
 
     Returns 409 Conflict if the arrangement is still being processed.
     Returns 404 if the arrangement doesn't exist.
-    Returns 307 Temporary Redirect to fresh presigned S3 URL (5-minute expiry) if done.
+    Returns file download response if done.
     """
     arrangement = (
         db.query(Arrangement)
@@ -248,24 +252,61 @@ def download_arrangement(
     )
 
     try:
-        # Generate presigned URL with 5-minute expiry (300 seconds)
-        presigned_url = s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": s3_bucket, "Key": arrangement.output_s3_key},
-            ExpiresIn=300,
-        )
+        s3_object = s3_client.get_object(Bucket=s3_bucket, Key=arrangement.output_s3_key)
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "Unknown")
-        if error_code == "NoSuchKey":
+        if error_code in {"NoSuchKey", "404"}:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Arrangement file not found in storage",
             ) from exc
-        logger.exception("Failed to generate presigned URL for arrangement_id=%s", arrangement_id)
+        logger.exception("S3 get_object failed for arrangement_id=%s key=%s", arrangement_id, arrangement.output_s3_key)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to generate download URL",
+            detail="Failed to fetch arrangement file from storage",
         ) from exc
 
-    # Return 307 Temporary Redirect to presigned URL
-    return RedirectResponse(url=presigned_url, status_code=307)
+    content_type = s3_object.get("ContentType") or "audio/wav"
+    output_key_filename = arrangement.output_s3_key.rsplit("/", maxsplit=1)[-1]
+    download_filename = output_key_filename or f"arrangement_{arrangement_id}.wav"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_filename}"',
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
+
+    referer = request.headers.get("referer", "")
+    is_swagger_request = "/docs" in referer or "/redoc" in referer
+
+    body = s3_object["Body"]
+
+    if is_swagger_request:
+        suffix = os.path.splitext(download_filename)[1] or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                if chunk:
+                    temp_file.write(chunk)
+            temp_path = temp_file.name
+        body.close()
+        return FileResponse(
+            path=temp_path,
+            media_type=content_type,
+            filename=download_filename,
+            headers=headers,
+            background=BackgroundTask(lambda: os.remove(temp_path) if os.path.exists(temp_path) else None),
+        )
+
+    def iter_s3_stream():
+        try:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            body.close()
+
+    return StreamingResponse(
+        iter_s3_stream(),
+        media_type=content_type,
+        headers=headers,
+    )
