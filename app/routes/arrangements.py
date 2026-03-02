@@ -5,8 +5,12 @@ Handles creation, status tracking, and downloads of generated audio arrangements
 """
 
 import logging
+import os
 
+import boto3
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -19,7 +23,6 @@ from app.schemas.arrangement import (
     ArrangementResponse,
 )
 from app.services.arrangement_jobs import run_arrangement_job
-from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +173,7 @@ def get_arrangement(
 @router.get(
     "/{arrangement_id}/download",
     summary="Download generated arrangement",
-    description="Download the generated audio file. Returns 409 if not yet complete.",
+    description="Download the generated audio file by streaming from S3. Returns 409 if not yet complete.",
 )
 def download_arrangement(
     arrangement_id: int,
@@ -181,7 +184,7 @@ def download_arrangement(
 
     Returns 409 Conflict if the arrangement is still being processed.
     Returns 404 if the arrangement doesn't exist.
-    Returns 307 redirect if done.
+    Streams audio bytes from S3 if done.
     """
     arrangement = (
         db.query(Arrangement)
@@ -207,28 +210,68 @@ def download_arrangement(
             detail=f"Arrangement is still {arrangement.status}. Try again later.",
         )
 
-    if not arrangement.output_url and not arrangement.output_s3_key:
+    if not arrangement.output_s3_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Arrangement is complete but output URL is missing",
+            detail="Arrangement is complete but S3 object key is missing",
         )
 
-    # Redirect to presigned URL
-    if arrangement.output_url:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=arrangement.output_url)
+    aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    aws_region = os.getenv("AWS_REGION")
+    s3_bucket = os.getenv("S3_BUCKET")
 
-    # Generate URL on-demand if missing but key exists
-    if arrangement.output_s3_key:
-        download_url = storage.create_presigned_get_url(
-            arrangement.output_s3_key,
-            expires_seconds=3600,
-            download_filename=f"arrangement_{arrangement_id}.wav",
+    if not all([aws_access_key_id, aws_secret_access_key, aws_region, s3_bucket]):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="S3 is not configured. Missing one or more required environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET",
         )
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=download_url)
 
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Arrangement output URL missing",
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key,
+        region_name=aws_region,
+    )
+
+    try:
+        s3_object = s3_client.get_object(Bucket=s3_bucket, Key=arrangement.output_s3_key)
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "Unknown")
+        if error_code in {"NoSuchKey", "404"}:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Arrangement file not found in storage",
+            ) from exc
+        logger.exception("S3 get_object failed for arrangement_id=%s key=%s", arrangement_id, arrangement.output_s3_key)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to fetch arrangement file from storage",
+        ) from exc
+
+    content_type = s3_object.get("ContentType") or "audio/wav"
+    content_length = s3_object.get("ContentLength")
+    output_key_filename = arrangement.output_s3_key.rsplit("/", maxsplit=1)[-1]
+    download_filename = output_key_filename or f"arrangement_{arrangement_id}.wav"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_filename}"',
+    }
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+
+    body = s3_object["Body"]
+
+    def iter_s3_stream():
+        try:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            body.close()
+
+    return StreamingResponse(
+        iter_s3_stream(),
+        media_type=content_type,
+        headers=headers,
     )
