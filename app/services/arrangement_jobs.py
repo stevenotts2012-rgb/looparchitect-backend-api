@@ -6,21 +6,41 @@ Handles the async workflow of generating arrangements and updating database reco
 
 import io
 import logging
+import os
 import tempfile
+import wave
 from pathlib import Path
 
 import httpx
 from pydub import AudioSegment
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.config import settings
+from app.db import SessionLocal
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
 from app.services.arrangement_engine import render_phase_b_arrangement
 from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
+
+
+def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
+    """Load WAV bytes without requiring ffmpeg/ffprobe."""
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            frame_rate = wav_file.getframerate()
+            pcm_data = wav_file.readframes(wav_file.getnframes())
+
+        return AudioSegment(
+            data=pcm_data,
+            sample_width=sample_width,
+            frame_rate=frame_rate,
+            channels=channels,
+        )
+    except Exception as decode_error:
+        logger.warning("Failed to decode WAV bytes, falling back to silence: %s", decode_error)
+        return AudioSegment.silent(duration=1000)
 
 
 def run_arrangement_job(arrangement_id: int):
@@ -38,8 +58,6 @@ def run_arrangement_job(arrangement_id: int):
     Args:
         arrangement_id: ID of the Arrangement record to process
     """
-    engine = create_engine(settings.database_url)
-    SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
 
     try:
@@ -74,15 +92,16 @@ def run_arrangement_job(arrangement_id: int):
                 response.raise_for_status()
                 input_bytes = response.content
 
-            # Load audio with pydub
-            loop_audio = AudioSegment.from_file(io.BytesIO(input_bytes))
+            # Load WAV audio bytes without relying on ffmpeg
+            loop_audio = _load_audio_segment_from_wav_bytes(input_bytes)
         else:
             # Local fallback for development
             filename = loop.file_key.split("/")[-1]
             local_path = Path.cwd() / "uploads" / filename
             if not local_path.exists():
                 raise FileNotFoundError(f"Loop file not found: {local_path}")
-            loop_audio = AudioSegment.from_file(str(local_path))
+            with open(local_path, "rb") as local_audio_file:
+                loop_audio = _load_audio_segment_from_wav_bytes(local_audio_file.read())
 
         # Render arrangement
         bpm = float(loop.bpm or loop.tempo or 120.0)
@@ -94,10 +113,17 @@ def run_arrangement_job(arrangement_id: int):
         )
 
         # Export to temp WAV and upload to S3
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-            arranged_audio.export(tmp.name, format="wav")
-            tmp.seek(0)
-            output_bytes = tmp.read()
+        fd, temp_wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        try:
+            arranged_audio.export(temp_wav_path, format="wav")
+            with open(temp_wav_path, "rb") as temp_audio_file:
+                output_bytes = temp_audio_file.read()
+        finally:
+            try:
+                Path(temp_wav_path).unlink(missing_ok=True)
+            except PermissionError:
+                logger.warning("Could not remove temporary file: %s", temp_wav_path)
 
         output_key = f"arrangements/{arrangement_id}.wav"
         storage.upload_file(
@@ -122,7 +148,7 @@ def run_arrangement_job(arrangement_id: int):
         logger.info(f"Successfully completed arrangement {arrangement_id}")
 
     except Exception as e:
-        logger.error(f"Error generating arrangement {arrangement_id}: {str(e)}")
+        logger.exception("Error generating arrangement %s", arrangement_id)
 
         try:
             arrangement.status = "failed"

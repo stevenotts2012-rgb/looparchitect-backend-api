@@ -6,6 +6,7 @@ Handles loading loops, applying effects, and generating full-length arrangements
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Tuple, List, Dict
 
@@ -158,8 +159,7 @@ def generate_arrangement(
         FileNotFoundError: If input file doesn't exist
         Exception: If audio processing fails
     """
-    input_path = Path(input_wav_path)
-    if not input_path.exists():
+    if not os.path.exists(input_wav_path):
         raise FileNotFoundError(f"Input file not found: {input_wav_path}")
 
     logger.info(
@@ -168,15 +168,15 @@ def generate_arrangement(
     )
 
     # Load the loop
-    audio = AudioSegment.from_wav(str(input_path))
+    audio = AudioSegment.from_wav(str(input_wav_path))
     loop_duration_ms = len(audio)
     loop_duration_seconds = loop_duration_ms / 1000.0
 
     logger.info(f"Loaded loop: {loop_duration_seconds:.2f}s")
 
     # Create directory if needed
-    renders_dir = Path.cwd() / "renders" / "arrangements"
-    renders_dir.mkdir(parents=True, exist_ok=True)
+    renders_dir = os.path.join(os.getcwd(), "renders", "arrangements")
+    os.makedirs(renders_dir, exist_ok=True)
 
     # Calculate section boundaries
     sections = _calculate_sections(target_seconds)
@@ -203,8 +203,8 @@ def generate_arrangement(
     import uuid
 
     filename = f"{uuid.uuid4()}.wav"
-    output_path = renders_dir / filename
-    audio_arranged.export(str(output_path), format="wav")
+    output_path = os.path.join(renders_dir, filename)
+    audio_arranged.export(output_path, format="wav")
     logger.info(f"Exported to {output_path}")
 
     # Generate timeline JSON

@@ -113,6 +113,10 @@ class ArrangeGenerateResponse(BaseModel):
         ..., description="Actual duration generated (may differ slightly due to bar rounding)"
     )
     total_bars: int = Field(..., description="Total number of 4/4 bars in arrangement")
+    bars_total: Optional[int] = Field(
+        default=None,
+        description="Backward-compatible alias for total_bars",
+    )
     sections: List[ArrangementSection] = Field(
         ..., description="List of arrangement sections with bar positions"
     )

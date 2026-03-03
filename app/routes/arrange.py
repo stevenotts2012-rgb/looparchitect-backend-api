@@ -195,6 +195,7 @@ async def arrange_loop(
         target_duration_seconds=target_duration_seconds,
         actual_duration_seconds=actual_duration_seconds,
         total_bars=actual_bars,
+        bars_total=actual_bars,
         sections=sections,
     )
 

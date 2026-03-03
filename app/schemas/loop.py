@@ -15,7 +15,7 @@ class LoopCreate(BaseModel):
     file_key: Optional[str] = None
     title: Optional[str] = None
     tempo: Optional[float] = None
-    bpm: Optional[int] = None
+    bpm: Optional[float] = None
     bars: Optional[int] = None
     key: Optional[str] = None
     musical_key: Optional[str] = None
@@ -32,7 +32,7 @@ class LoopUpdate(BaseModel):
     file_key: Optional[str] = None
     title: Optional[str] = None
     tempo: Optional[float] = None
-    bpm: Optional[int] = None
+    bpm: Optional[float] = None
     bars: Optional[int] = None
     key: Optional[str] = None
     musical_key: Optional[str] = None
@@ -53,7 +53,7 @@ class LoopResponse(BaseModel):
     file_key: Optional[str]
     title: Optional[str]
     tempo: Optional[float]
-    bpm: Optional[int]
+    bpm: Optional[float]
     bars: Optional[int]
     key: Optional[str]
     musical_key: Optional[str]

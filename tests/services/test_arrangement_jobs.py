@@ -66,6 +66,7 @@ def test_run_arrangement_job_updates_record(db):
 
                             run_arrangement_job(arrangement.id)
 
+    db.expire_all()
     updated = db.query(Arrangement).filter_by(id=arrangement.id).first()
     assert updated.status == "done"
     assert updated.output_s3_key == f"arrangements/{arrangement.id}.wav"

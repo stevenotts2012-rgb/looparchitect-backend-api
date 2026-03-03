@@ -7,7 +7,7 @@ class LoopBase(BaseModel):
     """Base model for Loop with common fields."""
     name: str
     tempo: Optional[float] = None
-    bpm: Optional[int] = None
+    bpm: Optional[float] = None
     key: Optional[str] = None
     bars: Optional[int] = None
     genre: Optional[str] = None
@@ -28,7 +28,7 @@ class LoopUpdate(BaseModel):
     title: Optional[str] = None
     name: Optional[str] = None
     tempo: Optional[float] = None
-    bpm: Optional[int] = None
+    bpm: Optional[float] = None
     key: Optional[str] = None
     bars: Optional[int] = None
     genre: Optional[str] = None
