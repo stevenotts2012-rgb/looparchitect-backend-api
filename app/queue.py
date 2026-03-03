@@ -2,9 +2,12 @@
 
 import logging
 import os
+from typing import TYPE_CHECKING
 
 import redis
-from rq import Queue
+
+if TYPE_CHECKING:
+    from rq import Queue
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +42,10 @@ def get_redis_conn() -> redis.Redis:
         raise
 
 
-def get_queue(conn: redis.Redis = None, name: str = "render") -> Queue:
+def get_queue(conn: redis.Redis = None, name: str = "render") -> "Queue":
     """Get or create the render job queue."""
+    from rq import Queue
+
     if conn is None:
         conn = get_redis_conn()
     return Queue(name, connection=conn, is_async=True)
