@@ -146,20 +146,10 @@ class S3Storage:
             # Extract filename from key (e.g., "uploads/file.wav" -> "file.wav")
             filename = key.split("/")[-1]
             file_path = self.upload_dir / filename
-            
-            # Diagnostic logging
-            abs_path = file_path.absolute()
-            logger.info(f"📝 Writing {len(file_bytes)} bytes to: {abs_path}")
-            
+
             file_path.write_bytes(file_bytes)
-            
-            # Immediate verification
-            if file_path.exists():
-                actual_size = file_path.stat().st_size
-                logger.info(f"✅ File written successfully: {actual_size} bytes at {abs_path}")
-            else:
-                logger.error(f"❌ CRITICAL: write_bytes() succeeded but file doesn't exist at {abs_path}")
-            
+            logger.info(f"📁 Uploaded locally: {file_path}")
+
             return key  # Return the same key format for consistency
         except Exception as e:
             logger.error(f"Local upload failed: {e}", exc_info=True)
