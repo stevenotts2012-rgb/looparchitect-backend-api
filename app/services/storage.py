@@ -147,11 +147,19 @@ class S3Storage:
             filename = key.split("/")[-1]
             file_path = self.upload_dir / filename
             
+            logger.info(f"Writing file to: {file_path.absolute()}")
+            logger.info(f"Upload dir exists: {self.upload_dir.exists()}")
+            logger.info(f"File size to write: {len(file_bytes)} bytes")
+            
             file_path.write_bytes(file_bytes)
+            
             logger.info(f"📁 Uploaded locally: {file_path}")
+            logger.info(f"File exists after write: {file_path.exists()}")
+            logger.info(f"File size after write: {file_path.stat().st_size if file_path.exists() else 'N/A'}")
+            
             return key  # Return the same key format for consistency
         except Exception as e:
-            logger.error(f"Local upload failed: {e}")
+            logger.error(f"Local upload failed: {e}", exc_info=True)
             raise S3StorageError(f"Local upload failed: {e}") from e
     
     def delete_file(self, key: str) -> None:
