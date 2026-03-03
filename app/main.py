@@ -142,8 +142,12 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Storage backend: local")
     
-    # Run migrations on startup
-    run_migrations()
+    # TEMPORARY FIX: Skip migrations - they're hanging on existing tables
+    # Railway database already has tables from previous migration attempts
+    # Migration 002_create_arrangements_table times out trying to create existing table
+    # TODO: Fix migrations to be idempotent (IF NOT EXISTS), then re-enable
+    # run_migrations()
+    logger.info("⚠️  Migrations skipped (temporary fix for crash loop)")
     
     # NOTE: init_db() is NOT needed - Alembic migrations handle table creation
     # Calling Base.metadata.create_all() after migrations can cause hangs/conflicts
