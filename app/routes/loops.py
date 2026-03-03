@@ -55,6 +55,8 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
         )
+        if not isinstance(file_url, str) or not file_url:
+            file_url = f"/uploads/{file_key.split('/')[-1]}"
     except Exception as e:
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
@@ -149,6 +151,8 @@ async def upload_file(file: UploadFile = File(...)):
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
         )
+        if not isinstance(file_url, str) or not file_url:
+            file_url = f"/uploads/{file_key.split('/')[-1]}"
         logger.info(f"File uploaded (no DB record): {file_key}")
         return {"file_key": file_key, "file_url": file_url}
     except Exception as e:
@@ -246,6 +250,8 @@ async def create_loop_with_upload(
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
         )
+        if not isinstance(file_url, str) or not file_url:
+            file_url = f"/uploads/{file_key.split('/')[-1]}"
     except Exception as e:
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
