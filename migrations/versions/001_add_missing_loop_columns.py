@@ -7,7 +7,7 @@ Create Date: 2026-02-24
 """
 from alembic import op
 import sqlalchemy as sa
-
+from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision = '001_add_missing_loop_columns'
@@ -17,39 +17,27 @@ depends_on = None
 
 
 def upgrade() -> None:
-    """Add missing columns to loops table."""
-    # Check if columns exist before adding - for idempotent upgrades
-    # Add filename column
-    try:
+    """Add missing columns to loops table (idempotent)."""
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    existing_columns = {col['name'] for col in inspector.get_columns('loops')}
+    
+    # Add columns only if they don't exist
+    if 'filename' not in existing_columns:
         op.add_column('loops', sa.Column('filename', sa.String(), nullable=True))
-    except Exception:
-        pass
     
-    # Add title column
-    try:
+    if 'title' not in existing_columns:
         op.add_column('loops', sa.Column('title', sa.String(), nullable=True))
-    except Exception:
-        pass
     
-    # Add bpm column
-    try:
+    if 'bpm' not in existing_columns:
         op.add_column('loops', sa.Column('bpm', sa.Integer(), nullable=True))
-    except Exception:
-        pass
     
-    # Add musical_key column
-    try:
+    if 'musical_key' not in existing_columns:
         op.add_column('loops', sa.Column('musical_key', sa.String(), nullable=True))
-    except Exception:
-        pass
     
-    # Add duration_seconds column
-    try:
+    if 'duration_seconds' not in existing_columns:
         op.add_column('loops', sa.Column('duration_seconds', sa.Float(), nullable=True))
-    except Exception:
-        pass
-
-
+     
 def downgrade() -> None:
     """Remove added columns from loops table."""
     try:
