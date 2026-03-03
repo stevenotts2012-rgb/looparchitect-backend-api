@@ -54,6 +54,12 @@ async def play_loop(
             status_code=404,
             detail=f"Loop {loop_id} has no associated file"
         )
+
+    if not storage.file_exists(loop.file_key):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Loop source file is missing: {loop.file_key.split('/')[-1]}"
+        )
     
     try:
         # Generate presigned URL (expires in 1 hour)
@@ -103,6 +109,12 @@ async def download_loop(
         raise HTTPException(
             status_code=404,
             detail=f"Loop {loop_id} has no associated file"
+        )
+
+    if not storage.file_exists(loop.file_key):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Loop source file is missing: {loop.file_key.split('/')[-1]}"
         )
     
     try:
