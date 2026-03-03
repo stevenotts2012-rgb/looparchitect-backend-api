@@ -207,7 +207,7 @@ class LoopService:
         Returns:
             Tuple of (file_key, file_url)
             - file_key: S3 key like "uploads/{uuid}.wav"
-            - file_url: Empty string (deprecated, use /play or /download endpoints)
+            - file_url: Backward-compatible local-style URL (e.g., /uploads/{uuid}.wav)
 
         Raises:
             Exception: If upload fails
@@ -224,8 +224,8 @@ class LoopService:
                 content_type=content_type
             )
             logger.info(f"File uploaded with key: {file_key}")
-            # Return empty file_url - clients should use /play or /download endpoints
-            return file_key, ""
+            file_url = f"/uploads/{Path(file_key).name}"
+            return file_key, file_url
         except Exception as e:
             logger.error(f"Failed to upload file: {e}")
             raise

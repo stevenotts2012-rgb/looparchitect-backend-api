@@ -50,7 +50,7 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
     
     try:
         # Upload file using service (returns file_key like "uploads/uuid.wav")
-        file_key, _ = loop_service.upload_loop_file(
+        file_key, file_url = loop_service.upload_loop_file(
             file_content=content,
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
@@ -77,11 +77,15 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
     
     # Create Loop database record with analysis results
     try:
+        bpm_value = analysis_result.get('bpm')
+        normalized_bpm = int(round(float(bpm_value))) if bpm_value is not None else None
+
         new_loop = Loop(
             name=safe_filename,
             filename=safe_filename,
+            file_url=file_url,
             file_key=file_key,  # Store S3 key
-            bpm=analysis_result.get('bpm'),
+            bpm=normalized_bpm,
             musical_key=analysis_result.get('key'),
             duration_seconds=analysis_result.get('duration'),
             bars=analysis_result.get('bars')
@@ -94,6 +98,7 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
         # Return endpoints instead of direct file URLs
         return {
             "loop_id": new_loop.id,
+            "file_url": file_url,
             "play_url": f"/api/v1/loops/{new_loop.id}/play",
             "download_url": f"/api/v1/loops/{new_loop.id}/download"
         }
@@ -139,13 +144,13 @@ async def upload_file(file: UploadFile = File(...)):
     
     try:
         # Upload using service
-        file_key, _ = loop_service.upload_loop_file(
+        file_key, file_url = loop_service.upload_loop_file(
             file_content=content,
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
         )
         logger.info(f"File uploaded (no DB record): {file_key}")
-        return {"file_key": file_key}
+        return {"file_key": file_key, "file_url": file_url}
     except Exception as e:
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
@@ -236,7 +241,7 @@ async def create_loop_with_upload(
     
     try:
         # Upload using service (returns file_key like "uploads/uuid.wav")
-        file_key, _ = loop_service.upload_loop_file(
+        file_key, file_url = loop_service.upload_loop_file(
             file_content=content,
             filename=safe_filename,
             content_type=file.content_type or "audio/wav"
@@ -264,12 +269,15 @@ async def create_loop_with_upload(
     # Create loop with file key and analysis results
     try:
         loop_data_dict = loop_data.model_dump(exclude={"file_url"})
+        bpm_value = analysis_result.get('bpm')
+        normalized_bpm = int(round(float(bpm_value))) if bpm_value is not None else None
         
         # Merge analysis results into loop data
         loop_data_dict.update({
+            'file_url': file_url,
             'file_key': file_key,
             'filename': safe_filename,
-            'bpm': analysis_result.get('bpm'),
+            'bpm': normalized_bpm,
             'musical_key': analysis_result.get('key'),  # Use musical_key field
             'duration_seconds': analysis_result.get('duration'),
             'bars': analysis_result.get('bars')
