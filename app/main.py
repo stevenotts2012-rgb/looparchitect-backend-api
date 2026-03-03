@@ -84,6 +84,89 @@ def _build_openapi_servers() -> list[dict[str, str]]:
 
 
 
+def create_tables_if_missing():
+    """Create required tables if they don't exist in the database.
+    
+    This is a fallback approach when migrations are skipped (e.g., due to
+    existing table locking issues). Uses IF NOT EXISTS to safely handle
+    repeated calls.
+    """
+    try:
+        import sqlalchemy as sa
+        from sqlalchemy import text
+        
+        # Create a connection to the database
+        engine = sa.create_engine(settings.database_url)
+        
+        with engine.begin() as connection:
+            # Create loops table with all required columns
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS loops (
+                    id SERIAL PRIMARY KEY,
+                    title VARCHAR NOT NULL,
+                    artist_name VARCHAR NOT NULL,
+                    duration_seconds FLOAT NOT NULL,
+                    file_path VARCHAR NOT NULL UNIQUE,
+                    s3_key VARCHAR,
+                    waveform_data TEXT,
+                    status VARCHAR DEFAULT 'pending',
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            
+            # Create arrangements table with all required columns
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS arrangements (
+                    id SERIAL PRIMARY KEY,
+                    loop_id INTEGER NOT NULL,
+                    status VARCHAR DEFAULT 'queued',
+                    target_seconds INTEGER NOT NULL,
+                    genre VARCHAR,
+                    intensity VARCHAR,
+                    include_stems BOOLEAN DEFAULT false,
+                    output_file_url VARCHAR,
+                    stems_zip_url VARCHAR,
+                    arrangement_json TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            
+            # Create indexes
+            connection.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_loops_id ON loops(id)
+            """))
+            connection.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_arrangements_id ON arrangements(id)
+            """))
+            connection.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_arrangements_loop_id ON arrangements(loop_id)
+            """))
+            connection.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_arrangement_loop_status ON arrangements(loop_id, status)
+            """))
+            
+            # Try to add foreign key if it doesn't exist
+            try:
+                connection.execute(text("""
+                    ALTER TABLE arrangements 
+                    ADD CONSTRAINT fk_arrangements_loop_id 
+                    FOREIGN KEY (loop_id) REFERENCES loops(id)
+                """))
+            except Exception:
+                # Foreign key likely already exists, that's fine
+                pass
+        
+        engine.dispose()
+        logger.info("✅ Database tables verified/created successfully")
+    except Exception as e:
+        logger.exception("❌ Failed to create database tables")
+        raise RuntimeError("Failed to create required database tables") from e
+
+
 def run_migrations():
     """Run Alembic migrations to update database schema."""
     try:
@@ -142,16 +225,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Storage backend: local")
     
-    # TEMPORARY FIX: Skip migrations - they're hanging on existing tables
-    # Railway database already has tables from previous migration attempts
-    # Migration 002_create_arrangements_table times out trying to create existing table
-    # TODO: Fix migrations to be idempotent (IF NOT EXISTS), then re-enable
-    # run_migrations()
-    logger.info("⚠️  Migrations skipped (temporary fix for crash loop)")
-    
-    # NOTE: init_db() is NOT needed - Alembic migrations handle table creation
-    # Calling Base.metadata.create_all() after migrations can cause hangs/conflicts
-    # init_db()
+    # Create tables if they don't exist (application-level fallback)
+    # This is safer than Alembic migrations when tables already exist
+    create_tables_if_missing()
     
     logger.info("✅ Application startup complete")
     
