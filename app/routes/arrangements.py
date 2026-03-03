@@ -222,7 +222,7 @@ def download_arrangement(
             detail="Arrangement is complete but output file key is missing",
         )
 
-    storage_backend = settings.storage_backend.lower()
+    storage_backend = settings.get_storage_backend()
     output_key_filename = arrangement.output_s3_key.rsplit("/", maxsplit=1)[-1]
     download_filename = output_key_filename or f"arrangement_{arrangement_id}.wav"
     content_type = "audio/wav"
