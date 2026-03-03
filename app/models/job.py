@@ -44,6 +44,17 @@ class RenderJob(Base):
     # TTL for completed jobs (optional future cleanup)
     expires_at = Column(DateTime, nullable=True)
 
+    def __init__(self, **kwargs):
+        if "retry_count" not in kwargs or kwargs.get("retry_count") is None:
+            kwargs["retry_count"] = 0
+        if "progress" not in kwargs or kwargs.get("progress") is None:
+            kwargs["progress"] = 0.0
+        if "status" not in kwargs or kwargs.get("status") is None:
+            kwargs["status"] = "queued"
+        if "job_type" not in kwargs or kwargs.get("job_type") is None:
+            kwargs["job_type"] = "render_arrangement"
+        super().__init__(**kwargs)
+
 
 # Add composite index for deduplication window (loop_id + dedupe_hash, ordered by created_at)
 Index("ix_render_jobs_dedupe", RenderJob.loop_id, RenderJob.dedupe_hash, RenderJob.created_at)

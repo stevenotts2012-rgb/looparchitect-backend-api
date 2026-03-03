@@ -20,8 +20,11 @@ class RenderJobRequest(BaseModel):
 
     genre: Optional[str] = "Trap"
     length_seconds: Optional[int] = 180
+    intensity: Optional[str] = "medium"
+    variations: Optional[List[str]] = ["Commercial", "Creative", "Experimental"]
+
+    # Backward-compatible fields still supported by some routes/workers
     energy: Optional[str] = "high"
-    variations: Optional[int] = 3
     variation_styles: Optional[List[str]] = None
     custom_style: Optional[str] = None
 
