@@ -90,13 +90,17 @@ class LoopAnalyzer:
             raise
 
         finally:
-            # Clean up temporary file
+            # Clean up temporary file (only if it's actually a temp file, not the original upload)
             if temp_file and os.path.exists(temp_file):
-                try:
-                    os.unlink(temp_file)
-                    logger.debug(f"Cleaned up temp file: {temp_file}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temp file {temp_file}: {e}")
+                # Only delete if it's in the system temp directory, not in uploads/
+                if tempfile.gettempdir() in temp_file:
+                    try:
+                        os.unlink(temp_file)
+                        logger.debug(f"Cleaned up temp file: {temp_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up temp file {temp_file}: {e}")
+                else:
+                    logger.debug(f"Skipping cleanup of non-temp file: {temp_file}")
 
     def analyze_from_file(self, file_path: str) -> Dict:
         """
