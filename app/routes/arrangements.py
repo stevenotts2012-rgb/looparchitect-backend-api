@@ -117,6 +117,27 @@ def generate_arrangement(
             detail=f"Loop with ID {request.loop_id} not found",
         )
 
+    if settings.get_storage_backend() == "local":
+        if not loop.file_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Loop {request.loop_id} has no source file key. "
+                    "Please re-upload the loop before generating."
+                ),
+            )
+
+        local_filename = loop.file_key.split("/")[-1]
+        local_path = Path("uploads") / local_filename
+        if not local_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Loop source file is missing in local storage ({local_filename}). "
+                    "Please re-upload the loop and try again."
+                ),
+            )
+
     # Create arrangement record
     arrangement = Arrangement(
         loop_id=request.loop_id,
