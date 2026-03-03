@@ -11,6 +11,7 @@ from typing import Dict, List
 from tenacity import retry, stop_after_attempt, wait_exponential
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import SessionLocal, engine
 from app.models.job import RenderJob
 from app.models.loop import Loop
@@ -55,14 +56,14 @@ def _download_loop_audio(loop: Loop, temp_dir: Path) -> Path:
     if loop.file_key:
         # Download from S3
         try:
-            region = os.getenv("AWS_REGION")
-            bucket = os.getenv("AWS_S3_BUCKET")
+            region = settings.aws_region
+            bucket = settings.aws_s3_bucket
             if not region or not bucket:
                 raise ValueError("Missing AWS_REGION or AWS_S3_BUCKET for S3 download")
             s3_client = boto3.client(
                 's3',
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                aws_access_key_id=settings.aws_access_key_id,
+                aws_secret_access_key=settings.aws_secret_access_key,
                 region_name=region,
             )
             s3_client.download_file(bucket, audio_key, str(temp_file))
