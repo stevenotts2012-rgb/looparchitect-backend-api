@@ -145,8 +145,9 @@ async def lifespan(app: FastAPI):
     # Run migrations on startup
     run_migrations()
     
-    # Initialize database tables
-    init_db()
+    # NOTE: init_db() is NOT needed - Alembic migrations handle table creation
+    # Calling Base.metadata.create_all() after migrations can cause hangs/conflicts
+    # init_db()
     
     logger.info("✅ Application startup complete")
     
