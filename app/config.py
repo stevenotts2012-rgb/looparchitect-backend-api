@@ -7,40 +7,73 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
     environment: str = os.getenv("ENVIRONMENT", "development")
-    storage_backend: str = os.getenv("STORAGE_BACKEND", "local")
+    storage_backend: str = os.getenv("STORAGE_BACKEND", "")
     redis_url: str = os.getenv("REDIS_URL", "")
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
     aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     aws_region: str = os.getenv("AWS_REGION", "")
     aws_s3_bucket: str = os.getenv("AWS_S3_BUCKET", "")
+    s3_bucket_name: str = os.getenv("S3_BUCKET_NAME", "")
     frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "")
+    cors_allowed_origins: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    api_base_url: str = os.getenv("API_BASE_URL", "")
 
     @property
     def allowed_origins(self) -> list[str]:
         """Build allowed origins for CORS policy.
 
         - Always allow http://localhost:3000 for local development.
-        - Add production origins from FRONTEND_ORIGIN env var (comma-separated).
+        - Always allow http://localhost:5173 for Vite local development.
+        - Add production origins from CORS_ALLOWED_ORIGINS or FRONTEND_ORIGIN env vars.
         - If FRONTEND_ORIGIN not set, use Railway default.
         """
-        # Always include localhost for development
-        origins: list[str] = ["http://localhost:3000"]
-        
-        # Add production origins from environment or use default
-        frontend_env = self.frontend_origin.strip()
-        if frontend_env:
-            # Parse comma-separated origins from FRONTEND_ORIGIN
-            for origin in frontend_env.split(","):
-                origin = origin.strip().rstrip("/")
-                if origin and origin not in origins:
-                    origins.append(origin)
+        origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+
+        configured_origins = (self.cors_allowed_origins or self.frontend_origin).strip()
+        if configured_origins:
+            for origin in configured_origins.split(","):
+                normalized_origin = origin.strip().rstrip("/")
+                if normalized_origin and normalized_origin not in origins:
+                    origins.append(normalized_origin)
         else:
-            # Default Railway frontend
             default_origin = "https://web-production-3afc5.up.railway.app"
             if default_origin not in origins:
                 origins.append(default_origin)
-        
+
         return origins
+
+    def get_s3_bucket(self) -> str:
+        """Return configured S3 bucket using supported env aliases."""
+        return (self.aws_s3_bucket or self.s3_bucket_name or "").strip()
+
+    def has_s3_config(self) -> bool:
+        """Return True when all required S3 settings are present."""
+        return bool(
+            self.aws_access_key_id
+            and self.aws_secret_access_key
+            and self.aws_region
+            and self.get_s3_bucket()
+        )
+
+    def get_storage_backend(self) -> str:
+        """Resolve active storage backend.
+
+        Rules:
+        1) If STORAGE_BACKEND is explicitly set, obey it (local|s3).
+        2) Else if ENVIRONMENT=production and S3 vars are complete, use s3.
+        3) Else use local.
+        """
+        explicit_backend = (self.storage_backend or "").strip().lower()
+        if explicit_backend:
+            if explicit_backend not in {"local", "s3"}:
+                raise RuntimeError("Invalid STORAGE_BACKEND. Allowed values: local or s3")
+            return explicit_backend
+
+        if self.is_production and self.has_s3_config():
+            return "s3"
+
+        return "local"
+
     # Use DATABASE_URL from environment if available, otherwise local SQLite for development
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
@@ -50,11 +83,7 @@ class Settings(BaseSettings):
 
     def validate_startup(self) -> None:
         """Validate required environment variables for startup safety."""
-        backend = (self.storage_backend or "").strip().lower()
-        if backend not in {"local", "s3"}:
-            raise RuntimeError(
-                "Invalid STORAGE_BACKEND. Allowed values: local or s3"
-            )
+        backend = self.get_storage_backend()
 
         missing: list[str] = []
 
@@ -71,11 +100,11 @@ class Settings(BaseSettings):
                 missing.append("AWS_SECRET_ACCESS_KEY")
             if not self.aws_region:
                 missing.append("AWS_REGION")
-            if not self.aws_s3_bucket:
-                missing.append("AWS_S3_BUCKET")
+            if not self.get_s3_bucket():
+                missing.append("AWS_S3_BUCKET or S3_BUCKET_NAME")
 
-        if self.aws_s3_bucket == "your-bucket-name":
-            missing.append("AWS_S3_BUCKET")
+        if self.get_s3_bucket() == "your-bucket-name":
+            missing.append("AWS_S3_BUCKET or S3_BUCKET_NAME")
 
         if missing:
             unique_missing = sorted(set(missing))

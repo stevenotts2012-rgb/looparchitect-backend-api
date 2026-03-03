@@ -29,7 +29,8 @@ async def health_ready(db: Session = Depends(get_db)):
     """Readiness probe: DB + Redis + optional S3 checks."""
     db_ok = False
     redis_ok = False
-    s3_ok = settings.storage_backend.lower() != "s3"
+    active_storage_backend = settings.get_storage_backend()
+    s3_ok = active_storage_backend != "s3"
 
     try:
         db.execute(text("SELECT 1"))
@@ -44,7 +45,7 @@ async def health_ready(db: Session = Depends(get_db)):
     except Exception:
         logger.exception("Readiness Redis check failed")
 
-    if settings.storage_backend.lower() == "s3":
+    if active_storage_backend == "s3":
         try:
             missing = []
             if not settings.aws_access_key_id:
@@ -53,8 +54,9 @@ async def health_ready(db: Session = Depends(get_db)):
                 missing.append("AWS_SECRET_ACCESS_KEY")
             if not settings.aws_region:
                 missing.append("AWS_REGION")
-            if not settings.aws_s3_bucket:
-                missing.append("AWS_S3_BUCKET")
+            bucket_name = settings.get_s3_bucket()
+            if not bucket_name:
+                missing.append("AWS_S3_BUCKET or S3_BUCKET_NAME")
 
             if missing:
                 s3_ok = False
@@ -65,7 +67,7 @@ async def health_ready(db: Session = Depends(get_db)):
                     aws_secret_access_key=settings.aws_secret_access_key,
                     region_name=settings.aws_region,
                 )
-                s3_client.head_bucket(Bucket=settings.aws_s3_bucket)
+                s3_client.head_bucket(Bucket=bucket_name)
                 s3_ok = True
         except ClientError:
             logger.exception("Readiness S3 check failed")
@@ -79,7 +81,7 @@ async def health_ready(db: Session = Depends(get_db)):
         "db_ok": db_ok,
         "redis_ok": redis_ok,
         "s3_ok": s3_ok,
-        "storage_backend": settings.storage_backend.lower(),
+        "storage_backend": active_storage_backend,
     }
 
     if not payload["ok"]:

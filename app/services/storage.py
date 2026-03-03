@@ -6,10 +6,11 @@ Falls back to local storage in development when S3 is not configured.
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,11 @@ class S3Storage:
     
     def __init__(self):
         """Initialize S3 client based on environment variables."""
-        self.storage_backend = os.getenv("STORAGE_BACKEND", "local").strip().lower()
-        self.bucket = os.getenv("AWS_S3_BUCKET")
-        self.access_key = os.getenv("AWS_ACCESS_KEY_ID")
-        self.secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        self.region = os.getenv("AWS_REGION")
+        self.storage_backend = settings.get_storage_backend()
+        self.bucket = settings.get_s3_bucket()
+        self.access_key = settings.aws_access_key_id
+        self.secret_key = settings.aws_secret_access_key
+        self.region = settings.aws_region
         
         # Determine if S3 is configured
         self.use_s3 = self.storage_backend == "s3"
@@ -53,10 +54,10 @@ class S3Storage:
                     f"S3 backend selected but missing environment variables: {', '.join(missing)}"
                 )
             self._init_s3_client()
-            logger.info(f"✅ S3 storage configured: bucket={self.bucket}, region={self.region}")
+            logger.info("Storage backend: s3 (bucket=%s, region=%s)", self.bucket, self.region)
         else:
             self._init_local_storage()
-            logger.info("📁 S3 not configured, using local file storage for development")
+            logger.info("Storage backend: local")
     
     def _init_s3_client(self):
         """Initialize boto3 S3 client."""

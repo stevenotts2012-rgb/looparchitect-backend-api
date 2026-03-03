@@ -96,7 +96,8 @@ def run_migrations():
         command.upgrade(alembic_cfg, "head")
         logger.info("✅ Database migrations completed successfully")
     except Exception as e:
-        logger.warning(f"⚠️  Migration warning (may be expected on first run): {e}")
+        logger.exception("❌ Database migrations failed during startup")
+        raise RuntimeError("Database migration failed during startup") from e
 
 
 @asynccontextmanager
@@ -122,13 +123,24 @@ async def lifespan(app: FastAPI):
     
     # Log environment
     logger.info(
-        "Startup configuration: environment=%s debug=%s storage_backend=%s railway=%s port=%s",
+        "Startup configuration: environment=%s debug=%s storage_backend=%s railway=%s port=%s db_configured=%s redis_configured=%s",
         settings.environment,
         settings.debug,
-        settings.storage_backend,
+        settings.get_storage_backend(),
         _is_railway_environment(),
         os.getenv("PORT", "8000"),
+        bool(settings.database_url),
+        bool(settings.redis_url),
     )
+
+    if settings.get_storage_backend() == "s3":
+        logger.info(
+            "Storage backend: s3 (bucket=%s, region=%s)",
+            settings.get_s3_bucket(),
+            settings.aws_region,
+        )
+    else:
+        logger.info("Storage backend: local")
     
     # Run migrations on startup
     run_migrations()

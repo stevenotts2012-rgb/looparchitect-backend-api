@@ -7,9 +7,10 @@ Automatically detects environment and uses:
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Optional
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class StorageService:
 
     def _should_use_s3(self) -> bool:
         """Determine if S3 should be used based on environment variables."""
-        backend = os.getenv("STORAGE_BACKEND", "local").strip().lower()
+        backend = settings.get_storage_backend()
         if backend == "local":
             logger.info("📁 Using local file storage")
             return False
@@ -36,10 +37,10 @@ class StorageService:
         if backend != "s3":
             raise RuntimeError("Invalid STORAGE_BACKEND. Allowed values: local or s3")
 
-        bucket = os.getenv("AWS_S3_BUCKET")
-        access_key = os.getenv("AWS_ACCESS_KEY_ID")
-        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        region = os.getenv("AWS_REGION")
+        bucket = settings.get_s3_bucket()
+        access_key = settings.aws_access_key_id
+        secret_key = settings.aws_secret_access_key
+        region = settings.aws_region
         
         # Use S3 if all required variables are present
         has_s3_config = all([bucket, access_key, secret_key, region])
@@ -59,14 +60,14 @@ class StorageService:
             import boto3
             from botocore.config import Config
             
-            self.bucket_name = os.getenv("AWS_S3_BUCKET")
-            self.region = os.getenv("AWS_REGION")
+            self.bucket_name = settings.get_s3_bucket()
+            self.region = settings.aws_region
             
             # Create S3 client with signature version v4
             self.s3_client = boto3.client(
                 's3',
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                aws_access_key_id=settings.aws_access_key_id,
+                aws_secret_access_key=settings.aws_secret_access_key,
                 region_name=self.region,
                 config=Config(signature_version='s3v4')
             )

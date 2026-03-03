@@ -21,6 +21,7 @@ import librosa
 import numpy as np
 import httpx
 
+from app.config import settings
 from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
@@ -39,11 +40,11 @@ class LoopAnalyzer:
             try:
                 self.s3_client = boto3.client(
                     's3',
-                    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-                    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-                    region_name=os.getenv('AWS_REGION')
+                    aws_access_key_id=settings.aws_access_key_id,
+                    aws_secret_access_key=settings.aws_secret_access_key,
+                    region_name=settings.aws_region
                 )
-                self.bucket_name = os.getenv('AWS_S3_BUCKET')
+                self.bucket_name = settings.get_s3_bucket()
                 logger.info("S3 client initialized for loop analysis")
             except Exception as e:
                 logger.warning(f"S3 client initialization failed: {e}")
