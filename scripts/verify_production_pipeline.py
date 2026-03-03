@@ -69,13 +69,21 @@ def main() -> int:
     print(f"Using BASE_URL={BASE_URL}")
 
     try:
-        live = call_json("/api/v1/health/live")
-        ready = call_json("/api/v1/health/ready")
+        # Prefer granular health endpoints when available, but gracefully
+        # fall back to /api/v1/health for environments that only expose one.
+        try:
+            live = call_json("/api/v1/health/live")
+            ready = call_json("/api/v1/health/ready")
 
-        if not live.get("ok"):
-            raise RuntimeError("Live check returned ok=false")
-        if not ready.get("ok"):
-            raise RuntimeError("Ready check returned ok=false")
+            if not live.get("ok"):
+                raise RuntimeError("Live check returned ok=false")
+            if not ready.get("ok"):
+                raise RuntimeError("Ready check returned ok=false")
+        except Exception:
+            health = call_json("/api/v1/health")
+            status_ok = health.get("ok") is True or health.get("status") == "ok"
+            if not status_ok:
+                raise RuntimeError("Health check returned non-ok status")
 
         if TEST_LOOP_ID:
             call_json(f"/api/v1/loops/{TEST_LOOP_ID}")

@@ -1,0 +1,51 @@
+name: Production Smoke Check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure target URL
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.PRODUCTION_BASE_URL }}" ]; then
+            echo "BASE_URL=${{ secrets.PRODUCTION_BASE_URL }}" >> "$GITHUB_ENV"
+          else
+            echo "BASE_URL=https://web-production-3afc5.up.railway.app" >> "$GITHUB_ENV"
+          fi
+          echo "Using BASE_URL=$BASE_URL"
+
+      - name: Wait for deployment readiness
+        shell: bash
+        run: |
+          for i in {1..30}; do
+            if curl -fsS "$BASE_URL/api/v1/health" >/dev/null; then
+              echo "Health endpoint is reachable"
+              exit 0
+            fi
+            echo "Waiting for deployment... attempt $i/30"
+            sleep 10
+          done
+          echo "Deployment did not become ready in time"
+          exit 1
+
+      - name: Run production verification
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          TEST_LOOP_ID: ${{ secrets.SMOKE_TEST_LOOP_ID }}
+          TEST_ARRANGEMENT_ID: ${{ secrets.SMOKE_TEST_ARRANGEMENT_ID }}
+        run: python scripts/verify_production_pipeline.py
