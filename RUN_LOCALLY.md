@@ -1,5 +1,25 @@
 # Terminal Commands - Copy & Paste Ready
 
+## One-Command Full Local Stack (Backend + Frontend)
+
+```powershell
+# From backend folder
+cd c:\Users\steve\looparchitect-backend-api
+
+# Launches two terminals:
+# - Backend on http://127.0.0.1:8000
+# - Frontend on http://localhost:3001
+.\start-local-stack.ps1
+```
+
+Optional dry-run (prints commands only):
+
+```powershell
+.\start-local-stack.ps1 -DryRun
+```
+
+---
+
 ## Start Backend Locally
 
 ### Step 1: Set Up Environment (First Time Only)
