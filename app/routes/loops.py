@@ -283,11 +283,16 @@ async def create_loop_with_upload(
             'file_url': file_url,
             'file_key': file_key,
             'filename': safe_filename,
-            'bpm': normalized_bpm,
-            'musical_key': analysis_result.get('key'),  # Use musical_key field
-            'duration_seconds': analysis_result.get('duration'),
-            'bars': analysis_result.get('bars')
         })
+
+        if normalized_bpm is not None:
+            loop_data_dict['bpm'] = normalized_bpm
+        if analysis_result.get('key') is not None:
+            loop_data_dict['musical_key'] = analysis_result.get('key')
+        if analysis_result.get('duration') is not None:
+            loop_data_dict['duration_seconds'] = analysis_result.get('duration')
+        if analysis_result.get('bars') is not None:
+            loop_data_dict['bars'] = analysis_result.get('bars')
         
         loop = Loop(**loop_data_dict)
         db.add(loop)
@@ -352,12 +357,12 @@ def get_loop(loop_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/loops/{loop_id}", response_model=LoopResponse, status_code=200)
-def replace_loop(loop_id: int, loop_in: LoopCreate, db: Session = Depends(get_db)):
-    """Fully replace a loop record (all optional fields not provided are set to null).
+def replace_loop(loop_id: int, loop_in: LoopUpdate, db: Session = Depends(get_db)):
+    """Update a loop record via PUT.
     
     Args:
         loop_id: Loop ID to replace
-        loop_in: New loop data
+        loop_in: Loop update data (partial fields accepted)
         db: Database session
         
     Returns:
@@ -370,9 +375,8 @@ def replace_loop(loop_id: int, loop_in: LoopCreate, db: Session = Depends(get_db
     if loop is None:
         raise HTTPException(status_code=404, detail="Loop not found")
 
-    # model_dump(exclude_unset=False) includes defaults (None) so that omitted
-    # optional fields are explicitly cleared – correct PUT (full-replace) semantics.
-    for field, value in loop_in.model_dump(exclude_unset=False).items():
+    update_data = loop_in.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
         setattr(loop, field, value)
 
     try:

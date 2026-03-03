@@ -22,6 +22,10 @@ class LoopCreate(LoopBase):
 
 class LoopUpdate(BaseModel):
     """Schema for updating an existing Loop."""
+    filename: Optional[str] = None
+    file_url: Optional[str] = None
+    file_key: Optional[str] = None
+    title: Optional[str] = None
     name: Optional[str] = None
     tempo: Optional[float] = None
     bpm: Optional[int] = None
