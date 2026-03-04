@@ -300,8 +300,6 @@ def _apply_section_processing(
         shaped = shaped.low_pass_filter(13000)
         # Compression-like effect by slightly boosting
         shaped = shaped + 2
-        # Add texture with slight distortion (simulate compression)
-        shaped = shaped.apply_gain_peak(0.95)
     
     # BRIDGE: Variation and contrast
     elif "bridge" in section_lower:
@@ -335,8 +333,6 @@ def _apply_section_processing(
         shaped = shaped.low_pass_filter(14000)
         # Gain boost for impact
         shaped = shaped + 3
-        # Compression effect - peak limiting
-        shaped = shaped.apply_gain_peak(0.90)
     
     # OUTRO: Fade out, tail effect
     elif "outro" in section_lower:
