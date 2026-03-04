@@ -11,6 +11,7 @@ from pydub.generators import Sine
 
 from app.services.arrangement_engine import (
     generate_arrangement,
+    render_phase_b_arrangement,
     _calculate_sections,
     _apply_section_effects,
     _add_dropouts,
@@ -290,3 +291,31 @@ class TestArrangementGeneration:
 
             assert output_url is not None
             assert timeline_json is not None
+
+
+class TestPhaseBSectionOverrides:
+    """Test section-plan aware rendering path."""
+
+    def test_render_phase_b_arrangement_with_sections_override(self):
+        loop_audio = Sine(220).to_audio_segment(duration=1000)
+        sections_override = [
+            {"name": "intro", "bars": 4, "start_bar": 0, "end_bar": 3, "energy": 0.3},
+            {"name": "drop", "bars": 4, "start_bar": 4, "end_bar": 7, "energy": 0.9},
+        ]
+
+        rendered_audio, timeline_json = render_phase_b_arrangement(
+            loop_audio=loop_audio,
+            bpm=120,
+            target_seconds=32,
+            sections_override=sections_override,
+        )
+
+        timeline = json.loads(timeline_json)
+        assert len(timeline["sections"]) == 2
+        assert timeline["sections"][0]["name"] == "intro"
+        assert timeline["sections"][1]["name"] == "drop"
+        assert "energy" in timeline["sections"][0]
+        assert timeline["sections"][1]["energy"] == 0.9
+
+        # 8 bars @ 120 BPM => 16 seconds
+        assert abs((len(rendered_audio) / 1000.0) - 16.0) < 0.2

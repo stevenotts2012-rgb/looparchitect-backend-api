@@ -190,6 +190,39 @@ class AudioArrangementGenerateRequest(BaseModel):
         default=False,
         description="Whether to generate separate audio stems (future feature)",
     )
+    style_preset: Optional[str] = Field(
+        default=None,
+        description="Optional style preset id (atl, dark, melodic, drill, cinematic, club, experimental)",
+    )
+    style_params: Optional[dict] = Field(
+        default=None,
+        description="Optional style parameter overrides",
+    )
+    style_text_input: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="V2: Natural language style description (e.g., 'Southside type, aggressive, beat switch at bar 32')",
+    )
+    use_ai_parsing: bool = Field(
+        default=False,
+        description="V2: Use LLM to parse style_text_input instead of style_preset",
+    )
+    seed: Optional[int | str] = Field(
+        default=None,
+        description="Optional deterministic seed",
+    )
+    variation_count: int = Field(
+        default=1,
+        ge=1,
+        le=3,
+        description="Optional number of variations to queue (feature-flagged)",
+    )
+
+
+class StructurePreviewItem(BaseModel):
+    name: str
+    bars: int
+    energy: float
 
 
 class AudioArrangementGenerateResponse(BaseModel):
@@ -199,6 +232,17 @@ class AudioArrangementGenerateResponse(BaseModel):
     loop_id: int = Field(..., description="ID of source loop")
     status: str = Field(..., description="Current status: queued, processing, done, failed")
     created_at: datetime = Field(..., description="Timestamp of creation")
+    render_job_ids: List[str] = Field(default_factory=list, description="Reserved for async variation jobs")
+    seed_used: Optional[int] = Field(default=None, description="Resolved seed used for deterministic generation")
+    style_preset: Optional[str] = Field(default=None, description="Resolved style preset id")
+    style_profile: Optional[dict] = Field(
+        default=None,
+        description="V2: Parsed style profile from LLM (includes intent, attributes, sections)",
+    )
+    structure_preview: List[StructurePreviewItem] = Field(
+        default_factory=list,
+        description="Section plan preview generated at request time",
+    )
 
     class Config:
         from_attributes = True
@@ -226,6 +270,8 @@ class ArrangementResponse(BaseModel):
     id: int
     loop_id: int
     status: str
+    progress: Optional[float] = Field(default=0.0, ge=0.0, le=100.0, description="Progress percentage (0-100)")
+    progress_message: Optional[str] = Field(default=None, description="Human-readable progress message")
     error_message: Optional[str] = None
     output_s3_key: Optional[str] = None
     output_url: Optional[str] = None

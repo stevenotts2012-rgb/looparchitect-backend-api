@@ -9,18 +9,102 @@ import logging
 import os
 import tempfile
 import wave
+import json
 from pathlib import Path
 
 import httpx
 from pydub import AudioSegment
 
 from app.db import SessionLocal
+from app.config import settings
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
 from app.services.arrangement_engine import render_phase_b_arrangement
 from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_style_sections(raw_json: str | None) -> list[dict] | None:
+    """
+    Parse style sections from arrangement_json.
+    Supports both legacy format (array) and new format (object with seed + sections).
+    Returns sections list only.
+    """
+    if not raw_json:
+        return None
+
+    try:
+        payload = json.loads(raw_json)
+    except Exception:
+        return None
+
+    # Handle new format: {"seed": 123, "sections": [...]}
+    if isinstance(payload, dict):
+        sections_data = payload.get("sections")
+        if not isinstance(sections_data, list):
+            return None
+        payload = sections_data
+
+    # Handle legacy format: [...]
+    if not isinstance(payload, list):
+        return None
+
+    sections: list[dict] = []
+    current_bar = 0
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        bars = int(item.get("bars", 0) or 0)
+        if bars <= 0:
+            continue
+        name = str(item.get("name", "section"))
+        energy = float(item.get("energy", 0.6) or 0.6)
+        sections.append(
+            {
+                "name": name,
+                "bars": bars,
+                "energy": max(0.0, min(1.0, energy)),
+                "start_bar": current_bar,
+                "end_bar": current_bar + bars - 1,
+            }
+        )
+        current_bar += bars
+
+    return sections or None
+
+
+def _parse_seed_from_json(raw_json: str | None) -> int | None:
+    """Extract seed from arrangement_json if present."""
+    if not raw_json:
+        return None
+
+    try:
+        payload = json.loads(raw_json)
+        if isinstance(payload, dict):
+            seed = payload.get("seed")
+            if seed is not None:
+                return int(seed)
+    except Exception:
+        pass
+
+    return None
+
+
+def _parse_style_profile(style_profile_json: str | None) -> dict | None:
+    """
+    Parse StyleProfile from JSON.
+    Returns dict with resolved_params (style parameters for rendering).
+    """
+    if not style_profile_json:
+        return None
+
+    try:
+        profile = json.loads(style_profile_json)
+        return profile
+    except Exception as e:
+        logger.warning("Failed to parse style_profile_json: %s", e)
+        return None
 
 
 def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
@@ -74,6 +158,8 @@ def run_arrangement_job(arrangement_id: int):
         logger.info(f"Starting arrangement generation for ID {arrangement_id}")
 
         arrangement.status = "processing"
+        arrangement.progress = 0.0
+        arrangement.progress_message = "Starting generation..."
         db.commit()
 
         loop = db.query(Loop).filter(Loop.id == arrangement.loop_id).first()
@@ -106,10 +192,45 @@ def run_arrangement_job(arrangement_id: int):
         # Render arrangement
         bpm = float(loop.bpm or loop.tempo or 120.0)
         target_seconds = int(arrangement.target_seconds or 180)
+        style_sections = None
+        seed = None
+        style_params = None
+        
+        # V2: Parse style profile if using LLM-based styling
+        if arrangement.ai_parsing_used and arrangement.style_profile_json:
+            try:
+                style_profile = _parse_style_profile(arrangement.style_profile_json)
+                if style_profile:
+                    style_params = style_profile.get("resolved_params")
+                    seed = style_profile.get("seed")
+                    style_sections = style_profile.get("sections")
+                    logger.info(
+                        "Using V2 style profile for arrangement %s (archetype: %s, confidence: %.2f)",
+                        arrangement_id,
+                        style_profile.get("intent", {}).get("archetype", "unknown"),
+                        style_profile.get("intent", {}).get("confidence", 0.0),
+                    )
+            except Exception as style_error:
+                logger.warning("Failed to load V2 style profile: %s", style_error)
+                # Fall through to V1 parsing
+        
+        # V1: Parse style from arrangement_json (fallback)
+        if settings.feature_style_engine and not style_sections:
+            style_sections = _parse_style_sections(arrangement.arrangement_json)
+            if not seed:
+                seed = _parse_seed_from_json(arrangement.arrangement_json)
+            if style_sections:
+                logger.info("Applying V1 style section plan for arrangement %s", arrangement_id)
+            if seed is not None:
+                logger.info("Using seed %s for pattern generation in arrangement %s", seed, arrangement_id)
+
         arranged_audio, timeline_json = render_phase_b_arrangement(
             loop_audio=loop_audio,
             bpm=bpm,
             target_seconds=target_seconds,
+            sections_override=style_sections,
+            seed=seed,
+            style_params=style_params,
         )
 
         # Export to temp WAV and upload to S3
@@ -139,6 +260,8 @@ def run_arrangement_job(arrangement_id: int):
         )
 
         arrangement.status = "done"
+        arrangement.progress = 100.0
+        arrangement.progress_message = "Generation complete"
         arrangement.output_s3_key = output_key
         arrangement.output_url = output_url
         arrangement.arrangement_json = timeline_json

@@ -7,6 +7,8 @@ Handles creation, status tracking, and downloads of generated audio arrangements
 import logging
 import os
 import tempfile
+import json
+import asyncio
 from pathlib import Path
 
 import boto3
@@ -27,6 +29,9 @@ from app.schemas.arrangement import (
     ArrangementResponse,
 )
 from app.services.arrangement_jobs import run_arrangement_job
+from app.services.style_service import style_service
+from app.services.llm_style_parser import llm_style_parser
+from app.services.rule_based_fallback import parse_with_rules
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +72,15 @@ def create_arrangement(
 
 
 @router.get(
-    "/",
+    "",
     response_model=list[ArrangementResponse],
     summary="List arrangements",
     description="List arrangements with optional loop_id filter.",
+)
+@router.get(
+    "/",
+    response_model=list[ArrangementResponse],
+    include_in_schema=False,
 )
 def list_arrangements(
     loop_id: int | None = None,
@@ -93,7 +103,7 @@ def list_arrangements(
     "The arrangement will be generated asynchronously. Use the returned arrangement_id "
     "to poll status or download the result.",
 )
-def generate_arrangement(
+async def generate_arrangement(
     request: AudioArrangementGenerateRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -106,6 +116,8 @@ def generate_arrangement(
     - **genre**: Optional genre hint
     - **intensity**: Optional intensity level (low/medium/high)
     - **include_stems**: Whether to generate separate stems
+    - **style_text_input**: V2 - Natural language style description
+    - **use_ai_parsing**: V2 - Enable LLM parsing of style_text_input
 
     Returns immediately with arrangement_id. Check status endpoint for progress.
     """
@@ -138,6 +150,72 @@ def generate_arrangement(
                 ),
             )
 
+    style_preset = None
+    structure_json = None
+    seed_used = None
+    structure_preview = []
+    style_profile_json = None
+    ai_parsing_used = False
+
+    # V2: Handle LLM-based style parsing
+    if request.use_ai_parsing and request.style_text_input:
+        try:
+            logger.info(f"Parsing style text: {request.style_text_input}")
+            loop_metadata = {
+                "bpm": float(loop.bpm or loop.tempo or 120.0),
+                "key": loop.key or "C",
+                "duration": request.target_seconds,
+                "bars": int(loop.bars or 4),
+            }
+            
+            # Parse style intent using LLM or fallback
+            style_profile = await llm_style_parser.parse_style_intent(
+                user_input=request.style_text_input,
+                loop_metadata=loop_metadata,
+                overrides=None,  # Could extend to support style_params override
+            )
+            
+            # Serialize StyleProfile to JSON
+            style_profile_json = style_profile.model_dump_json()
+            ai_parsing_used = True
+            style_preset = style_profile.resolved_preset
+            seed_used = style_profile.seed
+            
+            # Extract section structure for preview
+            structure_preview = style_profile.sections
+            structure_json = json.dumps({
+                "seed": seed_used,
+                "sections": structure_preview,
+            })
+            
+            logger.info(f"Style profile parsed: preset={style_preset}, confidence={style_profile.intent.confidence}")
+        except Exception as llm_error:
+            logger.warning(f"LLM style parsing failed: {llm_error}")
+            # Fall through to preset-based or default handling
+
+    # V1: Handle preset-based style configuration (fallback)
+    elif settings.feature_style_engine and request.style_preset:
+        try:
+            bpm_for_plan = float(loop.bpm or loop.tempo or 120.0)
+            loop_bars = int(loop.bars or 4)
+            style_preview = style_service.preview_structure(
+                style_preset=request.style_preset,
+                target_seconds=request.target_seconds,
+                bpm=bpm_for_plan,
+                loop_bars=loop_bars,
+                seed=request.seed,
+            )
+            style_preset = style_preview.get("style_preset")
+            seed_used = style_preview.get("seed_used")
+            structure_preview = style_preview.get("sections", [])
+            # Wrap structure and seed for serialization
+            structure_json = json.dumps({
+                "seed": seed_used,
+                "sections": structure_preview,
+            })
+        except Exception as style_error:
+            logger.warning("Style preview generation skipped: %s", style_error)
+
     # Create arrangement record
     arrangement = Arrangement(
         loop_id=request.loop_id,
@@ -146,6 +224,9 @@ def generate_arrangement(
         genre=request.genre,
         intensity=request.intensity,
         include_stems=request.include_stems,
+        arrangement_json=structure_json,
+        style_profile_json=style_profile_json,
+        ai_parsing_used=ai_parsing_used,
     )
     db.add(arrangement)
     db.commit()
@@ -159,6 +240,11 @@ def generate_arrangement(
         loop_id=arrangement.loop_id,
         status=arrangement.status,
         created_at=arrangement.created_at,
+        render_job_ids=[],
+        seed_used=seed_used,
+        style_preset=style_preset,
+        style_profile=json.loads(style_profile_json) if style_profile_json else None,
+        structure_preview=structure_preview,
     )
 
 

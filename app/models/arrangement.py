@@ -1,7 +1,7 @@
 """SQLAlchemy model for Arrangement (audio generation workflow)."""
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Index, Float
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base
@@ -15,6 +15,8 @@ class Arrangement(Base):
     id = Column(Integer, primary_key=True, index=True)
     loop_id = Column(Integer, ForeignKey("loops.id"), nullable=False, index=True)
     status = Column(String, default="queued", nullable=False)  # queued, processing, done, failed
+    progress = Column(Float, default=0.0, nullable=True)  # 0-100 percentage
+    progress_message = Column(String(256), nullable=True)  # Human-readable message
     target_seconds = Column(Integer, nullable=False)  # User-requested duration
     genre = Column(String, nullable=True)
     intensity = Column(String, nullable=True)
@@ -28,6 +30,8 @@ class Arrangement(Base):
     
     # Metadata
     arrangement_json = Column(Text, nullable=True)  # JSON timeline with sections
+    style_profile_json = Column(Text, nullable=True)  # V2: LLM-generated StyleProfile as JSON
+    ai_parsing_used = Column(Boolean, nullable=True, default=False)  # V2: Whether LLM parsing was used
     error_message = Column(Text, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)

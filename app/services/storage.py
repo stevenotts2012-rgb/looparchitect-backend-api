@@ -146,7 +146,6 @@ class S3Storage:
             # Extract filename from key (e.g., "uploads/file.wav" -> "file.wav")
             filename = key.split("/")[-1]
             file_path = self.upload_dir / filename
-
             file_path.write_bytes(file_bytes)
             logger.info(f"📁 Uploaded locally: {file_path}")
 

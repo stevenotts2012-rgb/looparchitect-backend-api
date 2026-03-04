@@ -7,11 +7,23 @@ Handles loading loops, applying effects, and generating full-length arrangements
 import json
 import logging
 import os
+import random
 from pathlib import Path
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 
 import numpy as np
 from pydub import AudioSegment
+
+from app.config import settings
+from app.style_engine.seed import create_rng
+from app.style_engine.drums import generate_drum_pattern
+from app.style_engine.bass import generate_bassline
+from app.style_engine.melody import generate_melody
+from app.style_engine.audio_synthesis import (
+    synthesize_drums,
+    synthesize_bass,
+    synthesize_melody,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,20 +87,60 @@ def render_phase_b_arrangement(
     loop_audio: AudioSegment,
     bpm: float,
     target_seconds: int,
+    sections_override: Optional[List[Dict]] = None,
+    seed: Optional[int] = None,
+    root_note: int = 48,
+    style_params: Optional[Dict] = None,
 ) -> Tuple[AudioSegment, str]:
     """
     Render the Phase B arrangement by repeating the loop per section.
-
+    
+    Args:
+        loop_audio: Source loop audio
+        bpm: Tempo
+        target_seconds: Target duration
+        sections_override: Optional section structure override
+        seed: Optional seed for deterministic pattern generation
+        root_note: Root MIDI note for bass/melody patterns
+        style_params: V2 - Optional resolved style parameters dict (aggression, melody_complexity, etc.)
+    
     Returns:
         Tuple of (audio_segment, timeline_json)
     """
-    sections = build_phase_b_sections(target_seconds, bpm)
+    # V2: Store style params for potential future use in pattern generation
+    if style_params:
+        logger.info(
+            "Arrangement using V2 style parameters: aggression=%.2f, melody_complexity=%.2f",
+            style_params.get("aggression", 0.5),
+            style_params.get("melody_complexity", 0.5),
+        )
+    
+    sections = sections_override or build_phase_b_sections(target_seconds, bpm)
     bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
+    
+    # Create RNG for pattern generation if seed provided
+    rng = None
+    if seed is not None:
+        _, rng = create_rng(seed)  # Unpack tuple (normalized_seed, rng)
 
     arranged = AudioSegment.silent(duration=0)
     for section in sections:
         section_ms = section["bars"] * bar_duration_ms
         section_audio = _repeat_audio_to_duration(loop_audio, section_ms)
+        
+        # Generate and mix patterns if feature enabled
+        if rng is not None and settings.feature_pattern_generation:
+            section_audio = _generate_and_mix_patterns(
+                section_audio,
+                section_name=section["name"],
+                section_bars=section["bars"],
+                bpm=bpm,
+                rng=rng,
+                root_note=root_note,
+            )
+        
+        section_energy = float(section.get("energy", 0.6))
+        section_audio = _shape_section_audio(section_audio, bar_duration_ms, section_energy)
         arranged += section_audio
 
     timeline_json = _generate_phase_b_timeline_json(sections, bpm)
@@ -103,6 +155,107 @@ def _repeat_audio_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegme
     repeats = (target_ms // len(audio)) + 1
     extended = audio * repeats
     return extended[:target_ms]
+
+
+def _generate_and_mix_patterns(
+    audio: AudioSegment,
+    section_name: str,
+    section_bars: int,
+    bpm: float,
+    rng: random.Random,
+    root_note: int = 48,  # C3
+    mix_level: float = 0.3,
+) -> AudioSegment:
+    """
+    Generate and mix drum/bass/melody patterns with the loop audio.
+    
+    Args:
+        audio: Source loop audio
+        section_name: Section name for pattern variation
+        section_bars: Number of bars in section
+        bpm: Tempo
+        rng: Seeded random number generator
+        root_note: Root MIDI note for bass/melody
+        mix_level: Volume level for generated patterns (0.0 to 1.0)
+    
+    Returns:
+        AudioSegment with mixed patterns
+    """
+    if not settings.feature_pattern_generation:
+        return audio
+    
+    # Determine pattern density based on section
+    section_lower = section_name.lower()
+    if "intro" in section_lower or "outro" in section_lower:
+        density = 0.3
+        complexity = 0.2
+    elif "verse" in section_lower:
+        density = 0.6
+        complexity = 0.5
+    elif "bridge" in section_lower:
+        density = 0.4
+        complexity = 0.7
+    else:  # hook/chorus
+        density = 0.8
+        complexity = 0.6
+    
+    # Generate patterns
+    drum_pattern = generate_drum_pattern(rng, density=density, hat_roll_probability=0.2)
+    bass_events = generate_bassline(rng, root_note=root_note, glide_probability=0.3)
+    melody_events = generate_melody(rng, root_note=root_note + 12, complexity=complexity)
+    
+    # Synthesize to audio
+    drums_audio = synthesize_drums(drum_pattern, bpm, bars=section_bars)
+    bass_audio = synthesize_bass(bass_events, bpm, bars=section_bars)
+    melody_audio = synthesize_melody(melody_events, bpm, bars=section_bars)
+    
+    # Trim/extend to match source audio length
+    target_len = len(audio)
+    drums_audio = drums_audio[:target_len] if len(drums_audio) > target_len else drums_audio + AudioSegment.silent(target_len - len(drums_audio))
+    bass_audio = bass_audio[:target_len] if len(bass_audio) > target_len else bass_audio + AudioSegment.silent(target_len - len(bass_audio))
+    melody_audio = melody_audio[:target_len] if len(melody_audio) > target_len else melody_audio + AudioSegment.silent(target_len - len(melody_audio))
+    
+    # Apply mix level (convert to dB reduction)
+    mix_db = int(-10 * (1.0 - mix_level))
+    drums_audio = drums_audio + mix_db
+    bass_audio = bass_audio + mix_db
+    melody_audio = melody_audio + mix_db
+    
+    # Mix with original audio
+    mixed = audio.overlay(drums_audio).overlay(bass_audio).overlay(melody_audio)
+    return mixed
+
+
+def _shape_section_audio(audio: AudioSegment, bar_duration_ms: int, energy: float) -> AudioSegment:
+    """Apply deterministic section shaping based on energy to vary density/intensity."""
+    energy = max(0.0, min(1.0, energy))
+    shaped = audio
+
+    if energy < 0.45:
+        # Low energy: reduce density by ducking every other bar and low-pass filtering.
+        pieces: List[AudioSegment] = []
+        total_bars = max(1, len(shaped) // max(1, bar_duration_ms))
+        for bar_idx in range(total_bars):
+            start = bar_idx * bar_duration_ms
+            end = min(len(shaped), start + bar_duration_ms)
+            bar_audio = shaped[start:end]
+            if bar_idx % 2 == 1:
+                bar_audio = bar_audio - 5
+            pieces.append(bar_audio)
+        shaped = AudioSegment.silent(duration=0)
+        for piece in pieces:
+            shaped += piece
+        shaped = shaped.low_pass_filter(2600)
+        shaped = shaped - 2
+    elif energy > 0.8:
+        # High energy: slight gain + gentle high-pass for perceived brightness/punch.
+        shaped = shaped + 1
+        shaped = shaped.high_pass_filter(80)
+    else:
+        # Mid energy: light normalization via subtle gain trim.
+        shaped = shaped - 1
+
+    return shaped
 
 
 def _generate_phase_b_timeline_json(sections: List[Dict[str, int]], bpm: float) -> str:
@@ -120,6 +273,7 @@ def _generate_phase_b_timeline_json(sections: List[Dict[str, int]], bpm: float) 
             {
                 "name": section["name"],
                 "bars": section["bars"],
+                "energy": round(float(section.get("energy", 0.6)), 3),
                 "start_bar": section["start_bar"],
                 "end_bar": section["end_bar"],
                 "start_seconds": round(start_seconds, 3),

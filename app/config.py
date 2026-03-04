@@ -17,6 +17,21 @@ class Settings(BaseSettings):
     frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "")
     cors_allowed_origins: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
     api_base_url: str = os.getenv("API_BASE_URL", "")
+    feature_style_engine: bool = os.getenv("FEATURE_STYLE_ENGINE", "false").lower() == "true"
+    feature_style_sliders: bool = os.getenv("FEATURE_STYLE_SLIDERS", "false").lower() == "true"
+    feature_variations: bool = os.getenv("FEATURE_VARIATIONS", "false").lower() == "true"
+    feature_beat_switch: bool = os.getenv("FEATURE_BEAT_SWITCH", "false").lower() == "true"
+    feature_midi_export: bool = os.getenv("FEATURE_MIDI_EXPORT", "false").lower() == "true"
+    feature_stem_export: bool = os.getenv("FEATURE_STEM_EXPORT", "false").lower() == "true"
+    feature_pattern_generation: bool = os.getenv("FEATURE_PATTERN_GENERATION", "false").lower() == "true"
+    
+    # LLM Style Engine V2 settings
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4")
+    openai_timeout: int = int(os.getenv("OPENAI_TIMEOUT", "30"))
+    openai_max_retries: int = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
+    feature_llm_style_parsing: bool = os.getenv("FEATURE_LLM_STYLE_PARSING", "false").lower() == "true"
 
     @property
     def allowed_origins(self) -> list[str]:
@@ -110,6 +125,15 @@ class Settings(BaseSettings):
             unique_missing = sorted(set(missing))
             raise RuntimeError(
                 f"Missing required environment variables: {', '.join(unique_missing)}"
+            )
+        
+        # Warn if LLM parsing is enabled but API key not configured
+        if self.feature_llm_style_parsing and not self.openai_api_key:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "FEATURE_LLM_STYLE_PARSING is enabled but OPENAI_API_KEY is not configured. "
+                "LLM-powered style parsing will fail. Set OPENAI_API_KEY to enable this feature."
             )
 
     class Config:
