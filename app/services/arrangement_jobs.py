@@ -8,7 +8,6 @@ import io
 import logging
 import os
 import tempfile
-import wave
 import json
 from pathlib import Path
 
@@ -108,23 +107,17 @@ def _parse_style_profile(style_profile_json: str | None) -> dict | None:
 
 
 def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
-    """Load WAV bytes without requiring ffmpeg/ffprobe."""
+    """Load WAV/audio bytes using pydub's robust decoder."""
     try:
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
-            channels = wav_file.getnchannels()
-            sample_width = wav_file.getsampwidth()
-            frame_rate = wav_file.getframerate()
-            pcm_data = wav_file.readframes(wav_file.getnframes())
-
-        return AudioSegment(
-            data=pcm_data,
-            sample_width=sample_width,
-            frame_rate=frame_rate,
-            channels=channels,
-        )
+        # Use pydub's AudioSegment.from_file for robust handling
+        # It automatically detects format and uses ffmpeg/simpleaudio as needed
+        return AudioSegment.from_file(io.BytesIO(wav_bytes), format="wav")
     except Exception as decode_error:
-        logger.warning("Failed to decode WAV bytes, falling back to silence: %s", decode_error)
-        return AudioSegment.silent(duration=1000)
+        logger.error("Failed to decode audio bytes (format may be unsupported): %s", decode_error)
+        # Log the first 100 bytes as hex to help debug format issues
+        hex_preview = wav_bytes[:100].hex() if len(wav_bytes) >= 100 else wav_bytes.hex()
+        logger.warning("Audio byte preview (first 100 bytes hex): %s", hex_preview)
+        raise ValueError(f"Cannot decode audio file: {decode_error}") from decode_error
 
 
 def run_arrangement_job(arrangement_id: int):
