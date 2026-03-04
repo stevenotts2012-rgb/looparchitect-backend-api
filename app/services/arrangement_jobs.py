@@ -107,17 +107,49 @@ def _parse_style_profile(style_profile_json: str | None) -> dict | None:
 
 
 def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
-    """Load WAV/audio bytes using pydub's robust decoder."""
+    """Load WAV/audio bytes with multiple fallback strategies."""
+    if not wav_bytes or len(wav_bytes) < 44:
+        raise ValueError(f"Audio file too small: {len(wav_bytes)} bytes")
+    
+    # Strategy 1: Try pydub with automatic format detection (works for most files)
     try:
-        # Use pydub's AudioSegment.from_file for robust handling
-        # It automatically detects format and uses ffmpeg/simpleaudio as needed
+        logger.info("Attempting audio load with format auto-detection...")
+        # Don't specify format - let pydub auto-detect
+        return AudioSegment.from_file(io.BytesIO(wav_bytes))
+    except Exception as e1:
+        logger.warning("Auto-detection failed: %s. Trying explicit WAV format...", str(e1)[:100])
+    
+    # Strategy 2: Try explicit WAV format with codec handling
+    try:
+        logger.info("Attempting audio load with explicit WAV format...")
+        # Try with explicit WAV format specification
         return AudioSegment.from_file(io.BytesIO(wav_bytes), format="wav")
-    except Exception as decode_error:
-        logger.error("Failed to decode audio bytes (format may be unsupported): %s", decode_error)
-        # Log the first 100 bytes as hex to help debug format issues
-        hex_preview = wav_bytes[:100].hex() if len(wav_bytes) >= 100 else wav_bytes.hex()
-        logger.warning("Audio byte preview (first 100 bytes hex): %s", hex_preview)
-        raise ValueError(f"Cannot decode audio file: {decode_error}") from decode_error
+    except Exception as e2:
+        logger.warning("Explicit WAV format failed: %s. Trying MP3 format...", str(e2)[:100])
+    
+    # Strategy 3: Try MP3 format (sometimes files are mislabeled)
+    try:
+        logger.info("Attempting audio load with MP3 format...")
+        return AudioSegment.from_file(io.BytesIO(wav_bytes), format="mp3")
+    except Exception as e3:
+        logger.warning("MP3 format failed: %s", str(e3)[:100])
+    
+    # Strategy 4: Try OGG format
+    try:
+        logger.info("Attempting audio load with OGG format...")
+        return AudioSegment.from_file(io.BytesIO(wav_bytes), format="ogg")
+    except Exception as e4:
+        logger.warning("OGG format failed: %s", str(e4)[:100])
+    
+    # All strategies failed - provide detailed error
+    error_details = f"Auto-detect: {str(e1)[:80]} | WAV: {str(e2)[:80]} | MP3: {str(e3)[:80]} | OGG: {str(e4)[:80]}"
+    logger.error("Audio decoding failed after all strategies. Details: %s", error_details)
+    
+    # Log file signature for debugging
+    sig = wav_bytes[:4].hex() if len(wav_bytes) >= 4 else "???"
+    logger.error("Audio file signature (first 4 bytes): %s", sig)
+    
+    raise ValueError(f"Cannot decode audio file in any supported format. File signature: {sig}. Errors: {error_details}")
 
 
 def run_arrangement_job(arrangement_id: int):
