@@ -28,6 +28,86 @@ from app.style_engine.audio_synthesis import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_genre_from_style(style_params: Optional[Dict]) -> str:
+    """Resolve high-level genre from style params and LLM style metadata."""
+    if not style_params:
+        return "generic"
+
+    explicit_genre = str(style_params.get("genre") or style_params.get("__genre_hint") or "").lower().strip()
+    archetype = str(style_params.get("__archetype") or "").lower().strip()
+    raw_input = str(style_params.get("__raw_input") or "").lower().strip()
+    signal = " ".join(part for part in (explicit_genre, archetype, raw_input) if part)
+
+    if any(token in signal for token in ("trap", "drill", "atl")):
+        return "trap"
+    if any(token in signal for token in ("r&b", "rnb", "soul", "neo soul", "melodic")):
+        return "rnb"
+    if any(token in signal for token in ("pop", "dance pop", "radio pop")):
+        return "pop"
+    if any(token in signal for token in ("cinematic", "film", "score")):
+        return "cinematic"
+    return "generic"
+
+
+def _genre_section_adjustments(genre: str, section_name: str) -> Dict[str, float]:
+    """Return genre-aware processing targets for each section."""
+    section_lower = section_name.lower()
+
+    base = {
+        "low_pass": 12000.0,
+        "high_pass": 80.0,
+        "gain_db": 0.0,
+        "alt_bar_duck_db": 0.0,
+        "fade_in_ratio": 0.0,
+        "fade_out_ratio": 0.0,
+    }
+
+    if "intro" in section_lower:
+        base.update({"low_pass": 4200.0, "high_pass": 60.0, "gain_db": -2.5, "fade_in_ratio": 0.32})
+    elif "verse" in section_lower:
+        base.update({"low_pass": 12000.0, "high_pass": 100.0, "gain_db": -0.5})
+    elif "hook" in section_lower:
+        base.update({"low_pass": 13200.0, "high_pass": 150.0, "gain_db": 2.0})
+    elif "bridge" in section_lower:
+        base.update({"low_pass": 5200.0, "high_pass": 180.0, "gain_db": -1.5, "alt_bar_duck_db": 1.0})
+    elif "chorus" in section_lower:
+        base.update({"low_pass": 14200.0, "high_pass": 120.0, "gain_db": 2.8})
+    elif "outro" in section_lower:
+        base.update({"low_pass": 3600.0, "high_pass": 60.0, "gain_db": -3.5, "fade_out_ratio": 0.42})
+
+    if genre == "trap":
+        if "hook" in section_lower or "chorus" in section_lower:
+            base["high_pass"] += 20.0
+            base["gain_db"] += 0.7
+        if "bridge" in section_lower:
+            base["low_pass"] -= 700.0
+            base["alt_bar_duck_db"] += 0.6
+    elif genre == "rnb":
+        base["low_pass"] = max(3200.0, base["low_pass"] - 1200.0)
+        base["high_pass"] = max(45.0, base["high_pass"] - 25.0)
+        if "hook" in section_lower or "chorus" in section_lower:
+            base["gain_db"] -= 0.5
+        if "intro" in section_lower or "outro" in section_lower:
+            base["fade_in_ratio"] = max(base["fade_in_ratio"], 0.38)
+            base["fade_out_ratio"] = max(base["fade_out_ratio"], 0.46)
+    elif genre == "pop":
+        base["high_pass"] += 10.0
+        base["low_pass"] += 800.0
+        if "hook" in section_lower or "chorus" in section_lower:
+            base["gain_db"] += 0.4
+        if "bridge" in section_lower:
+            base["alt_bar_duck_db"] = max(0.6, base["alt_bar_duck_db"] - 0.2)
+    elif genre == "cinematic":
+        base["high_pass"] = max(50.0, base["high_pass"] - 20.0)
+        base["low_pass"] = max(2800.0, base["low_pass"] - 1700.0)
+        if "hook" in section_lower or "chorus" in section_lower:
+            base["gain_db"] -= 0.8
+        if "bridge" in section_lower:
+            base["alt_bar_duck_db"] += 0.8
+
+    return base
+
+
 def build_phase_b_sections(target_seconds: int, bpm: float) -> List[Dict[str, int]]:
     """
     Build a standard arrangement timeline using bar counts.
@@ -107,13 +187,17 @@ def render_phase_b_arrangement(
     Returns:
         Tuple of (audio_segment, timeline_json)
     """
-    # V2: Store style params for potential future use in pattern generation
+    # V2: Store style params for arrangement rendering and genre-aware processing
+    genre_profile = _resolve_genre_from_style(style_params)
     if style_params:
         logger.info(
-            "Arrangement using V2 style parameters: aggression=%.2f, melody_complexity=%.2f",
+            "Arrangement using V2 style parameters: aggression=%.2f, melody_complexity=%.2f, genre_profile=%s",
             style_params.get("aggression", 0.5),
             style_params.get("melody_complexity", 0.5),
+            genre_profile,
         )
+    else:
+        logger.info("Arrangement rendering with default genre profile: %s", genre_profile)
     
     sections = sections_override or build_phase_b_sections(target_seconds, bpm)
     bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
@@ -149,6 +233,8 @@ def render_phase_b_arrangement(
             energy=section_energy,
             section_index=section_index,
             total_sections=total_sections,
+            genre=genre_profile,
+            style_params=style_params,
         )
         arranged += section_audio
 
@@ -242,6 +328,8 @@ def _apply_section_processing(
     energy: float,
     section_index: int,
     total_sections: int,
+    genre: str = "generic",
+    style_params: Optional[Dict] = None,
 ) -> AudioSegment:
     """
     Apply intelligent section-specific processing to create arrangement variation.
@@ -268,47 +356,59 @@ def _apply_section_processing(
     
     # Calculate progression ratio (0=start, 1=end)
     progress = section_index / max(1, total_sections - 1) if total_sections > 1 else 0.5
+
+    # Style-driven intensity controls (when present)
+    fx_density = float((style_params or {}).get("fx_density", 0.5))
+    aggression = float((style_params or {}).get("aggression", 0.5))
+
+    adjustments = _genre_section_adjustments(genre, section_name)
+    low_pass_hz = int(adjustments["low_pass"])
+    high_pass_hz = int(adjustments["high_pass"])
+    gain_db = adjustments["gain_db"]
+    alt_bar_duck_db = adjustments["alt_bar_duck_db"]
     
     # INTRO: Gradual build from silence to presence
     if "intro" in section_lower:
-        logger.info(f"Applying Intro processing: gradual fade-in, subtle filtering")
+        logger.info("Applying Intro processing: genre=%s", genre)
         # Low-pass for warmth
-        shaped = shaped.low_pass_filter(4000)
+        shaped = shaped.low_pass_filter(low_pass_hz)
         # Gentle fade-in
-        fade_ms = min(2000, len(shaped) // 2)
+        fade_ms = min(int(len(shaped) * max(0.2, adjustments["fade_in_ratio"])), len(shaped) // 2)
         shaped = shaped.fade_in(fade_ms)
         # Slight reduction to let it build
-        shaped = shaped - 3
-        shaped = shaped.high_pass_filter(60)
+        shaped = shaped - (2 + (1 - fx_density))
+        shaped = shaped.high_pass_filter(high_pass_hz)
     
     # VERSE: Balanced, groovy, presence
     elif "verse" in section_lower:
-        logger.info(f"Applying Verse processing: balanced EQ, main groove feel")
+        logger.info("Applying Verse processing: genre=%s", genre)
         # Add some presence with gentle high-pass
-        shaped = shaped.high_pass_filter(100)
+        shaped = shaped.high_pass_filter(high_pass_hz)
         # Subtle compression feel - reduce peaks slightly
         shaped = shaped - 1 if energy < 0.6 else shaped
         # Balanced EQ
-        shaped = shaped.low_pass_filter(12000)
+        shaped = shaped.low_pass_filter(low_pass_hz)
+        if gain_db != 0:
+            shaped = shaped + gain_db
     
     # HOOK: Bright, punchy, emphasized
     elif "hook" in section_lower:
-        logger.info(f"Applying Hook processing: bright EQ, compression, emphasis")
+        logger.info("Applying Hook processing: genre=%s", genre)
         # Bright high-pass for punch
-        shaped = shaped.high_pass_filter(150)
+        shaped = shaped.high_pass_filter(high_pass_hz)
         # Add presence in upper midrange
-        shaped = shaped.low_pass_filter(13000)
+        shaped = shaped.low_pass_filter(low_pass_hz)
         # Compression-like effect by slightly boosting
-        shaped = shaped + 2
+        shaped = shaped + (gain_db + aggression)
     
     # BRIDGE: Variation and contrast
     elif "bridge" in section_lower:
-        logger.info(f"Applying Bridge processing: variation, filtered effect, dynamics")
+        logger.info("Applying Bridge processing: genre=%s", genre)
         # Different filtering for variation
-        shaped = shaped.low_pass_filter(5000)  # More filtered for variation
-        shaped = shaped.high_pass_filter(200)
+        shaped = shaped.low_pass_filter(low_pass_hz)  # More filtered for variation
+        shaped = shaped.high_pass_filter(high_pass_hz)
         # Slightly reducing energy to create contrast
-        shaped = shaped - 2
+        shaped = shaped + gain_db
         # Add dynamic feel with subtle level variation
         pieces: List[AudioSegment] = []
         total_bars = max(1, len(shaped) // max(1, bar_duration_ms))
@@ -318,7 +418,7 @@ def _apply_section_processing(
             bar_audio = shaped[start:end]
             # Alternate bar dynamics
             if bar_idx % 2 == 0:
-                bar_audio = bar_audio - 1
+                bar_audio = bar_audio - alt_bar_duck_db
             pieces.append(bar_audio)
         shaped = AudioSegment.silent(duration=0)
         for piece in pieces:
@@ -326,40 +426,40 @@ def _apply_section_processing(
     
     # CHORUS: Maximum impact and presence
     elif "chorus" in section_lower:
-        logger.info(f"Applying Chorus processing: maximum presence, bright, punchy")
+        logger.info("Applying Chorus processing: genre=%s", genre)
         # Very bright high-pass for clarity
-        shaped = shaped.high_pass_filter(120)
+        shaped = shaped.high_pass_filter(high_pass_hz)
         # Presence boost
-        shaped = shaped.low_pass_filter(14000)
+        shaped = shaped.low_pass_filter(low_pass_hz)
         # Gain boost for impact
-        shaped = shaped + 3
+        shaped = shaped + (gain_db + aggression)
     
     # OUTRO: Fade out, tail effect
     elif "outro" in section_lower:
-        logger.info(f"Applying Outro processing: fade-out, reverb tail effect")
+        logger.info("Applying Outro processing: genre=%s", genre)
         # Dark filtering for fadeout feel
-        shaped = shaped.low_pass_filter(3500)
+        shaped = shaped.low_pass_filter(low_pass_hz)
         # Fade out effect
-        fade_ms = min(3000, len(shaped) // 2)
+        fade_ms = min(int(len(shaped) * max(0.25, adjustments["fade_out_ratio"])), len(shaped) // 2)
         shaped = shaped.fade_out(fade_ms)
         # Reduce level for natural tail
-        shaped = shaped - 4
+        shaped = shaped + gain_db
     
     # DEFAULT: Energy-based shaping
     else:
         if energy < 0.45:
             # Low energy: sparse, filtered
-            shaped = shaped.low_pass_filter(3500)
+            shaped = shaped.low_pass_filter(max(3500, low_pass_hz - 1200))
             shaped = shaped - 2
         elif energy > 0.8:
             # High energy: bright, punchy
-            shaped = shaped.high_pass_filter(100)
-            shaped = shaped.low_pass_filter(13000)
-            shaped = shaped + 2
+            shaped = shaped.high_pass_filter(high_pass_hz)
+            shaped = shaped.low_pass_filter(low_pass_hz)
+            shaped = shaped + (2 + aggression)
         else:
             # Mid energy: balanced
-            shaped = shaped.high_pass_filter(80)
-            shaped = shaped.low_pass_filter(12000)
+            shaped = shaped.high_pass_filter(max(70, high_pass_hz - 10))
+            shaped = shaped.low_pass_filter(low_pass_hz)
     
     return shaped
 
@@ -374,6 +474,8 @@ def _shape_section_audio(audio: AudioSegment, bar_duration_ms: int, energy: floa
         energy=energy,
         section_index=0,
         total_sections=1,
+        genre="generic",
+        style_params=None,
     )
 
 

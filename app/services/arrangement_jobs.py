@@ -203,8 +203,19 @@ def run_arrangement_job(arrangement_id: int):
                 response.raise_for_status()
                 input_bytes = response.content
 
-            # Load WAV audio bytes without relying on ffmpeg
-            loop_audio = _load_audio_segment_from_wav_bytes(input_bytes)
+            logger.info(
+                "Downloaded audio from S3: key=%s, size=%d bytes, first 4 bytes (hex)=%s",
+                loop.file_key,
+                len(input_bytes),
+                input_bytes[:4].hex() if len(input_bytes) >= 4 else "???"
+            )
+
+            # Load audio with multi-strategy decoder
+            try:
+                loop_audio = _load_audio_segment_from_wav_bytes(input_bytes)
+            except ValueError as decode_error:
+                logger.error("All decoding strategies failed for loop %s: %s", arrangement.loop_id, decode_error)
+                raise ValueError(f"Cannot decode loop audio: {decode_error}") from decode_error
         else:
             # Local fallback for development
             filename = loop.file_key.split("/")[-1]
@@ -212,7 +223,13 @@ def run_arrangement_job(arrangement_id: int):
             if not local_path.exists():
                 raise FileNotFoundError(f"Loop file not found: {local_path}")
             with open(local_path, "rb") as local_audio_file:
-                loop_audio = _load_audio_segment_from_wav_bytes(local_audio_file.read())
+                input_bytes = local_audio_file.read()
+            logger.info(
+                "Loaded audio from local file: path=%s, size=%d bytes",
+                local_path,
+                len(input_bytes)
+            )
+            loop_audio = _load_audio_segment_from_wav_bytes(input_bytes)
 
         # Render arrangement
         bpm = float(loop.bpm or loop.tempo or 120.0)
@@ -227,6 +244,19 @@ def run_arrangement_job(arrangement_id: int):
                 style_profile = _parse_style_profile(arrangement.style_profile_json)
                 if style_profile:
                     style_params = style_profile.get("resolved_params")
+                    if style_params is None:
+                        style_params = {}
+                    else:
+                        style_params = dict(style_params)
+
+                    intent = style_profile.get("intent") or {}
+                    style_params["__archetype"] = intent.get("archetype")
+                    style_params["__raw_input"] = intent.get("raw_input")
+
+                    genre_hint = arrangement.genre or loop.genre
+                    if genre_hint:
+                        style_params["__genre_hint"] = genre_hint
+
                     seed = style_profile.get("seed")
                     style_sections = style_profile.get("sections")
                     logger.info(
