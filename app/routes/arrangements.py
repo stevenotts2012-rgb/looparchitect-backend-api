@@ -34,10 +34,53 @@ from app.services.audit_logging import log_feature_event
 from app.services.style_service import style_service
 from app.services.llm_style_parser import llm_style_parser
 from app.services.rule_based_fallback import parse_with_rules
+from app.services.producer_engine import ProducerEngine
+from app.services.style_direction_engine import StyleDirectionEngine
+from app.services.render_plan import RenderPlanGenerator
+from app.services.arrangement_validator import ArrangementValidator
+from app.services.daw_export import DAWExporter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _generate_producer_arrangement(
+    loop_id: int,
+    tempo: float,
+    target_seconds: float,
+    style_text_input: str | None = None,
+    genre: str | None = None,
+):
+    """
+    Helper: Generate a ProducerArrangement for a given loop.
+    
+    This bridges style direction input to the producer engine.
+    """
+    # Determine genre from style input or explicit parameter
+    determined_genre = genre or "generic"
+    style_profile = None
+    
+    if style_text_input:
+        # Parse natural language style direction
+        from app.services.producer_models import StyleProfile
+        style_profile = StyleDirectionEngine.parse(style_text_input)
+        determined_genre = style_profile.genre
+        logger.info(f"Style direction parsed: {determined_genre} @ {style_profile.bpm_range[0]}-{style_profile.bpm_range[1]} BPM")
+    
+    # Generate producer arrangement
+    arrangement = ProducerEngine.generate(
+        target_seconds=target_seconds,
+        tempo=tempo,
+        genre=determined_genre,
+        style_profile=style_profile,
+        structure_template="standard",
+    )
+    
+    # Validate arrangement
+    ArrangementValidator.validate_and_raise(arrangement)
+    
+    return arrangement
 
 
 @router.post(
@@ -539,3 +582,138 @@ def download_arrangement(
         media_type=content_type,
         headers=headers,
     )
+
+@router.get(
+    "/{arrangement_id}/metadata",
+    summary="Get arrangement metadata (producer structure)",
+    description="Get detailed arrangement metadata including producer arrangement and render plan.",
+)
+def get_arrangement_metadata(
+    arrangement_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Get detailed arrangement metadata.
+    
+    Returns:
+    - producer_arrangement: ProducerArrangement structure (if available)
+    - render_plan: Render plan with events (if available)
+    - validation_summary: Validation results
+    - daw_export_info: DAW export package information
+    """
+    arrangement = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
+    if not arrangement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Arrangement {arrangement_id} not found",
+        )
+    
+    metadata = {
+        "arrangement_id": arrangement.id,
+        "loop_id": arrangement.loop_id,
+        "status": arrangement.status,
+        "target_seconds": arrangement.target_seconds,
+        "created_at": arrangement.created_at.isoformat() if arrangement.created_at else None,
+        "updated_at": arrangement.updated_at.isoformat() if arrangement.updated_at else None,
+    }
+    
+    # Include producer arrangement if available
+    if arrangement.producer_arrangement_json:
+        try:
+            metadata["producer_arrangement"] = json.loads(arrangement.producer_arrangement_json)
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to decode producer_arrangement_json for arrangement {arrangement_id}")
+    
+    # Include render plan if available
+    if arrangement.render_plan_json:
+        try:
+            metadata["render_plan"] = json.loads(arrangement.render_plan_json)
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to decode render_plan_json for arrangement {arrangement_id}")
+    
+    return metadata
+
+
+@router.get(
+    "/{arrangement_id}/daw-export",
+    summary="Get DAW export package info",
+    description="Get information about the DAW export package (stems, MIDI, metadata).",
+)
+def get_daw_export_info(
+    arrangement_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Get DAW export package information.
+    
+    Returns details about:
+    - Supported DAWs (FL Studio, Ableton, Logic, etc.)
+    - Stems included (kick, snare, bass, melody, etc.)
+    - MIDI files (drums, bass, melody)
+    - Metadata files (markers, tempo map, README)
+    """
+    arrangement = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
+    if not arrangement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Arrangement {arrangement_id} not found",
+        )
+    
+    # Parse producer arrangement if available
+    try:
+        if arrangement.producer_arrangement_json:
+            from app.services.producer_models import ProducerArrangement
+            import json as json_module
+            arrangement_dict = json_module.loads(arrangement.producer_arrangement_json)
+            # Reconstruct a minimal object for DAW export info
+            # For now, return generic export info
+            return {
+                "arrangement_id": arrangement.id,
+                "supported_daws": DAWExporter.SUPPORTED_DAWS,
+                "stems": [
+                    "kick.wav",
+                    "snare.wav",
+                    "hats.wav",
+                    "bass.wav",
+                    "melody.wav",
+                    "pads.wav",
+                ],
+                "midi": [
+                    "drums.mid",
+                    "bass.mid",
+                    "melody.mid",
+                ],
+                "metadata": [
+                    "markers.csv",
+                    "tempo_map.json",
+                    "README.txt",
+                ],
+                "ready_for_export": arrangement.status == "done",
+            }
+    except Exception as e:
+        logger.warning(f"Failed to generate DAW export info: {e}")
+    
+    # Fallback generic export info
+    return {
+        "arrangement_id": arrangement.id,
+        "supported_daws": DAWExporter.SUPPORTED_DAWS,
+        "stems": [
+            "kick.wav",
+            "snare.wav",
+            "hats.wav",
+            "bass.wav",
+            "melody.wav",
+            "pads.wav",
+        ],
+        "midi": [
+            "drums.mid",
+            "bass.mid",
+            "melody.mid",
+        ],
+        "metadata": [
+            "markers.csv",
+            "tempo_map.json",
+            "README.txt",
+        ],
+        "ready_for_export": arrangement.status == "done",
+    }

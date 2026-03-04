@@ -1,0 +1,514 @@
+"""
+Producer Engine: Generates professional song structures and arrangement plans.
+
+This engine synthesizes:
+- Song structure (Intro, Verse, Hook, Bridge, Outro)
+- Energy curves
+- Instrument layers
+- Transitions
+- Variations
+- Render timelines
+
+Output is a ProducerArrangement ready for audio synthesis.
+"""
+
+import logging
+from typing import List, Dict, Optional, Tuple
+from app.services.producer_models import (
+    ProducerArrangement,
+    Section,
+    SectionType,
+    InstrumentType,
+    InstrumentLayer,
+    EnergyPoint,
+    Transition,
+    Variation,
+    Track,
+    TransitionType,
+    VariationType,
+    StyleProfile,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ProducerEngine:
+    """Generates professional song structures and arrangement plans."""
+    
+    # Default song structures by template
+    STRUCTURE_TEMPLATES = {
+        "standard": [
+            ("Intro", 8),
+            ("Hook", 8),
+            ("Verse", 16),
+            ("Hook", 8),
+            ("Verse", 16),
+            ("Bridge", 8),
+            ("Hook", 8),
+            ("Outro", 4),
+        ],
+        "progressive": [
+            ("Intro", 8),
+            ("Verse", 16),
+            ("Verse", 16),
+            ("Hook", 8),
+            ("Bridge", 16),
+            ("Hook", 8),
+            ("Verse", 8),
+            ("Outro", 8),
+        ],
+        "looped": [
+            ("Intro", 8),
+            ("Hook", 16),
+            ("Hook", 16),
+            ("Hook", 16),
+            ("Outro", 4),
+        ],
+        "minimal": [
+            ("Intro", 4),
+            ("Verse", 8),
+            ("Hook", 4),
+            ("Verse", 8),
+            ("Outro", 4),
+        ],
+    }
+    
+    # Instrument layers by section type and genre
+    INSTRUMENT_PRESETS = {
+        "trap": {
+            SectionType.INTRO: [InstrumentType.KICK, InstrumentType.PAD],
+            SectionType.VERSE: [InstrumentType.KICK, InstrumentType.SNARE, InstrumentType.HATS, InstrumentType.BASS],
+            SectionType.HOOK: [
+                InstrumentType.KICK,
+                InstrumentType.SNARE,
+                InstrumentType.HATS,
+                InstrumentType.BASS,
+                InstrumentType.LEAD,
+                InstrumentType.FX,
+            ],
+            SectionType.BRIDGE: [InstrumentType.KICK, InstrumentType.SNARE, InstrumentType.PAD],
+            SectionType.OUTRO: [InstrumentType.KICK, InstrumentType.PAD],
+        },
+        "rnb": {
+            SectionType.INTRO: [InstrumentType.KICK, InstrumentType.PAD, InstrumentType.STRINGS],
+            SectionType.VERSE: [
+                InstrumentType.KICK,
+                InstrumentType.SNARE,
+                InstrumentType.HATS,
+                InstrumentType.BASS,
+                InstrumentType.PAD,
+            ],
+            SectionType.HOOK: [
+                InstrumentType.KICK,
+                InstrumentType.SNARE,
+                InstrumentType.HATS,
+                InstrumentType.BASS,
+                InstrumentType.LEAD,
+                InstrumentType.PAD,
+                InstrumentType.STRINGS,
+            ],
+            SectionType.BRIDGE: [InstrumentType.KICK, InstrumentType.SNARE, InstrumentType.PAD],
+            SectionType.OUTRO: [InstrumentType.KICK, InstrumentType.PAD],
+        },
+        "pop": {
+            SectionType.INTRO: [InstrumentType.KICK, InstrumentType.PAD],
+            SectionType.VERSE: [InstrumentType.KICK, InstrumentType.SNARE, InstrumentType.HATS, InstrumentType.BASS],
+            SectionType.HOOK: [
+                InstrumentType.KICK,
+                InstrumentType.SNARE,
+                InstrumentType.HATS,
+                InstrumentType.BASS,
+                InstrumentType.LEAD,
+                InstrumentType.STRINGS,
+            ],
+            SectionType.BRIDGE: [InstrumentType.KICK, InstrumentType.SNARE, InstrumentType.PAD],
+            SectionType.OUTRO: [InstrumentType.KICK, InstrumentType.PAD],
+        },
+        "cinematic": {
+            SectionType.INTRO: [InstrumentType.PAD, InstrumentType.STRINGS],
+            SectionType.VERSE: [
+                InstrumentType.KICK,
+                InstrumentType.SNARE,
+                InstrumentType.PAD,
+                InstrumentType.STRINGS,
+                InstrumentType.HORN,
+            ],
+            SectionType.HOOK: [
+                InstrumentType.KICK,
+                InstrumentType.SNARE,
+                InstrumentType.HATS,
+                InstrumentType.LEAD,
+                InstrumentType.PAD,
+                InstrumentType.STRINGS,
+                InstrumentType.HORN,
+            ],
+            SectionType.BRIDGE: [InstrumentType.KICK, InstrumentType.PAD, InstrumentType.STRINGS],
+            SectionType.OUTRO: [InstrumentType.PAD, InstrumentType.STRINGS],
+        },
+        "generic": {
+            SectionType.INTRO: [InstrumentType.KICK, InstrumentType.PAD],
+            SectionType.VERSE: [InstrumentType.KICK, InstrumentType.SNARE, InstrumentType.HATS, InstrumentType.BASS],
+            SectionType.HOOK: [
+                InstrumentType.KICK,
+                InstrumentType.SNARE,
+                InstrumentType.HATS,
+                InstrumentType.BASS,
+                InstrumentType.LEAD,
+            ],
+            SectionType.BRIDGE: [InstrumentType.KICK, InstrumentType.SNARE, InstrumentType.PAD],
+            SectionType.OUTRO: [InstrumentType.KICK, InstrumentType.PAD],
+        },
+    }
+
+    @staticmethod
+    def generate(
+        target_seconds: float,
+        tempo: float = 120.0,
+        genre: str = "generic",
+        style_profile: Optional[StyleProfile] = None,
+        structure_template: str = "standard",
+    ) -> ProducerArrangement:
+        """
+        Generate a complete ProducerArrangement.
+
+        Args:
+            target_seconds: Desired duration
+            tempo: BPM (default 120)
+            genre: Music genre (trap, rnb, pop, cinematic, generic)
+            style_profile: Optional StyleProfile for customization
+            structure_template: Template to use (standard, progressive, looped, minimal)
+
+        Returns:
+            ProducerArrangement with full structure, energy curve, and instruments
+        """
+        if tempo <= 0:
+            raise ValueError("Tempo must be positive")
+        if target_seconds <= 0:
+            raise ValueError("target_seconds must be positive")
+
+        # Calculate total bars from target duration
+        bar_duration_seconds = (60.0 / tempo) * 4.0
+        total_bars = max(8, int(round(target_seconds / bar_duration_seconds)))
+
+        # Initialize arrangement
+        arrangement = ProducerArrangement(
+            tempo=tempo,
+            key="C",  # Default key
+            total_bars=total_bars,
+            total_seconds=target_seconds,
+            genre=genre,
+        )
+
+        # Apply style profile if provided
+        if style_profile:
+            arrangement.drum_style = style_profile.drum_style
+            arrangement.melody_style = style_profile.melody_style
+            arrangement.bass_style = style_profile.bass_style
+
+        # Build sections from template
+        arrangement.sections = ProducerEngine._build_sections(
+            total_bars, structure_template, genre
+        )
+
+        # Generate energy curve
+        arrangement.energy_curve = ProducerEngine._generate_energy_curve(
+            arrangement.sections
+        )
+
+        # Assign instruments based on genre and sections
+        arrangement = ProducerEngine._assign_instruments(arrangement)
+
+        # Add transitions
+        arrangement.transitions = ProducerEngine._generate_transitions(
+            arrangement.sections
+        )
+
+        # Add variations (every 8 bars minimum)
+        arrangement.all_variations = ProducerEngine._generate_variations(
+            arrangement.sections
+        )
+
+        # Create tracks from instruments
+        arrangement.tracks = ProducerEngine._create_tracks(arrangement)
+
+        # Validate
+        arrangement = ProducerEngine._validate(arrangement)
+
+        return arrangement
+
+    @staticmethod
+    def _build_sections(
+        total_bars: int, template: str, genre: str
+    ) -> List[Section]:
+        """Build sections from a template structure."""
+        if template not in ProducerEngine.STRUCTURE_TEMPLATES:
+            template = "standard"
+
+        sections_template = ProducerEngine.STRUCTURE_TEMPLATES[template]
+        sections: List[Section] = []
+        current_bar = 0
+
+        # Map section names to SectionType
+        type_map = {
+            "Intro": SectionType.INTRO,
+            "Verse": SectionType.VERSE,
+            "Hook": SectionType.HOOK,
+            "Chorus": SectionType.CHORUS,
+            "Bridge": SectionType.BRIDGE,
+            "Breakdown": SectionType.BREAKDOWN,
+            "Outro": SectionType.OUTRO,
+        }
+
+        for name, bars in sections_template:
+            if current_bar >= total_bars:
+                break
+
+            # Adjust final section to fit
+            if current_bar + bars > total_bars:
+                bars = total_bars - current_bar
+
+            if bars <= 0:
+                break
+
+            section_type = type_map.get(name, SectionType.VERSE)
+            section = Section(
+                name=name,
+                section_type=section_type,
+                bar_start=current_bar,
+                bars=bars,
+                energy_level=0.5,  # Will be updated by energy curve
+            )
+            sections.append(section)
+            current_bar += bars
+
+        return sections
+
+    @staticmethod
+    def _generate_energy_curve(sections: List[Section]) -> List[EnergyPoint]:
+        """Generate energy curve across the arrangement."""
+        energy_points: List[EnergyPoint] = []
+
+        for section in sections:
+            # Base energy by section type
+            base_energy = {
+                SectionType.INTRO: 0.2,
+                SectionType.VERSE: 0.6,
+                SectionType.HOOK: 0.9,
+                SectionType.CHORUS: 0.95,
+                SectionType.BRIDGE: 0.4,
+                SectionType.BREAKDOWN: 0.3,
+                SectionType.OUTRO: 0.1,
+            }.get(section.section_type, 0.5)
+
+            # Add energy points at section start and midpoint
+            energy_points.append(
+                EnergyPoint(
+                    bar=section.bar_start,
+                    energy=base_energy,
+                    description=f"{section.name} start",
+                )
+            )
+
+            # Add midpoint for longer sections
+            if section.bars >= 8:
+                midpoint = section.bar_start + section.bars // 2
+                energy_points.append(
+                    EnergyPoint(
+                        bar=midpoint,
+                        energy=min(1.0, base_energy + 0.1),
+                        description=f"{section.name} build",
+                    )
+                )
+
+        # Ensure we have a point at the end
+        if energy_points:
+            last_bar = energy_points[-1].bar
+            if last_bar < max(s.bar_end for s in sections):
+                energy_points.append(
+                    EnergyPoint(
+                        bar=max(s.bar_end for s in sections),
+                        energy=0.1,
+                        description="final outro",
+                    )
+                )
+
+        return energy_points
+
+    @staticmethod
+    def _assign_instruments(arrangement: ProducerArrangement) -> ProducerArrangement:
+        """Assign instruments to each section based on genre."""
+        genre_key = arrangement.genre.lower()
+        if genre_key not in ProducerEngine.INSTRUMENT_PRESETS:
+            genre_key = "generic"
+
+        presets = ProducerEngine.INSTRUMENT_PRESETS[genre_key]
+
+        for section in arrangement.sections:
+            # Get instruments for this section type
+            instruments = presets.get(
+                section.section_type,
+                presets.get(SectionType.VERSE, []),
+            )
+            section.instruments = instruments
+
+        return arrangement
+
+    @staticmethod
+    def _generate_transitions(sections: List[Section]) -> List[Transition]:
+        """Generate transitions between consecutive sections."""
+        transitions: List[Transition] = []
+
+        for i in range(len(sections) - 1):
+            from_section = i
+            to_section = i + 1
+
+            # Choose transition type based on section pair
+            from_type = sections[from_section].section_type
+            to_type = sections[to_section].section_type
+
+            if from_type == SectionType.BRIDGE:
+                transition_type = TransitionType.DRUM_FILL
+            elif to_type == SectionType.HOOK:
+                transition_type = TransitionType.RISER
+            else:
+                transition_type = TransitionType.CROSSFADE
+
+            transitions.append(
+                Transition(
+                    from_section=from_section,
+                    to_section=to_section,
+                    transition_type=transition_type,
+                    duration_bars=1,
+                    intensity=0.7,
+                )
+            )
+
+        return transitions
+
+    @staticmethod
+    def _generate_variations(sections: List[Section]) -> List[Variation]:
+        """Generate variations throughout the arrangement."""
+        variations: List[Variation] = []
+        variation_types = list(VariationType)
+        variation_idx = 0
+
+        for section_idx, section in enumerate(sections):
+            # Add variations every 4-8 bars within a section
+            for bar_offset in range(8, section.bars, 8):
+                actual_bar = section.bar_start + bar_offset
+
+                variation = Variation(
+                    bar=actual_bar,
+                    section_index=section_idx,
+                    variation_type=variation_types[
+                        variation_idx % len(variation_types)
+                    ],
+                    intensity=0.5,
+                    description=f"Variation in {section.name}",
+                )
+                variations.append(variation)
+                section.variations.append(variation)
+                variation_idx += 1
+
+        return variations
+
+    @staticmethod
+    def _create_tracks(arrangement: ProducerArrangement) -> List[Track]:
+        """Create Track objects from unique instruments across all sections."""
+        instruments_used = set()
+        for section in arrangement.sections:
+            instruments_used.update(section.instruments)
+
+        tracks: List[Track] = []
+        track_order = [
+            InstrumentType.KICK,
+            InstrumentType.SNARE,
+            InstrumentType.CLAP,
+            InstrumentType.HATS,
+            InstrumentType.PERCUSSION,
+            InstrumentType.BASS,
+            InstrumentType.SYNTH,
+            InstrumentType.PAD,
+            InstrumentType.MELODY,
+            InstrumentType.LEAD,
+            InstrumentType.STRINGS,
+            InstrumentType.HORN,
+            InstrumentType.FX,
+            InstrumentType.VOCAL,
+        ]
+
+        for instrument in track_order:
+            if instrument in instruments_used:
+                track = Track(
+                    name=f"{instrument.value.capitalize()} Track",
+                    instrument=instrument,
+                    volume_db=0.0 if instrument == InstrumentType.KICK else -3.0,
+                )
+                tracks.append(track)
+
+        return tracks
+
+    @staticmethod
+    def _validate(arrangement: ProducerArrangement) -> ProducerArrangement:
+        """Validate the arrangement and set validation flags."""
+        errors: List[str] = []
+
+        # Rule 1: Must have at least 3 sections
+        if len(arrangement.sections) < 3:
+            errors.append("Arrangement must have at least 3 sections")
+
+        # Rule 2: Hooks must have highest energy
+        hook_sections = [
+            s for s in arrangement.sections
+            if s.section_type in (SectionType.HOOK, SectionType.CHORUS)
+        ]
+        other_sections = [
+            s for s in arrangement.sections
+            if s.section_type not in (SectionType.HOOK, SectionType.CHORUS)
+        ]
+
+        if hook_sections and other_sections:
+            avg_hook_energy = sum(s.energy_level for s in hook_sections) / len(
+                hook_sections
+            )
+            avg_other_energy = sum(s.energy_level for s in other_sections) / len(
+                other_sections
+            )
+            if avg_hook_energy <= avg_other_energy:
+                # Auto-fix: boost hook energy
+                for section in hook_sections:
+                    section.energy_level = min(1.0, section.energy_level + 0.2)
+
+        # Rule 3: Must have variation
+        if not arrangement.all_variations:
+            errors.append("Arrangement should include variations")
+
+        # Rule 4: Duration must be >= 30 seconds
+        if arrangement.total_seconds < 30:
+            errors.append(
+                f"Arrangement too short ({arrangement.total_seconds:.1f}s < 30s)"
+            )
+
+        # Rule 5: Verses must have fewer instruments than hooks (to leave vocal space)
+        verse_sections = [
+            s for s in arrangement.sections if s.section_type == SectionType.VERSE
+        ]
+        hook_sections = [
+            s for s in arrangement.sections
+            if s.section_type in (SectionType.HOOK, SectionType.CHORUS)
+        ]
+
+        if verse_sections and hook_sections:
+            avg_verse_count = sum(len(s.instruments) for s in verse_sections) / len(
+                verse_sections
+            )
+            avg_hook_count = sum(len(s.instruments) for s in hook_sections) / len(
+                hook_sections
+            )
+            if avg_verse_count > avg_hook_count:
+                errors.append("Verses should have fewer instruments than hooks")
+
+        arrangement.is_valid = len(errors) == 0
+        arrangement.validation_errors = errors
+
+        return arrangement

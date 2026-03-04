@@ -32,6 +32,8 @@ class Arrangement(Base):
     arrangement_json = Column(Text, nullable=True)  # JSON timeline with sections
     style_profile_json = Column(Text, nullable=True)  # V2: LLM-generated StyleProfile as JSON
     ai_parsing_used = Column(Boolean, nullable=True, default=False)  # V2: Whether LLM parsing was used
+    producer_arrangement_json = Column(Text, nullable=True)  # Producer-style arrangement structure
+    render_plan_json = Column(Text, nullable=True)  # Detailed render plan with events
     error_message = Column(Text, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
