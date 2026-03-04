@@ -6,6 +6,7 @@ section patterns that fill the target bars exactly.
 """
 
 import logging
+import random
 from typing import List, Dict, Tuple
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ def create_default_arrangement() -> List[Dict]:
     """Generate a default arrangement with static sections.
 
     Returns sections with names and bar counts (no bar positions).
+    Note: This is a static example. Dynamic arrangements use variable intro (2-16 bars).
 
     Returns:
         List of sections: [{"name": str, "bars": int}, ...]
@@ -91,7 +93,7 @@ def generate_arrangement(
     """Generate a dynamic arrangement that fills exactly target_bars.
 
     Structure:
-    1. Intro (4 bars) - sets up the groove
+    1. Intro (2-16 bars) - sets up the groove
     2. Repeating Verse/Hook cycle:
        - Verse (8 bars)
        - Hook (8 bars)
@@ -115,8 +117,8 @@ def generate_arrangement(
         56
         >>> len(sections)
         7
-        >>> sections[0]
-        {'name': 'Intro', 'bars': 4, 'start_bar': 0, 'end_bar': 3}
+        >>> sections[0]  # Intro bars vary between 2-16, randomly selected
+        {'name': 'Intro', 'bars': 8, 'start_bar': 0, 'end_bar': 7}
     """
     if target_bars < 16:
         logger.warning(
@@ -129,8 +131,8 @@ def generate_arrangement(
     sections = []
     current_bar = 0
 
-    # --- Intro (4 bars) ---
-    intro_bars = 4
+    # --- Intro (2-16 bars, randomly selected) ---
+    intro_bars = random.randint(2, 16)
     sections.append(
         {
             "name": "Intro",
