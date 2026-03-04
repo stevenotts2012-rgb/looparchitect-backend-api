@@ -238,7 +238,12 @@ def render_phase_b_arrangement(
         )
         arranged += section_audio
 
-    timeline_json = _generate_phase_b_timeline_json(sections, bpm)
+    timeline_json = _generate_phase_b_timeline_json(
+        sections,
+        bpm,
+        genre_profile=genre_profile,
+        style_params=style_params,
+    )
     return arranged, timeline_json
 
 
@@ -479,11 +484,23 @@ def _shape_section_audio(audio: AudioSegment, bar_duration_ms: int, energy: floa
     )
 
 
-def _generate_phase_b_timeline_json(sections: List[Dict[str, int]], bpm: float) -> str:
+def _generate_phase_b_timeline_json(
+    sections: List[Dict[str, int]],
+    bpm: float,
+    genre_profile: str = "generic",
+    style_params: Optional[Dict] = None,
+) -> str:
     """Generate JSON timeline for Phase B arrangement sections."""
     bar_duration_seconds = (60.0 / bpm) * 4.0
+    source_archetype = (style_params or {}).get("__archetype")
+    source_genre_hint = (style_params or {}).get("__genre_hint")
     timeline = {
         "bpm": bpm,
+        "render_profile": {
+            "genre_profile": genre_profile,
+            "source_archetype": source_archetype,
+            "source_genre_hint": source_genre_hint,
+        },
         "sections": [],
     }
 
