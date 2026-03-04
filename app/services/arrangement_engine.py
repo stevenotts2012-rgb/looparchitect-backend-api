@@ -124,7 +124,8 @@ def render_phase_b_arrangement(
         _, rng = create_rng(seed)  # Unpack tuple (normalized_seed, rng)
 
     arranged = AudioSegment.silent(duration=0)
-    for section in sections:
+    total_sections = len(sections)
+    for section_index, section in enumerate(sections):
         section_ms = section["bars"] * bar_duration_ms
         section_audio = _repeat_audio_to_duration(loop_audio, section_ms)
         
@@ -139,8 +140,16 @@ def render_phase_b_arrangement(
                 root_note=root_note,
             )
         
+        # Apply intelligent section-specific processing for arrangement variation
         section_energy = float(section.get("energy", 0.6))
-        section_audio = _shape_section_audio(section_audio, bar_duration_ms, section_energy)
+        section_audio = _apply_section_processing(
+            section_audio,
+            section_name=section["name"],
+            bar_duration_ms=bar_duration_ms,
+            energy=section_energy,
+            section_index=section_index,
+            total_sections=total_sections,
+        )
         arranged += section_audio
 
     timeline_json = _generate_phase_b_timeline_json(sections, bpm)
@@ -226,36 +235,150 @@ def _generate_and_mix_patterns(
     return mixed
 
 
-def _shape_section_audio(audio: AudioSegment, bar_duration_ms: int, energy: float) -> AudioSegment:
-    """Apply deterministic section shaping based on energy to vary density/intensity."""
+def _apply_section_processing(
+    audio: AudioSegment,
+    section_name: str,
+    bar_duration_ms: int,
+    energy: float,
+    section_index: int,
+    total_sections: int,
+) -> AudioSegment:
+    """
+    Apply intelligent section-specific processing to create arrangement variation.
+    
+    Different sections get different effects to build a structured arrangement:
+    - Intro: gradual build, low-pass filtering
+    - Verse: main groove with presence
+    - Hook: bright, punchy, emphasized
+    - Bridge: variation, different EQ, increase dynamics
+    - Chorus: maximum presence, compression feel
+    - Outro: fade out, reverb tail
+    
+    Args:
+        audio: Section audio to process
+        section_name: Name of section (Intro, Verse, Hook, Bridge, Chorus, Outro)
+        bar_duration_ms: Duration of one bar in ms
+        energy: Energy level (0.0-1.0) from arrangement
+        section_index: Position in arrangement (for build-up progress)
+        total_sections: Total number of sections
+    """
     energy = max(0.0, min(1.0, energy))
     shaped = audio
-
-    if energy < 0.45:
-        # Low energy: reduce density by ducking every other bar and low-pass filtering.
+    section_lower = section_name.lower()
+    
+    # Calculate progression ratio (0=start, 1=end)
+    progress = section_index / max(1, total_sections - 1) if total_sections > 1 else 0.5
+    
+    # INTRO: Gradual build from silence to presence
+    if "intro" in section_lower:
+        logger.info(f"Applying Intro processing: gradual fade-in, subtle filtering")
+        # Low-pass for warmth
+        shaped = shaped.low_pass_filter(4000)
+        # Gentle fade-in
+        fade_ms = min(2000, len(shaped) // 2)
+        shaped = shaped.fade_in(fade_ms)
+        # Slight reduction to let it build
+        shaped = shaped - 3
+        shaped = shaped.high_pass_filter(60)
+    
+    # VERSE: Balanced, groovy, presence
+    elif "verse" in section_lower:
+        logger.info(f"Applying Verse processing: balanced EQ, main groove feel")
+        # Add some presence with gentle high-pass
+        shaped = shaped.high_pass_filter(100)
+        # Subtle compression feel - reduce peaks slightly
+        shaped = shaped - 1 if energy < 0.6 else shaped
+        # Balanced EQ
+        shaped = shaped.low_pass_filter(12000)
+    
+    # HOOK: Bright, punchy, emphasized
+    elif "hook" in section_lower:
+        logger.info(f"Applying Hook processing: bright EQ, compression, emphasis")
+        # Bright high-pass for punch
+        shaped = shaped.high_pass_filter(150)
+        # Add presence in upper midrange
+        shaped = shaped.low_pass_filter(13000)
+        # Compression-like effect by slightly boosting
+        shaped = shaped + 2
+        # Add texture with slight distortion (simulate compression)
+        shaped = shaped.apply_gain_peak(0.95)
+    
+    # BRIDGE: Variation and contrast
+    elif "bridge" in section_lower:
+        logger.info(f"Applying Bridge processing: variation, filtered effect, dynamics")
+        # Different filtering for variation
+        shaped = shaped.low_pass_filter(5000)  # More filtered for variation
+        shaped = shaped.high_pass_filter(200)
+        # Slightly reducing energy to create contrast
+        shaped = shaped - 2
+        # Add dynamic feel with subtle level variation
         pieces: List[AudioSegment] = []
         total_bars = max(1, len(shaped) // max(1, bar_duration_ms))
         for bar_idx in range(total_bars):
             start = bar_idx * bar_duration_ms
             end = min(len(shaped), start + bar_duration_ms)
             bar_audio = shaped[start:end]
-            if bar_idx % 2 == 1:
-                bar_audio = bar_audio - 5
+            # Alternate bar dynamics
+            if bar_idx % 2 == 0:
+                bar_audio = bar_audio - 1
             pieces.append(bar_audio)
         shaped = AudioSegment.silent(duration=0)
         for piece in pieces:
             shaped += piece
-        shaped = shaped.low_pass_filter(2600)
-        shaped = shaped - 2
-    elif energy > 0.8:
-        # High energy: slight gain + gentle high-pass for perceived brightness/punch.
-        shaped = shaped + 1
-        shaped = shaped.high_pass_filter(80)
+    
+    # CHORUS: Maximum impact and presence
+    elif "chorus" in section_lower:
+        logger.info(f"Applying Chorus processing: maximum presence, bright, punchy")
+        # Very bright high-pass for clarity
+        shaped = shaped.high_pass_filter(120)
+        # Presence boost
+        shaped = shaped.low_pass_filter(14000)
+        # Gain boost for impact
+        shaped = shaped + 3
+        # Compression effect - peak limiting
+        shaped = shaped.apply_gain_peak(0.90)
+    
+    # OUTRO: Fade out, tail effect
+    elif "outro" in section_lower:
+        logger.info(f"Applying Outro processing: fade-out, reverb tail effect")
+        # Dark filtering for fadeout feel
+        shaped = shaped.low_pass_filter(3500)
+        # Fade out effect
+        fade_ms = min(3000, len(shaped) // 2)
+        shaped = shaped.fade_out(fade_ms)
+        # Reduce level for natural tail
+        shaped = shaped - 4
+    
+    # DEFAULT: Energy-based shaping
     else:
-        # Mid energy: light normalization via subtle gain trim.
-        shaped = shaped - 1
-
+        if energy < 0.45:
+            # Low energy: sparse, filtered
+            shaped = shaped.low_pass_filter(3500)
+            shaped = shaped - 2
+        elif energy > 0.8:
+            # High energy: bright, punchy
+            shaped = shaped.high_pass_filter(100)
+            shaped = shaped.low_pass_filter(13000)
+            shaped = shaped + 2
+        else:
+            # Mid energy: balanced
+            shaped = shaped.high_pass_filter(80)
+            shaped = shaped.low_pass_filter(12000)
+    
     return shaped
+
+
+def _shape_section_audio(audio: AudioSegment, bar_duration_ms: int, energy: float) -> AudioSegment:
+    """Legacy shaping - now calls enhanced processing. Kept for backward compatibility."""
+    # Call new processing with default section name and indices
+    return _apply_section_processing(
+        audio,
+        section_name="verse",
+        bar_duration_ms=bar_duration_ms,
+        energy=energy,
+        section_index=0,
+        total_sections=1,
+    )
 
 
 def _generate_phase_b_timeline_json(sections: List[Dict[str, int]], bpm: float) -> str:
