@@ -14,6 +14,7 @@ from app.db import init_db, engine, SessionLocal
 from app.middleware.cors import add_cors_middleware
 from app.middleware.logging import add_request_logging
 from app.routes import api, health, db_health, loops, render, arrange, arrangements, audio
+from app.services.audio_runtime import configure_audio_binaries
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +48,14 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting LoopArchitect API...")
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Debug mode: {settings.debug}")
+
+    # Validate startup configuration and runtime prerequisites
+    settings.validate_startup()
+    configure_audio_binaries(
+        ffmpeg_binary=settings.ffmpeg_binary or None,
+        ffprobe_binary=settings.ffprobe_binary or None,
+        raise_if_missing=settings.should_enforce_audio_binaries,
+    )
     
     # Run migrations on startup
     run_migrations()
@@ -78,6 +87,11 @@ app = FastAPI(
 # Add middleware
 add_cors_middleware(app)
 add_request_logging(app)
+
+# Configure maximum request body size
+# This is handled by Starlette's internal processing
+# For file uploads, we validate size in the endpoint handlers
+app.state.max_body_size = settings.max_request_body_size_mb * 1024 * 1024
 
 # Global exception handlers
 @app.exception_handler(RequestValidationError)

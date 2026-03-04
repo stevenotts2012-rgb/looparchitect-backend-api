@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     openai_timeout: int = int(os.getenv("OPENAI_TIMEOUT", "30"))
     openai_max_retries: int = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
     feature_llm_style_parsing: bool = os.getenv("FEATURE_LLM_STYLE_PARSING", "false").lower() == "true"
+    ffmpeg_binary: str = os.getenv("FFMPEG_BINARY", "")
+    ffprobe_binary: str = os.getenv("FFPROBE_BINARY", "")
+    enforce_audio_binaries: str = os.getenv("ENFORCE_AUDIO_BINARIES", "auto")
+    
+    # Request size limits
+    max_upload_size_mb: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "100"))
+    max_request_body_size_mb: int = int(os.getenv("MAX_REQUEST_BODY_SIZE_MB", "100"))
 
     @property
     def allowed_origins(self) -> list[str]:
@@ -95,6 +102,15 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment.lower() == "production"
+
+    @property
+    def should_enforce_audio_binaries(self) -> bool:
+        policy = (self.enforce_audio_binaries or "auto").strip().lower()
+        if policy in {"true", "1", "yes", "on"}:
+            return True
+        if policy in {"false", "0", "no", "off"}:
+            return False
+        return self.is_production
 
     def validate_startup(self) -> None:
         """Validate required environment variables for startup safety."""

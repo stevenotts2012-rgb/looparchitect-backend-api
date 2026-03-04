@@ -10,7 +10,7 @@ PYTHONDONTWRITEBYTECODE = "1"
 
 [phases.setup]
 # Use Nix packages for Python 3.11 with proper stdlib
-nixPkgs = ["python311", "python311Packages.pip", "gcc"]
+nixPkgs = ["python311", "python311Packages.pip", "gcc", "ffmpeg"]
 
 [phases.install]
 # Upgrade pip first for better compatibility
