@@ -28,7 +28,9 @@ from app.schemas.arrangement import (
     ArrangementCreateRequest,
     ArrangementResponse,
 )
+from app.schemas.style_profile import StyleOverrides
 from app.services.arrangement_jobs import run_arrangement_job
+from app.services.audit_logging import log_feature_event
 from app.services.style_service import style_service
 from app.services.llm_style_parser import llm_style_parser
 from app.services.rule_based_fallback import parse_with_rules
@@ -94,6 +96,60 @@ def list_arrangements(
     return [ArrangementResponse.from_orm(item) for item in arrangements]
 
 
+def _map_style_params_to_overrides(style_params: dict | None) -> StyleOverrides | None:
+    """
+    PHASE 4: Map frontend style parameters to backend StyleOverrides.
+    
+    Frontend uses user-friendly names:
+    - energy: Overall intensity/power (0=quiet, 1=loud)
+    - darkness: Tonal darkness (0=bright, 1=dark)
+    - bounce: Groove/drive (0=laid-back, 1=driving)
+    - warmth: Melodic warmth (0=cold, 1=warm)
+    - texture: String value 'smooth'/'balanced'/'gritty'
+    
+    Backend StyleOverrides uses audio engineering terms:
+    - aggression: Maps from frontend 'energy'
+    - darkness: Direct match
+    - bounce: Direct match
+    - melody_complexity: Maps from frontend 'warmth'
+    - fx_density: Derived from 'texture' (smooth=0.3, balanced=0.5, gritty=0.8)
+    """
+    if not style_params:
+        return None
+    
+    # Build StyleOverrides from frontend parameters
+    overrides_dict = {}
+    
+    # Direct mappings
+    if 'energy' in style_params:
+        overrides_dict['aggression'] = float(style_params['energy'])
+    
+    if 'darkness' in style_params:
+        overrides_dict['darkness'] = float(style_params['darkness'])
+    
+    if 'bounce' in style_params:
+        overrides_dict['bounce'] = float(style_params['bounce'])
+    
+    if 'warmth' in style_params:
+        overrides_dict['melody_complexity'] = float(style_params['warmth'])
+    
+    # Map texture string to fx_density numeric value
+    if 'texture' in style_params:
+        texture = style_params['texture']
+        texture_to_fx = {
+            'smooth': 0.3,    # Minimal effects, clean sound
+            'balanced': 0.5,  # Moderate effects
+            'gritty': 0.8,    # Heavy effects, distortion
+        }
+        overrides_dict['fx_density'] = texture_to_fx.get(texture, 0.5)
+    
+    # Return None if no valid mappings found
+    if not overrides_dict:
+        return None
+    
+    return StyleOverrides(**overrides_dict)
+
+
 @router.post(
     "/generate",
     response_model=AudioArrangementGenerateResponse,
@@ -106,6 +162,7 @@ def list_arrangements(
 async def generate_arrangement(
     request: AudioArrangementGenerateRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -156,6 +213,7 @@ async def generate_arrangement(
     structure_preview = []
     style_profile_json = None
     ai_parsing_used = False
+    correlation_id = getattr(http_request.state, "correlation_id", None) or http_request.headers.get("x-correlation-id")
 
     # V2: Handle LLM-based style parsing
     if request.use_ai_parsing and request.style_text_input:
@@ -168,11 +226,16 @@ async def generate_arrangement(
                 "bars": int(loop.bars or 4),
             }
             
-            # Parse style intent using LLM or fallback
+            # PHASE 4: Map frontend style_params to backend StyleOverrides
+            style_overrides = _map_style_params_to_overrides(request.style_params)
+            if style_overrides:
+                logger.info(f"Applying style overrides from sliders: {style_overrides.model_dump(exclude_none=True)}")
+            
+            # Parse style intent using LLM with optional slider overrides
             style_profile = await llm_style_parser.parse_style_intent(
                 user_input=request.style_text_input,
                 loop_metadata=loop_metadata,
-                overrides=None,  # Could extend to support style_params override
+                overrides=style_overrides,
             )
             
             # Serialize StyleProfile to JSON
@@ -186,6 +249,7 @@ async def generate_arrangement(
             structure_json = json.dumps({
                 "seed": seed_used,
                 "sections": structure_preview,
+                "correlation_id": correlation_id,
             })
             
             logger.info(f"Style profile parsed: preset={style_preset}, confidence={style_profile.intent.confidence}")
@@ -212,6 +276,7 @@ async def generate_arrangement(
             structure_json = json.dumps({
                 "seed": seed_used,
                 "sections": structure_preview,
+                "correlation_id": correlation_id,
             })
         except Exception as style_error:
             logger.warning("Style preview generation skipped: %s", style_error)
@@ -232,8 +297,27 @@ async def generate_arrangement(
     db.commit()
     db.refresh(arrangement)
 
+    log_feature_event(
+        logger,
+        event="arrangement_created",
+        correlation_id=correlation_id,
+        arrangement_id=arrangement.id,
+        loop_id=arrangement.loop_id,
+        sections_count=len(structure_preview or []),
+        ai_parsing_used=ai_parsing_used,
+    )
+
     # Schedule background job
     background_tasks.add_task(run_arrangement_job, arrangement.id)
+
+    log_feature_event(
+        logger,
+        event="response_returned",
+        correlation_id=correlation_id,
+        route="/api/v1/arrangements/generate",
+        arrangement_id=arrangement.id,
+        status_code=202,
+    )
 
     return AudioArrangementGenerateResponse(
         arrangement_id=arrangement.id,

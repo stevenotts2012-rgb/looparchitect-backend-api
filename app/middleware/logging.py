@@ -6,6 +6,7 @@ Logs all incoming HTTP requests with timing information.
 
 import logging
 import time
+import uuid
 from typing import Callable
 
 from fastapi import Request, Response
@@ -34,11 +35,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         """
         # Start timing
         start_time = time.time()
+        correlation_id = request.headers.get("x-correlation-id") or str(uuid.uuid4())
+        request.state.correlation_id = correlation_id
         
         # Log request
         logger.info(
             f"→ {request.method} {request.url.path} "
-            f"from {request.client.host if request.client else 'unknown'}"
+            f"from {request.client.host if request.client else 'unknown'} "
+            f"cid={correlation_id}"
         )
         
         # Process request
@@ -51,8 +55,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             # Log response
             logger.info(
                 f"← {request.method} {request.url.path} "
-                f"→ {response.status_code} ({duration_ms:.1f}ms)"
+                f"→ {response.status_code} ({duration_ms:.1f}ms) cid={correlation_id}"
             )
+            response.headers["x-correlation-id"] = correlation_id
             
             return response
             
@@ -60,7 +65,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             duration_ms = (time.time() - start_time) * 1000
             logger.error(
                 f"✗ {request.method} {request.url.path} "
-                f"failed after {duration_ms:.1f}ms: {str(e)}"
+                f"failed after {duration_ms:.1f}ms: {str(e)} cid={correlation_id}"
             )
             raise
 

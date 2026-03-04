@@ -494,13 +494,19 @@ def _generate_phase_b_timeline_json(
     bar_duration_seconds = (60.0 / bpm) * 4.0
     source_archetype = (style_params or {}).get("__archetype")
     source_genre_hint = (style_params or {}).get("__genre_hint")
+    raw_input = (style_params or {}).get("__raw_input")
+    style_signature = f"{genre_profile}:{source_archetype or 'none'}:{str(raw_input or '')[:32]}"
+
+    events: List[Dict[str, object]] = []
     timeline = {
         "bpm": bpm,
         "render_profile": {
             "genre_profile": genre_profile,
             "source_archetype": source_archetype,
             "source_genre_hint": source_genre_hint,
+            "style_signature": style_signature,
         },
+        "events": events,
         "sections": [],
     }
 
@@ -518,6 +524,22 @@ def _generate_phase_b_timeline_json(
                 "end_seconds": round(end_seconds, 3),
             }
         )
+
+        # Build deterministic event list at bar granularity for render plan verification
+        section_name = str(section["name"])
+        start_bar = int(section["start_bar"])
+        bars = int(section["bars"])
+        for local_bar in range(max(0, bars)):
+            bar_number = start_bar + local_bar
+            events.append(
+                {
+                    "type": "section_bar",
+                    "section": section_name,
+                    "bar": bar_number,
+                    "time_seconds": round(bar_number * bar_duration_seconds, 3),
+                    "genre_profile": genre_profile,
+                }
+            )
 
     return json.dumps(timeline)
 

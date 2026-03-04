@@ -9,6 +9,8 @@ import logging
 import os
 import tempfile
 import json
+import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -19,6 +21,7 @@ from app.config import settings
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
 from app.services.arrangement_engine import render_phase_b_arrangement
+from app.services.audit_logging import log_feature_event
 from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
@@ -106,6 +109,50 @@ def _parse_style_profile(style_profile_json: str | None) -> dict | None:
         return None
 
 
+def _extract_correlation_id(arrangement_json: str | None) -> str | None:
+    """Extract correlation id from arrangement JSON payload if present."""
+    if not arrangement_json:
+        return None
+    try:
+        payload = json.loads(arrangement_json)
+        if isinstance(payload, dict):
+            correlation_id = payload.get("correlation_id")
+            if correlation_id:
+                return str(correlation_id)
+    except Exception:
+        return None
+    return None
+
+
+def _build_render_plan_artifact(
+    arrangement_id: int,
+    bpm: float,
+    target_seconds: int,
+    timeline_json: str,
+) -> dict:
+    """Build a normalized render plan artifact for debug and acceptance checks."""
+    timeline = {}
+    try:
+        timeline = json.loads(timeline_json) if timeline_json else {}
+    except Exception:
+        timeline = {}
+
+    sections = timeline.get("sections") if isinstance(timeline, dict) else []
+    events = timeline.get("events") if isinstance(timeline, dict) else []
+    render_profile = timeline.get("render_profile") if isinstance(timeline, dict) else {}
+
+    return {
+        "arrangement_id": arrangement_id,
+        "bpm": bpm,
+        "target_seconds": target_seconds,
+        "sections": sections or [],
+        "events": events or [],
+        "sections_count": len(sections or []),
+        "events_count": len(events or []),
+        "render_profile": render_profile or {},
+    }
+
+
 def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
     """Load WAV/audio bytes with multiple fallback strategies."""
     if not wav_bytes or len(wav_bytes) < 44:
@@ -181,6 +228,15 @@ def run_arrangement_job(arrangement_id: int):
             return
 
         logger.info(f"Starting arrangement generation for ID {arrangement_id}")
+        correlation_id = _extract_correlation_id(arrangement.arrangement_json) or str(uuid.uuid4())
+        started_at = time.time()
+        log_feature_event(
+            logger,
+            event="render_started",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            loop_id=arrangement.loop_id,
+        )
 
         arrangement.status = "processing"
         arrangement.progress = 0.0
@@ -279,13 +335,80 @@ def run_arrangement_job(arrangement_id: int):
             if seed is not None:
                 logger.info("Using seed %s for pattern generation in arrangement %s", seed, arrangement_id)
 
-        arranged_audio, timeline_json = render_phase_b_arrangement(
-            loop_audio=loop_audio,
+        try:
+            arranged_audio, timeline_json = render_phase_b_arrangement(
+                loop_audio=loop_audio,
+                bpm=bpm,
+                target_seconds=target_seconds,
+                sections_override=style_sections,
+                seed=seed,
+                style_params=style_params,
+            )
+        except Exception as render_error:
+            if settings.dev_fallback_loop_only and not settings.is_production:
+                logger.warning(
+                    "DEV_FALLBACK_LOOP_ONLY enabled - using loop-only fallback for arrangement %s: %s",
+                    arrangement_id,
+                    render_error,
+                )
+                log_feature_event(
+                    logger,
+                    event="fallback_loop_only_used",
+                    correlation_id=correlation_id,
+                    arrangement_id=arrangement_id,
+                    reason=str(render_error),
+                )
+                target_ms = target_seconds * 1000
+                repeats = (target_ms // len(loop_audio)) + 1
+                arranged_audio = (loop_audio * repeats)[:target_ms]
+                bar_duration_seconds = (60.0 / bpm) * 4.0
+                bars = max(1, int(round(target_seconds / bar_duration_seconds)))
+                events = [
+                    {
+                        "type": "fallback_loop_bar",
+                        "bar": idx,
+                        "time_seconds": round(idx * bar_duration_seconds, 3),
+                        "genre_profile": "fallback_loop_only",
+                    }
+                    for idx in range(bars)
+                ]
+                timeline_json = json.dumps(
+                    {
+                        "bpm": bpm,
+                        "render_profile": {
+                            "genre_profile": "fallback_loop_only",
+                            "fallback_used": True,
+                        },
+                        "events": events,
+                        "sections": [
+                            {
+                                "name": "fallback_loop",
+                                "bars": bars,
+                                "energy": 0.5,
+                                "start_bar": 0,
+                                "end_bar": bars - 1,
+                                "start_seconds": 0.0,
+                                "end_seconds": round(target_seconds, 3),
+                            }
+                        ],
+                    }
+                )
+            else:
+                raise
+
+        render_plan = _build_render_plan_artifact(
+            arrangement_id=arrangement_id,
             bpm=bpm,
             target_seconds=target_seconds,
-            sections_override=style_sections,
-            seed=seed,
-            style_params=style_params,
+            timeline_json=timeline_json,
+        )
+        log_feature_event(
+            logger,
+            event="render_plan_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            sections_count=render_plan.get("sections_count", 0),
+            events_count=render_plan.get("events_count", 0),
         )
 
         # Export to temp WAV and upload to S3
@@ -307,6 +430,20 @@ def run_arrangement_job(arrangement_id: int):
             content_type="audio/wav",
             key=output_key,
         )
+        log_feature_event(
+            logger,
+            event="storage_uploaded",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            storage_backend="s3" if storage.use_s3 else "local",
+            output_key=output_key,
+        )
+
+        if not storage.use_s3:
+            debug_plan_path = Path.cwd() / "uploads" / f"{arrangement_id}_render_plan.json"
+            debug_plan_path.parent.mkdir(parents=True, exist_ok=True)
+            debug_plan_path.write_text(json.dumps(render_plan, indent=2), encoding="utf-8")
+            logger.info("Wrote local render plan artifact: %s", debug_plan_path)
 
         output_url = storage.create_presigned_get_url(
             output_key,
@@ -324,6 +461,13 @@ def run_arrangement_job(arrangement_id: int):
         db.commit()
 
         logger.info(f"Successfully completed arrangement {arrangement_id}")
+        log_feature_event(
+            logger,
+            event="render_finished",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            duration_sec=round(time.time() - started_at, 3),
+        )
 
     except Exception as e:
         logger.exception("Error generating arrangement %s", arrangement_id)

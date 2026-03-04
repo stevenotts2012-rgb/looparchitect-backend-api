@@ -1,21 +1,23 @@
 import logging
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, Query, Request
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.models.loop import Loop
 from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 from app.services.loop_service import loop_service
 from app.services.loop_analyzer import loop_analyzer
+from app.services.audit_logging import log_feature_event
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 @router.post("/loops/upload", status_code=201)
-async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_audio(file: UploadFile = File(...), request: Request = None, db: Session = Depends(get_db)):
     """Upload a WAV or MP3 audio file to S3.
     
     Args:
@@ -96,6 +98,16 @@ async def upload_audio(file: UploadFile = File(...), db: Session = Depends(get_d
         db.commit()
         db.refresh(new_loop)
         logger.info(f"Loop uploaded: {new_loop.id} - {file_key}")
+        correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
+        log_feature_event(
+            logger,
+            event="loop_created",
+            correlation_id=correlation_id,
+            loop_id=new_loop.id,
+            bpm=new_loop.bpm,
+            bars=new_loop.bars,
+            key=new_loop.musical_key,
+        )
         
         # Return endpoints instead of direct file URLs
         return {
@@ -133,12 +145,12 @@ async def upload_file(file: UploadFile = File(...)):
     # Sanitize filename
     safe_filename = loop_service.sanitize_filename(file.filename or "audio.wav")
     
-    # Validate file (max 50MB)
+    # Validate file (configurable max upload size from settings)
     is_valid, error_msg = loop_service.validate_audio_file(
         filename=safe_filename,
         content_type=file.content_type or "audio/wav",
         file_size=len(content),
-        max_size_mb=50
+        max_size_mb=settings.max_upload_size_mb
     )
     
     if not is_valid:
@@ -161,7 +173,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 @router.post("/loops", response_model=LoopResponse, status_code=201)
-def create_loop(loop_in: LoopCreate, db: Session = Depends(get_db)):
+def create_loop(loop_in: LoopCreate, request: Request, db: Session = Depends(get_db)):
     """Create a new loop record.
     
     Args:
@@ -176,6 +188,16 @@ def create_loop(loop_in: LoopCreate, db: Session = Depends(get_db)):
     """
     try:
         loop = loop_service.create_loop(db, loop_in)
+        correlation_id = getattr(request.state, "correlation_id", None)
+        log_feature_event(
+            logger,
+            event="loop_created",
+            correlation_id=correlation_id,
+            loop_id=loop.id,
+            bpm=loop.bpm,
+            bars=loop.bars,
+            key=loop.musical_key,
+        )
         return loop
     except Exception as e:
         logger.exception("Failed to create loop")
@@ -192,6 +214,7 @@ async def create_loop_with_upload(
         ),
     ),
     file: UploadFile = File(...),
+    request: Request = None,
     db: Session = Depends(get_db),
 ):
     """Create a loop with file upload.
@@ -299,6 +322,16 @@ async def create_loop_with_upload(
         db.commit()
         db.refresh(loop)
         logger.info(f"Loop created successfully with ID: {loop.id}")
+        correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
+        log_feature_event(
+            logger,
+            event="loop_created",
+            correlation_id=correlation_id,
+            loop_id=loop.id,
+            bpm=loop.bpm,
+            bars=loop.bars,
+            key=loop.musical_key,
+        )
         return loop
     except Exception as e:
         db.rollback()

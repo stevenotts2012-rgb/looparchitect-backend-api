@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     feature_midi_export: bool = os.getenv("FEATURE_MIDI_EXPORT", "false").lower() == "true"
     feature_stem_export: bool = os.getenv("FEATURE_STEM_EXPORT", "false").lower() == "true"
     feature_pattern_generation: bool = os.getenv("FEATURE_PATTERN_GENERATION", "false").lower() == "true"
+    dev_fallback_loop_only: bool = os.getenv("DEV_FALLBACK_LOOP_ONLY", "false").lower() == "true"
     
     # LLM Style Engine V2 settings
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
