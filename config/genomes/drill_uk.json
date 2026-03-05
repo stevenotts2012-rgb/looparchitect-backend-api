@@ -1,0 +1,176 @@
+{
+  "name": "UK Drill",
+  "genre": "trap",
+  "mood": "drill",
+  "description": "Fast-paced UK drill with rapid hi-hats, punchy drums, dark atmosphere. Typical BPM 140-180.",
+  "target_bpm_range": [140, 180],
+  "swing_factor": 0.0,
+  "reference_artists": ["Headie One", "Digga D", "Central Cee"],
+  "section_lengths": {
+    "intro": 8,
+    "verse": 16,
+    "hook": 8,
+    "verse_2": 16,
+    "bridge": 8,
+    "verse_3": 16,
+    "outro": 8
+  },
+  "energy_curve": [
+    {"section": "intro", "energy": 0.2, "description": "Minimal, sparse intro with dark ambience"},
+    {"section": "verse", "energy": 0.6, "description": "Building momentum with rapid hats"},
+    {"section": "hook", "energy": 0.8, "description": "Peak energy with full drum pattern"},
+    {"section": "verse_2", "energy": 0.65, "description": "Maintains groove, slight variation"},
+    {"section": "bridge", "energy": 0.4, "description": "Tension drop, buildback setup"},
+    {"section": "verse_3", "energy": 0.85, "description": "Maximum intensity, final push"},
+    {"section": "outro", "energy": 0.2, "description": "Fadeout with minimal elements"}
+  ],
+  "instrument_layers": {
+    "intro": {
+      "required": ["kick", "hi_hat"],
+      "optional": ["ambient_pad"]
+    },
+    "verse": {
+      "required": ["kick", "snare", "hi_hat", "hat_roll"],
+      "optional": ["bass", "vocal_chop"]
+    },
+    "hook": {
+      "required": ["kick", "snare", "hi_hat", "hat_roll", "bass", "hook_sample"],
+      "optional": ["orchestral_hit"]
+    },
+    "verse_2": {
+      "required": ["kick", "snare", "hi_hat", "hat_roll"],
+      "optional": ["bass", "vocal_chop", "delay_effect"]
+    },
+    "bridge": {
+      "required": ["kick", "hi_hat"],
+      "optional": ["reverb_plate", "noise_swell"]
+    },
+    "verse_3": {
+      "required": ["kick", "snare", "hi_hat", "hat_roll", "bass", "hook_sample"],
+      "optional": ["orchestral_hit", "sub_bass", "vocal_chop"]
+    },
+    "outro": {
+      "required": ["kick"],
+      "optional": ["hi_hat", "reverb_tail"]
+    }
+  },
+  "variation_moves": [
+    {
+      "name": "hat_triplet_roll",
+      "probability": 0.7,
+      "bars_per_move": 2,
+      "description": "Rapid triplet hi-hat roll (signature UK drill move)"
+    },
+    {
+      "name": "hat_double_roll",
+      "probability": 0.5,
+      "bars_per_move": 1,
+      "description": "Double-time hi-hat roll across measure"
+    },
+    {
+      "name": "kick_syncopation",
+      "probability": 0.6,
+      "bars_per_move": 2,
+      "description": "Syncopated kick pattern with unexpected hits"
+    },
+    {
+      "name": "snare_chop",
+      "probability": 0.4,
+      "bars_per_move": 1,
+      "description": "Snare sample chopped up and looped"
+    },
+    {
+      "name": "drum_fill",
+      "probability": 0.3,
+      "bars_per_move": 1,
+      "description": "Traditional drum fill before section change"
+    },
+    {
+      "name": "silence_drop",
+      "probability": 0.2,
+      "bars_per_move": 0.5,
+      "description": "Sudden silence before buildup"
+    }
+  ],
+  "transitions": {
+    "verse_to_hook": {
+      "type": "riser",
+      "duration_bars": 1,
+      "description": "Upward filter sweep with bass drop"
+    },
+    "hook_to_verse": {
+      "type": "drum_fill",
+      "duration_bars": 1,
+      "description": "Snappy drum fill into the next section"
+    },
+    "verse_to_bridge": {
+      "type": "silence_drop",
+      "duration_bars": 0.5,
+      "description": "Sudden stop then reverb tail"
+    },
+    "bridge_to_verse": {
+      "type": "riser",
+      "duration_bars": 2,
+      "description": "Long buildback into final verse"
+    }
+  },
+  "mixing_guidelines": {
+    "kick": {
+      "samples": ["sub_kick_clean", "click_punch"],
+      "compression": "aggressive",
+      "saturation": "minimal",
+      "notes": "Two-layer kick with sub + punch click"
+    },
+    "bass": {
+      "samples": ["deep_tremolo_bass", "mid_bass"],
+      "compression": "moderate",
+      "saturation": "moderate",
+      "notes": "Deep, dark bass with movement, minimal mid-range"
+    },
+    "snare": {
+      "samples": ["sharp_snare_clap_hybrid"],
+      "compression": "heavy",
+      "saturation": "moderate",
+      "notes": "Punchy, cutting snare sound. Can add reverb for interest"
+    },
+    "hi_hat": {
+      "samples": ["closed_hat_crisp", "dark_closed_hat"],
+      "compression": "light",
+      "saturation": "none",
+      "notes": "Fast, crisp closed hats. Very prominent in the mix"
+    },
+    "hat_roll": {
+      "samples": ["hat_roll_pattern_140bpm", "hat_roll_fast"],
+      "compression": "light",
+      "saturation": "none",
+      "notes": "Trademark UK drill rapid hat rolls"
+    }
+  },
+  "production_notes": {
+    "key_characteristic": "Rapid hi-hat work with minimal rest, dark atmosphere",
+    "typical_elements": [
+      "140-180 BPM tempo",
+      "Signature rapid hi-hat rolls",
+      "Dark, ominous synth bass",
+      "Minimalist kick pattern with syncopation",
+      "Sparse, atmospheric builds",
+      "Hook samples or vocal chops for identity",
+      "Silence drops for dramatic effect"
+    ],
+    "arrangement_strategy": "Build energy through hat patterns and bass, not drum quantity. Use silence strategically. Maintain hypnotic loop feel.",
+    "energy_sustain": "High throughout verse sections (0.6-0.85), needs variation in hat patterns rather than adding new instruments",
+    "signature_move": "Triplet hi-hat roll that defines UK drill sound"
+  },
+  "example_structure": {
+    "total_bars": 88,
+    "breakdown": {
+      "intro_8": "Sparse drums, dark pad, establishing vibe",
+      "verse_16": "Full groove with rapid hats, hook sample intro",
+      "hook_8": "Peak energy section with acapella or hook",
+      "verse_16": "Variation on first verse, slower hats section",
+      "bridge_8": "Tension/rest, building back up",
+      "verse_16": "Final big verse with maximum energy variations",
+      "outro_8": "Quick winddown to silence"
+    }
+  }
+}

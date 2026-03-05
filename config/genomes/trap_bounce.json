@@ -1,0 +1,203 @@
+{
+  "name": "Trap Bounce",
+  "genre": "trap",
+  "mood": "bounce",
+  "description": "Bouncy, playful trap with swing, Memphis vibes, and perky melodies. Light, groovy, fun energy.",
+  "target_bpm_range": [90, 130],
+  "swing_factor": 0.25,
+  "reference_artists": ["Jerome Foo", "Ology", "Flosstradamus"],
+  "section_lengths": {
+    "intro": 8,
+    "verse": 16,
+    "prechorus": 4,
+    "hook": 8,
+    "verse_2": 16,
+    "prechorus_2": 4,
+    "hook_2": 8,
+    "bridge": 8,
+    "verse_3": 12,
+    "outro": 4
+  },
+  "energy_curve": [
+    {"section": "intro", "energy": 0.3, "description": "Bouncy, minimal intro with playful vibe"},
+    {"section": "verse", "energy": 0.5, "description": "Groovy groove with swing, melody support"},
+    {"section": "prechorus", "energy": 0.6, "description": "Building anticipation with bass emphasis"},
+    {"section": "hook", "energy": 0.75, "description": "Peak energy with full arrangement and hook"},
+    {"section": "verse_2", "energy": 0.55, "description": "Variation on first verse with additional elements"},
+    {"section": "prechorus_2", "energy": 0.65, "description": "Build with more intensity"},
+    {"section": "hook_2", "energy": 0.8, "description": "Second hook slightly more energetic"},
+    {"section": "bridge", "energy": 0.4, "description": "Tension drop, stripped down, spacey feeling"},
+    {"section": "verse_3", "energy": 0.7, "description": "Final verse with maximum groove"},
+    {"section": "outro", "energy": 0.2, "description": "Fadeout with tail"}
+  ],
+  "instrument_layers": {
+    "intro": {
+      "required": ["kick", "hi_hat"],
+      "optional": ["melody_preset", "pads"]
+    },
+    "verse": {
+      "required": ["kick", "snare", "hi_hat", "bass"],
+      "optional": ["melody_preset", "chop"]
+    },
+    "prechorus": {
+      "required": ["kick", "snare", "hi_hat", "bass"],
+      "optional": ["riser", "crash"]
+    },
+    "hook": {
+      "required": ["kick", "snare", "hi_hat", "bass", "hook_sample", "melody_preset"],
+      "optional": ["brass_stab", "lead_synth"]
+    },
+    "verse_2": {
+      "required": ["kick", "snare", "hi_hat", "bass"],
+      "optional": ["melody_preset", "chop", "pad"]
+    },
+    "prechorus_2": {
+      "required": ["kick", "snare", "hi_hat", "bass", "riser"],
+      "optional": ["crash", "orchestral_hit"]
+    },
+    "hook_2": {
+      "required": ["kick", "snare", "hi_hat", "bass", "hook_sample", "melody_preset"],
+      "optional": ["brass_stab", "lead_synth", "vocal_stab"]
+    },
+    "bridge": {
+      "required": ["kick", "bass"],
+      "optional": ["hi_hat", "pad", "reverb_plate"]
+    },
+    "verse_3": {
+      "required": ["kick", "snare", "hi_hat", "bass", "melody_preset"],
+      "optional": ["chop", "percussion", "lead_synth"]
+    },
+    "outro": {
+      "required": ["kick"],
+      "optional": ["hi_hat", "reverb_tail", "melody_fade"]
+    }
+  },
+  "variation_moves": [
+    {
+      "name": "hihat_swing_shuffle",
+      "probability": 0.8,
+      "bars_per_move": 4,
+      "description": "Swing-influenced hi-hat pattern with bounce"
+    },
+    {
+      "name": "kick_side_chain",
+      "probability": 0.6,
+      "bars_per_move": 2,
+      "description": "Sidechain pump effect on other instruments"
+    },
+    {
+      "name": "melody_riff",
+      "probability": 0.7,
+      "bars_per_move": 4,
+      "description": "Playful melodyloop or riff section"
+    },
+    {
+      "name": "chop_stutter",
+      "probability": 0.5,
+      "bars_per_move": 1,
+      "description": "Vocal/sample chop with stuttering effect"
+    },
+    {
+      "name": "bass_syncopation",
+      "probability": 0.6,
+      "bars_per_move": 2,
+      "description": "Syncopated bass movement adding groove"
+    },
+    {
+      "name": "drum_fill_bounce",
+      "probability": 0.4,
+      "bars_per_move": 1,
+      "description": "Playful, bouncy drum fill"
+    }
+  ],
+  "transitions": {
+    "verse_to_prechorus": {
+      "type": "riser",
+      "duration_bars": 2,
+      "description": "Upward filter sweep with bass emphasis"
+    },
+    "prechorus_to_hook": {
+      "type": "crash",
+      "duration_bars": 0.5,
+      "description": "Crash cymbal for impact"
+    },
+    "hook_to_verse": {
+      "type": "drum_fill",
+      "duration_bars": 1,
+      "description": "Bouncy drum fill back into groove"
+    },
+    "hook_to_bridge": {
+      "type": "reverb_drop",
+      "duration_bars": 0.5,
+      "description": "Sudden reverb with everything pulled out except tail"
+    },
+    "bridge_to_verse": {
+      "type": "riser",
+      "duration_bars": 2,
+      "description": "Build back with filtering and bass"
+    }
+  },
+  "mixing_guidelines": {
+    "kick": {
+      "samples": ["punchy_kick_bounce", "808_sub_bounce"],
+      "compression": "moderate",
+      "saturation": "light",
+      "notes": "Bouncy but clear. Two-layer for depth without harshness"
+    },
+    "bass": {
+      "samples": ["bouncy_808", "deep_bounce_bass"],
+      "compression": "light",
+      "saturation": "moderate",
+      "notes": "Rolling bass with movement and groove. Melodic elements"
+    },
+    "snare": {
+      "samples": ["crisp_snare_bounce", "layered_clap"],
+      "compression": "moderate",
+      "saturation": "light",
+      "notes": "Punchy with natural feel due to swing"
+    },
+    "hi_hat": {
+      "samples": ["open_hat_swing", "closed_hat_shuffle"],
+      "compression": "none",
+      "saturation": "none",
+      "notes": "Bright, open hats with swing feel. Lots of movement"
+    },
+    "melody": {
+      "samples": ["perky_preset_bell", "bouncy_synth_lead"],
+      "compression": "light",
+      "saturation": "moderate",
+      "notes": "Bright, cheerful melody. Can be cheesy if overdone"
+    }
+  },
+  "production_notes": {
+    "key_characteristic": "Swing-infused trap with Memphis/lofi sensibility and bouncy energy",
+    "typical_elements": [
+      "90-130 BPM tempo range",
+      "Significant swing/shuffle feel (25% swing factor)",
+      "Bouncy 808 bass with melodic movement",
+      "Perky synth melodies and sound design",
+      "Open hi-hats with swing",
+      "Playful drum fills and interactions",
+      "Chops and stutters for texture",
+      "Sidechain compression for pump"
+    ],
+    "arrangement_strategy": "Build groove through swing, not complexity. Let the off-beat hits shine. Use repetition with variation rather than adding elements.",
+    "energy_sustain": "Medium-high (0.5-0.8) maintained through groove and swing factor rather than density",
+    "signature_move": "Swing-influenced hi-hat shuffle with sidechain pumping bass"
+  },
+  "example_structure": {
+    "total_bars": 92,
+    "breakdown": {
+      "intro_8": "Kick, hat, minimal bass - establishing bounce vibe",
+      "verse_16": "Full groove with bass riff and melody intro",
+      "prechorus_4": "Building with fuller arrangement",
+      "hook_8": "Peak with vocal hook sample and all elements",
+      "verse_16": "Variation with additional melody/chops",
+      "prechorus_4": "Repeat with slight intensity increase",
+      "hook_8": "Second hook with extra elements",
+      "bridge_8": "Stripped down to kick and bass, spacious feel",
+      "verse_12": "Final groove section with maximum bounce",
+      "outro_4": "Quick tail off"
+    }
+  }
+}

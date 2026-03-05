@@ -256,6 +256,7 @@ async def generate_arrangement(
     structure_preview = []
     style_profile_json = None
     ai_parsing_used = False
+    producer_arrangement_json = None
     correlation_id = getattr(http_request.state, "correlation_id", None) or http_request.headers.get("x-correlation-id")
 
     # V2: Handle LLM-based style parsing
@@ -296,6 +297,35 @@ async def generate_arrangement(
             })
             
             logger.info(f"Style profile parsed: preset={style_preset}, confidence={style_profile.intent.confidence}")
+            
+            # PRODUCER ENGINE INTEGRATION: Generate professional arrangement if feature enabled
+            if settings.feature_producer_engine:
+                try:
+                    logger.info(f"ProducerEngine enabled - generating arrangement for genre: {style_profile.genre}")
+                    
+                    # Call ProducerEngine with style profile
+                    producer_arrangement = ProducerEngine.generate(
+                        target_seconds=request.target_seconds,
+                        tempo=float(loop.bpm or loop.tempo or 120.0),
+                        genre=style_profile.genre,
+                        style_profile=style_profile,
+                        structure_template="standard",
+                    )
+                    
+                    # Import asdict for dataclass serialization
+                    from dataclasses import asdict
+                    
+                    # Serialize the producer arrangement for storage
+                    producer_arrangement_json = json.dumps({
+                        "version": "2.0",
+                        "producer_arrangement": asdict(producer_arrangement),
+                        "correlation_id": correlation_id,
+                    }, default=str)
+                    
+                    logger.info(f"ProducerEngine arrangement generated with {len(producer_arrangement.sections)} sections")
+                except Exception as producer_error:
+                    logger.warning(f"ProducerEngine generation failed: {producer_error}", exc_info=True)
+                    # Continue with fallback - producer_arrangement_json stays None
         except Exception as llm_error:
             logger.warning(f"LLM style parsing failed: {llm_error}")
             # Fall through to preset-based or default handling
@@ -335,6 +365,7 @@ async def generate_arrangement(
         arrangement_json=structure_json,
         style_profile_json=style_profile_json,
         ai_parsing_used=ai_parsing_used,
+        producer_arrangement_json=producer_arrangement_json,
     )
     db.add(arrangement)
     db.commit()

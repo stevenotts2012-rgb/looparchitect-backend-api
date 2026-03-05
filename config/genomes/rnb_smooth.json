@@ -1,0 +1,211 @@
+{
+  "name": "R&B Smooth",
+  "genre": "rnb",
+  "mood": "smooth",
+  "description": "Traditional smooth R&B with clean grooves, warm tones, focus on musicality over complexity. Classic soul vibes.",
+  "target_bpm_range": [80, 110],
+  "swing_factor": 0.15,
+  "reference_artists": ["D'Angelo", "Usher", "John Legend"],
+  "section_lengths": {
+    "intro": 8,
+    "verse": 16,
+    "prechorus": 4,
+    "chorus": 8,
+    "verse_2": 16,
+    "prechorus_2": 4,
+    "chorus_2": 8,
+    "bridge": 8,
+    "final_verse": 12,
+    "final_chorus": 8,
+    "outro": 4
+  },
+  "energy_curve": [
+    {"section": "intro", "energy": 0.2, "description": "Gentle, warm intro with mellow vibe"},
+    {"section": "verse", "energy": 0.4, "description": "Smooth groove, supporting the sensual feel"},
+    {"section": "prechorus", "energy": 0.5, "description": "Building anticipation gently"},
+    {"section": "chorus", "energy": 0.65, "description": "Main hook with fuller arrangement"},
+    {"section": "verse_2", "energy": 0.45, "description": "Variation on first verse, additional warmth"},
+    {"section": "prechorus_2", "energy": 0.55, "description": "Second build with slightly more intensity"},
+    {"section": "chorus_2", "energy": 0.7, "description": "Second chorus with extra thickness"},
+    {"section": "bridge", "energy": 0.35, "description": "Stripped, intimate section for contrast"},
+    {"section": "final_verse", "energy": 0.5, "description": "Final verse with emotional depth"},
+    {"section": "final_chorus", "energy": 0.8, "description": "Final chorus with maximum fullness"},
+    {"section": "outro", "energy": 0.1, "description": "Fade with reverb tail"
+    }
+  ],
+  "instrument_layers": {
+    "intro": {
+      "required": ["keys", "pad"],
+      "optional": ["bass"]
+    },
+    "verse": {
+      "required": ["kick", "snare", "bass", "keys"],
+      "optional": ["pad", "strings"]
+    },
+    "prechorus": {
+      "required": ["kick", "snare", "bass", "keys", "pad"],
+      "optional": ["strings", "vocal_harmony"]
+    },
+    "chorus": {
+      "required": ["kick", "snare", "bass", "keys", "pad", "chorus_hook"],
+      "optional": ["strings", "brass_stab", "vocal_harmony"]
+    },
+    "verse_2": {
+      "required": ["kick", "snare", "bass", "keys"],
+      "optional": ["pad", "strings", "vocal_layer"]
+    },
+    "prechorus_2": {
+      "required": ["kick", "snare", "bass", "keys", "pad"],
+      "optional": ["strings", "vocal_harmony", "orchestral_hit"]
+    },
+    "chorus_2": {
+      "required": ["kick", "snare", "bass", "keys", "pad", "chorus_hook"],
+      "optional": ["strings", "brass_stab", "vocal_harmony", "lead_vocal"]
+    },
+    "bridge": {
+      "required": ["bass", "keys"],
+      "optional": ["pad", "strings", "vocal_layer"]
+    },
+    "final_verse": {
+      "required": ["kick", "snare", "bass", "keys", "vocal_layer"],
+      "optional": ["pad", "strings", "lead_vocal"]
+    },
+    "final_chorus": {
+      "required": ["kick", "snare", "bass", "keys", "pad", "chorus_hook"],
+      "optional": ["strings", "brass_stab", "vocal_harmony", "lead_vocal", "orchestral_hit"]
+    },
+    "outro": {
+      "required": ["keys", "pad"],
+      "optional": ["strings", "reverb_tail"]
+    }
+  },
+  "variation_moves": [
+    {
+      "name": "groove_pocket_shift",
+      "probability": 0.6,
+      "bars_per_move": 4,
+      "description": "Subtle shift in drum groove pocket for pocket variation"
+    },
+    {
+      "name": "bass_movement",
+      "probability": 0.7,
+      "bars_per_move": 4,
+      "description": "Melodic bass movement within harmony"
+    },
+    {
+      "name": "strings_swell",
+      "probability": 0.5,
+      "bars_per_move": 4,
+      "description": "Orchestral strings swell for emotional lift"
+    },
+    {
+      "name": "vocal_harmony_add",
+      "probability": 0.6,
+      "bars_per_move": 4,
+      "description": "Additional vocal harmony layers"
+    },
+    {
+      "name": "keys_improvisation",
+      "probability": 0.4,
+      "bars_per_move": 2,
+      "description": "Light keyboard flourish or comping"
+    },
+    {
+      "name": "reverb_swell",
+      "probability": 0.3,
+      "bars_per_move": 1,
+      "description": "Brief reverb tail or delay effect"
+    }
+  ],
+  "transitions": {
+    "verse_to_prechorus": {
+      "type": "strings_swell",
+      "duration_bars": 1,
+      "description": "Gentle strings building upward"
+    },
+    "prechorus_to_chorus": {
+      "type": "impact",
+      "duration_bars": 0.5,
+      "description": "Orchestral hit for hook impact"
+    },
+    "chorus_to_verse": {
+      "type": "drum_kick_fill",
+      "duration_bars": 1,
+      "description": "Smooth drum transition"
+    },
+    "chorus_to_bridge": {
+      "type": "reverb_fade",
+      "duration_bars": 1,
+      "description": "Reverb fade with stripped instrumentation"
+    },
+    "bridge_to_final_verse": {
+      "type": "strings_swell",
+      "duration_bars": 2,
+      "description": "Building back with orchestration"
+    }
+  },
+  "mixing_guidelines": {
+    "kick": {
+      "samples": ["soft_kick_soul", "round_kick_warmth"],
+      "compression": "light",
+      "saturation": "light",
+      "notes": "Soft, warm kick. Sits behind other instruments, not dominant"
+    },
+    "bass": {
+      "samples": ["smooth_bass_melodic", "warm_deep_bass"],
+      "compression": "light",
+      "saturation": "moderate",
+      "notes": "Melodic, warm bass. Drives the groove smoothly"
+    },
+    "snare": {
+      "samples": ["soft_snare_brush", "crisp_clap_soul"],
+      "compression": "light",
+      "saturation": "none",
+      "notes": "Crisp but warm. Can be clap-like for natural feel"
+    },
+    "keys": {
+      "samples": ["warm_keys_rhodes", "organic_keys_soul"],
+      "compression": "light",
+      "saturation": "moderate",
+      "notes": "Warm, rich keys. Often Rhodes electric piano sound"
+    },
+    "strings": {
+      "samples": ["lush_strings_pad", "orchestral_violins"],
+      "compression": "moderate",
+      "saturation": "light",
+      "notes": "Warm, lush orchestration. Creates emotional depth"
+    }
+  },
+  "production_notes": {
+    "key_characteristic": "Clean, warm R&B with focus on musicality and soul over technical complexity",
+    "typical_elements": [
+      "80-110 BPM slow, groovy tempo range",
+      "Light swing feel (15% swing factor)",
+      "Warm, melodic bass lines",
+      "Rich, organic keyboard parts",
+      "Lush string sections",
+      "Soft, warm drums",
+      "Vocal-forward arrangement",
+      "Emphasis on emotion over energy"
+    ],
+    "arrangement_strategy": "Let the melody and harmony drive the track. Keep drums simple and groovy. Use strings and keys for depth. Build through layering, not acceleration.",
+    "energy_sustain": "Lower overall (0.2-0.8 range), but well-distributed. Maintain through musicality rather than intensity.",
+    "signature_move": "Warm Rhodes keys with bass movement underneath"
+  },
+  "example_structure": {
+    "total_bars": 104,
+    "breakdown": {
+      "intro_8": "Keys and pad creating warm, inviting vibe",
+      "verse_16": "Full groove with bass driving the feel",
+      "prechorus_4": "Building anticipation with strings hint",
+      "chorus_8": "Full arrangement with chorus hook sample",
+      "verse_16": "Variation with additional vocal harmony",
+      "prechorus_4": "Build with fuller orchestration",
+      "chorus_8": "Second chorus with extra strings thickness",
+      "bridge_8": "Stripped back to bass and keys for intimacy",
+      "final_verse_12": "Emotional final verse with full support",
+      "final_chorus_8": "Big, lush final chorus with everything",
+      "outro_4": "Gentle fade with reverb tail and pad"
+    }
+  }
+}

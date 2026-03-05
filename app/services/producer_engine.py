@@ -14,6 +14,7 @@ Output is a ProducerArrangement ready for audio synthesis.
 
 import logging
 from typing import List, Dict, Optional, Tuple
+from app.services.beat_genome_loader import BeatGenomeLoader
 from app.services.producer_models import (
     ProducerArrangement,
     Section,
@@ -336,22 +337,63 @@ class ProducerEngine:
 
     @staticmethod
     def _assign_instruments(arrangement: ProducerArrangement) -> ProducerArrangement:
-        """Assign instruments to each section based on genre."""
+        """Assign instruments to each section based on genre and beat genome."""
         genre_key = arrangement.genre.lower()
+        
+        # Try to load from beat genome first
+        try:
+            genome = BeatGenomeLoader.load(genre_key)
+            instrument_layers = genome.get("instrument_layers", {})
+            
+            for section in arrangement.sections:
+                section_name = section.section_type.value.lower()
+                
+                # Get instruments for this section from genome
+                if section_name in instrument_layers:
+                    required = instrument_layers[section_name].get("required", [])
+                    optional = instrument_layers[section_name].get("optional", [])
+                    
+                    # Convert instrument names to InstrumentType enum
+                    instruments = []
+                    for instr_name in required:
+                        try:
+                            instruments.append(InstrumentType[instr_name.upper()])
+                        except (KeyError, ValueError):
+                            logger.warning(f"Unknown instrument type in genome: {instr_name}")
+                    
+                    section.instruments = instruments
+                else:
+                    # Fallback to preset if section not in genome
+                    logger.debug(f"Section {section_name} not found in genome, using preset")
+                    section.instruments = ProducerEngine._get_fallback_instruments(genre_key, section.section_type)
+        except FileNotFoundError:
+            logger.warning(f"Genome not found for genre '{genre_key}', using hardcoded presets")
+            
+            # Fallback to hardcoded presets
+            if genre_key not in ProducerEngine.INSTRUMENT_PRESETS:
+                genre_key = "generic"
+            
+            presets = ProducerEngine.INSTRUMENT_PRESETS[genre_key]
+            for section in arrangement.sections:
+                instruments = presets.get(
+                    section.section_type,
+                    presets.get(SectionType.VERSE, []),
+                )
+                section.instruments = instruments
+        
+        return arrangement
+    
+    @staticmethod
+    def _get_fallback_instruments(genre_key: str, section_type: SectionType) -> List[InstrumentType]:
+        """Get instruments from hardcoded preset as fallback."""
         if genre_key not in ProducerEngine.INSTRUMENT_PRESETS:
             genre_key = "generic"
-
+        
         presets = ProducerEngine.INSTRUMENT_PRESETS[genre_key]
-
-        for section in arrangement.sections:
-            # Get instruments for this section type
-            instruments = presets.get(
-                section.section_type,
-                presets.get(SectionType.VERSE, []),
-            )
-            section.instruments = instruments
-
-        return arrangement
+        return presets.get(
+            section_type,
+            presets.get(SectionType.VERSE, []),
+        )
 
     @staticmethod
     def _generate_transitions(sections: List[Section]) -> List[Transition]:

@@ -1,0 +1,219 @@
+{
+  "name": "EDM Hard",
+  "genre": "edm",
+  "mood": "hard",
+  "description": "Hard-hitting EDM with industrial vibes, minimal drop philosophy, progressive builds, and technical sound design.",
+  "target_bpm_range": [120, 140],
+  "swing_factor": 0.0,
+  "reference_artists": ["Adam Beyer", "Amelie Lens", "Richie Hawtin"],
+  "section_lengths": {
+    "intro": 16,
+    "build_1": 16,
+    "intro_drop": 8,
+    "breakdown": 16,
+    "build_2": 16,
+    "main_drop": 16,
+    "breakdown_2": 12,
+    "build_3": 16,
+    "final_drop": 12,
+    "outro": 8
+  },
+  "energy_curve": [
+    {"section": "intro", "energy": 0.3, "description": "Atmospheric intro with minimal percussion"},
+    {"section": "build_1", "energy": 0.5, "description": "Progressive buildup with texture layers"},
+    {"section": "intro_drop", "energy": 0.6, "description": "First drop, moderate intensity"},
+    {"section": "breakdown", "energy": 0.35, "description": "Spacious breakdown section, breathing room"},
+    {"section": "build_2", "energy": 0.7, "description": "Aggressive second build"},
+    {"section": "main_drop", "energy": 0.9, "description": "Peak energy, drop hits hard"},
+    {"section": "breakdown_2", "energy": 0.4, "description": "Second breakdown, minimalist"},
+    {"section": "build_3", "energy": 0.8, "description": "Final build with maximum intensity"},
+    {"section": "final_drop", "energy": 0.95, "description": "Final drop, sustained high energy"},
+    {"section": "outro", "energy": 0.2, "description": "Afterparty outro, winding down"}
+  ],
+  "instrument_layers": {
+    "intro": {
+      "required": ["ambient_texture", "kick"],
+      "optional": ["hi_hat", "pad"]
+    },
+    "build_1": {
+      "required": ["ambient_texture", "kick", "bass_synth"],
+      "optional": ["hi_hat", "perc_loop", "noise_sweep"]
+    },
+    "intro_drop": {
+      "required": ["kick", "bass_synth", "hi_hat", "industrial_synth"],
+      "optional": ["perc_loop", "crash"]
+    },
+    "breakdown": {
+      "required": ["kick", "ambient_texture"],
+      "optional": ["bass_synth", "pad", "single_melody"]
+    },
+    "build_2": {
+      "required": ["kick", "bass_synth", "hi_hat", "industrial_synth", "perc_loop"],
+      "optional": ["rising_filter", "noise_swell"]
+    },
+    "main_drop": {
+      "required": ["kick", "bass_synth", "hi_hat", "industrial_synth", "perc_loop", "sub_bass"],
+      "optional": ["distorted_lead", "impact", "crash"]
+    },
+    "breakdown_2": {
+      "required": ["kick"],
+      "optional": ["ambient_texture", "pad", "long_tail"]
+    },
+    "build_3": {
+      "required": ["kick", "bass_synth", "hi_hat", "industrial_synth", "perc_loop", "rising_filter"],
+      "optional": ["sub_bass", "distorted_lead"]
+    },
+    "final_drop": {
+      "required": ["kick", "bass_synth", "hi_hat", "industrial_synth", "perc_loop", "sub_bass"],
+      "optional": ["distorted_lead", "orchestral_hit", "crash"]
+    },
+    "outro": {
+      "required": ["kick"],
+      "optional": ["ambient_texture", "reverb_tail"]
+    }
+  },
+  "variation_moves": [
+    {
+      "name": "filter_sweep_open",
+      "probability": 0.8,
+      "bars_per_move": 4,
+      "description": "Filter opening gradually on percussion or bass"
+    },
+    {
+      "name": "bass_synth_variation",
+      "probability": 0.6,
+      "bars_per_move": 4,
+      "description": "Bass synth filter or pitch variation"
+    },
+    {
+      "name": "percussion_loop_add",
+      "probability": 0.7,
+      "bars_per_move": 2,
+      "description": "Adding or removing percussion loop layer"
+    },
+    {
+      "name": "noise_swell",
+      "probability": 0.5,
+      "bars_per_move": 2,
+      "description": "White noise swell building tension"
+    },
+    {
+      "name": "texture_layer",
+      "probability": 0.6,
+      "bars_per_move": 4,
+      "description": "Adding ambient texture or pad layer"
+    },
+    {
+      "name": "frequency_cut",
+      "probability": 0.4,
+      "bars_per_move": 2,
+      "description": "High frequency cut reducing upper end"
+    }
+  ],
+  "transitions": {
+    "intro_to_build_1": {
+      "type": "filter_sweep",
+      "duration_bars": 4,
+      "description": "Gradual opening of percussion and bass"
+    },
+    "build_1_to_intro_drop": {
+      "type": "riser",
+      "duration_bars": 2,
+      "description": "Upward filter sweep with impact"
+    },
+    "intro_drop_to_breakdown": {
+      "type": "silence_drop",
+      "duration_bars": 0.5,
+      "description": "Sudden drop to spacious breakdown"
+    },
+    "breakdown_to_build_2": {
+      "type": "riser",
+      "duration_bars": 4,
+      "description": "Long, aggressive filter opening"
+    },
+    "build_2_to_main_drop": {
+      "type": "impact",
+      "duration_bars": 1,
+      "description": "Orchestral hit or bass impact"
+    },
+    "main_drop_to_breakdown_2": {
+      "type": "silence_drop",
+      "duration_bars": 1,
+      "description": "Stop hit then into atmosphere"
+    },
+    "breakdown_2_to_build_3": {
+      "type": "riser",
+      "duration_bars": 4,
+      "description": "Final aggressive buildup"
+    },
+    "build_3_to_final_drop": {
+      "type": "impact",
+      "duration_bars": 1,
+      "description": "Final impact with all elements hitting"
+    }
+  },
+  "mixing_guidelines": {
+    "kick": {
+      "samples": ["hard_kick_sub", "click_punch_industrial"],
+      "compression": "aggressive",
+      "saturation": "moderate",
+      "notes": "Deep sub kick with punchy click layer. Dominates the mix"
+    },
+    "bass_synth": {
+      "samples": ["dark_bass_synth", "industrial_buzz"],
+      "compression": "heavy",
+      "saturation": "heavy",
+      "notes": "Filtered, aggressive bass synth. Plays counter-melodically or in unison with kick"
+    },
+    "hi_hat": {
+      "samples": ["tight_closed_hat", "industrial_hi_hat"],
+      "compression": "moderate",
+      "saturation": "light",
+      "notes": "Tight, controlled hi-hats. Often filtered and automated"
+    },
+    "industrial_synth": {
+      "samples": ["harsh_detuned_synth", "metal_texture"],
+      "compression": "light",
+      "saturation": "heavy",
+      "notes": "Harsh, industrial textures. Often high-shelved and filtered"
+    },
+    "ambient_texture": {
+      "samples": ["pad_dark", "ambient_noise_field"],
+      "compression": "light",
+      "saturation": "none",
+      "notes": "Atmospheric background. Often subtractive (high-pass filtered)"
+    }
+  },
+  "production_notes": {
+    "key_characteristic": "Minimal drop philosophy with focus on progressive builds and sound design experimentation",
+    "typical_elements": [
+      "120-140 BPM driving techno tempo",
+      "No swing feel (straight grid)",
+      "Industrial, harsh synth sounds",
+      "Deep, heavy 808 sub bass",
+      "Minimal drop concept (no sudden explosive changes)",
+      "Progressive filter automation",
+      "Atmospheric textures and ambience",
+      "Emphasis on technical sound design",
+      "Long builds (16+ bars)"
+    ],
+    "arrangement_strategy": "Build energy through filter automation and layering. Use silence strategically. Focus on texture and technical detail. Minimize abrupt changes.",
+    "energy_sustain": "Variable: 0.3-0.95 range with intentional peaks and valleys. Sustain through detail and layering rather than instrument count.",
+    "signature_move": "Progressive filter sweep on bass synth during build sections"
+  },
+  "example_structure": {
+    "total_bars": 152,
+    "breakdown": {
+      "intro_16": "Ambient texture with minimal kick, setting dark mood",
+      "build_1_16": "Progressive adding of bass and synth layers",
+      "intro_drop_8": "First drop with bass hitting, moderate intensity",
+      "breakdown_16": "Stripped to kick and pad, breathing room",
+      "build_2_16": "More aggressive, all layers building",
+      "main_drop_16": "Peak drop with maximum elements and energy",
+      "breakdown_2_12": "Minimal kick and tail, resetting energy",
+      "build_3_16": "Final build with everything returning and intensifying",
+      "final_drop_12": "Final drop sustains high energy through outro",
+      "outro_8": "Fade back to ambient texture, winding down"
+    }
+  }
+}
