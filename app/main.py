@@ -115,6 +115,38 @@ def create_tables_if_missing():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+
+            # Ensure loop columns required by current ORM model exist
+            inspector = sa.inspect(connection)
+            if "loops" in inspector.get_table_names():
+                existing_loop_columns = {col["name"] for col in inspector.get_columns("loops")}
+                required_loop_columns = {
+                    "name": "VARCHAR",
+                    "tempo": "FLOAT",
+                    "key": "VARCHAR",
+                    "filename": "VARCHAR",
+                    "file_url": "VARCHAR",
+                    "file_key": "VARCHAR",
+                    "bpm": "INTEGER",
+                    "bars": "INTEGER",
+                    "musical_key": "VARCHAR",
+                    "genre": "VARCHAR",
+                    "processed_file_url": "VARCHAR",
+                    "analysis_json": "TEXT",
+                    "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                }
+
+                for column_name, column_type in required_loop_columns.items():
+                    if column_name not in existing_loop_columns:
+                        connection.execute(
+                            text(
+                                f"ALTER TABLE loops ADD COLUMN {column_name} {column_type}"
+                            )
+                        )
+                        logger.info(
+                            "✅ Added missing column loops.%s during startup",
+                            column_name,
+                        )
             
             # Create arrangements table with all required columns
             connection.execute(text("""
@@ -136,7 +168,6 @@ def create_tables_if_missing():
             """))
 
             # Ensure newer arrangement columns exist for deployments that skipped migrations
-            inspector = sa.inspect(connection)
             if "arrangements" in inspector.get_table_names():
                 existing_columns = {col["name"] for col in inspector.get_columns("arrangements")}
                 required_columns = {
