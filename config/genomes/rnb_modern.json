@@ -1,0 +1,152 @@
+{
+  "name": "R&B Modern",
+  "genre": "rnb",
+  "mood": "modern",
+  "version": "1.0",
+  "description": "Contemporary R&B with smooth drums, soulful pads, and bedroom vibes",
+  
+  "section_lengths": {
+    "intro": 8,
+    "verse": 16,
+    "hook": 8,
+    "bridge": 8,
+    "outro": 4
+  },
+  
+  "recommended_arrangement": [
+    "intro",
+    "verse",
+    "hook",
+    "verse",
+    "hook",
+    "bridge",
+    "hook",
+    "outro"
+  ],
+  
+  "energy_curve": [
+    {"section": "intro", "energy": 0.3, "description": "Intimate, building"},
+    {"section": "hook", "energy": 0.85, "description": "Confident peak"},
+    {"section": "verse", "energy": 0.6, "description": "Groove pocket"},
+    {"section": "bridge", "energy": 0.5, "description": "Introspection"},
+    {"section": "outro", "energy": 0.2, "description": "Fade out"}
+  ],
+  
+  "energy_interpolation": "smooth",
+  "energy_smoothing_bars": 4,
+  
+  "change_rate_bars": 8,
+  
+  "instrument_layers": {
+    "intro": {
+      "required": ["kick", "pad", "strings"],
+      "optional": ["bass"],
+      "forbidden": []
+    },
+    "verse": {
+      "required": ["kick", "snare", "hats", "bass", "pad"],
+      "optional": ["melody", "strings"],
+      "forbidden": []
+    },
+    "hook": {
+      "required": ["kick", "snare", "hats", "bass", "pad", "lead", "strings"],
+      "optional": ["synth", "fx"],
+      "forbidden": []
+    },
+    "bridge": {
+      "required": ["kick", "snare", "pad"],
+      "optional": ["bass", "strings"],
+      "forbidden": []
+    },
+    "outro": {
+      "required": ["pad", "strings"],
+      "optional": ["kick"],
+      "forbidden": []
+    }
+  },
+  
+  "variation_moves": [
+    {
+      "type": "bass_variation",
+      "probability": 0.8,
+      "intensity": 0.6,
+      "bar_offset": 8
+    },
+    {
+      "type": "drum_fill",
+      "probability": 0.5,
+      "intensity": 0.6,
+      "bar_offset": 8
+    },
+    {
+      "type": "fx_automation",
+      "probability": 0.7,
+      "intensity": 0.5,
+      "bar_offset": 6
+    }
+  ],
+  
+  "transitions": [
+    {
+      "from": "intro",
+      "to": "verse",
+      "type": "crossfade",
+      "duration_bars": 0.5,
+      "intensity": 0.5
+    },
+    {
+      "from": "verse",
+      "to": "hook",
+      "type": "riser",
+      "duration_bars": 1,
+      "intensity": 0.7
+    },
+    {
+      "from": "hook",
+      "to": "bridge",
+      "type": "drum_fill",
+      "duration_bars": 0.5,
+      "intensity": 0.6
+    }
+  ],
+  
+  "drop_rules": {
+    "intro_type": "building",
+    "pre_drop_bars": 2,
+    "drop_silence_bars": 0,
+    "drop_drum_fill": false
+  },
+  
+  "vocal_space": {
+    "primary_sections": ["hook", "verse"],
+    "remove_instruments_for_vocals": ["lead"],
+    "reduce_instruments_for_vocals": ["strings"],
+    "pad_underneath": true
+  },
+  
+  "tempo_range": [85, 105],
+  "swing_factor": 0.08,
+  "groove_pocket": "behind_beat",
+  
+  "mixing": {
+    "bass_presence": 0.75,
+    "drum_clarity": 0.7,
+    "melody_presence": 0.8,
+    "stereo_width": 0.7,
+    "master_loudness": "normal"
+  },
+  
+  "production_notes": {
+    "key_elements": [
+      "Soulful pads with reverb",
+      "Smooth bass lines",
+      "Soft drums with swing",
+      "Warm vocal space"
+    ],
+    "avoid": [
+      "Aggressive sounds",
+      "Bright highs",
+      "Metallic percussion"
+    ]
+  }
+}

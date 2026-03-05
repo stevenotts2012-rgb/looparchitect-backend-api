@@ -1,0 +1,141 @@
+{
+  "name": "EDM Pop",
+  "genre": "edm",
+  "mood": "euphoric",
+  "version": "1.0",
+  "description": "Uplifting electronic dance music with bright synths and punchy drops",
+  
+  "section_lengths": {
+    "intro": 8,
+    "verse": 16,
+    "build": 8,
+    "hook": 8,
+    "bridge": 8,
+    "outro": 4
+  },
+  
+  "energy_curve": [
+    {"section": "intro", "energy": 0.3},
+    {"section": "verse", "energy": 0.6},
+    {"section": "build", "energy": 0.85},
+    {"section": "hook", "energy": 1.0},
+    {"section": "bridge", "energy": 0.4},
+    {"section": "outro", "energy": 0.1}
+  ],
+  
+  "energy_interpolation": "smooth",
+  "energy_smoothing_bars": 4,
+  
+  "change_rate_bars": 8,
+  
+  "instrument_layers": {
+    "intro": {
+      "required": ["synth", "pad"],
+      "optional": ["kick"],
+      "forbidden": ["snare"]
+    },
+    "verse": {
+      "required": ["kick", "synth", "pad", "bass"],
+      "optional": ["hats"],
+      "forbidden": []
+    },
+    "build": {
+      "required": ["kick", "snare", "hats", "synth", "bass"],
+      "optional": ["fx", "lead"],
+      "forbidden": []
+    },
+    "hook": {
+      "required": ["kick", "snare", "hats", "bass", "synth", "lead"],
+      "optional": ["pad", "fx", "strings"],
+      "forbidden": []
+    },
+    "bridge": {
+      "required": ["synth"],
+      "optional": ["pad"],
+      "forbidden": []
+    },
+    "outro": {
+      "required": ["synth", "pad"],
+      "optional": [],
+      "forbidden": []
+    }
+  },
+  
+  "variation_moves": [
+    {
+      "type": "hihat_roll",
+      "probability": 0.9,
+      "intensity": 0.9,
+      "bar_offset": 4
+    },
+    {
+      "type": "drum_fill",
+      "probability": 0.8,
+      "intensity": 0.9,
+      "bar_offset": 8
+    },
+    {
+      "type": "fx_automation",
+      "probability": 0.95,
+      "intensity": 0.8,
+      "bar_offset": 4
+    }
+  ],
+  
+  "transitions": [
+    {
+      "from": "intro",
+      "to": "verse",
+      "type": "filter_sweep",
+      "duration_bars": 1,
+      "intensity": 0.7
+    },
+    {
+      "from": "build",
+      "to": "hook",
+      "type": "riser",
+      "duration_bars": 1,
+      "intensity": 1.0
+    }
+  ],
+  
+  "drop_rules": {
+    "intro_type": "building",
+    "pre_drop_bars": 3,
+    "drop_silence_bars": 0.25,
+    "drop_drum_fill": true
+  },
+  
+  "vocal_space": {
+    "primary_sections": ["hook"],
+    "remove_instruments_for_vocals": ["synth"],
+    "reduce_instruments_for_vocals": ["hats"],
+    "pad_underneath": true
+  },
+  
+  "tempo_range": [120, 135],
+  "swing_factor": 0.0,
+  "groove_pocket": "on_beat",
+  
+  "mixing": {
+    "bass_presence": 0.7,
+    "drum_clarity": 0.95,
+    "melody_presence": 0.9,
+    "stereo_width": 0.95,
+    "master_loudness": "loud"
+  },
+  
+  "production_notes": {
+    "key_elements": [
+      "Bright, euphoric synths",
+      "Punchy 4/4 kick",
+      "Wide stereo synth pads",
+      "Sidechain compression on bass"
+    ],
+    "avoid": [
+      "Dark moody elements",
+      "Sparse arrangements",
+      "Heavy distortion"
+    ]
+  }
+}

@@ -1,0 +1,152 @@
+{
+  "name": "Trap Dark",
+  "genre": "trap",
+  "mood": "dark",
+  "version": "1.0",
+  "description": "Dark trap production inspired by FutureHendrix, Southside, Metro Boomin",
+  
+  "section_lengths": {
+    "intro": 8,
+    "verse": 16,
+    "hook": 8,
+    "bridge": 8,
+    "outro": 4
+  },
+  
+  "recommended_arrangement": [
+    "intro",
+    "hook",
+    "verse",
+    "hook",
+    "verse",
+    "bridge",
+    "hook",
+    "outro"
+  ],
+  
+  "energy_curve": [
+    {"section": "intro", "energy": 0.2, "description": "Atmospheric buildup"},
+    {"section": "hook", "energy": 0.9, "description": "Main drop - peak energy"},
+    {"section": "verse", "energy": 0.6, "description": "Groove pocket"},
+    {"section": "bridge", "energy": 0.4, "description": "Release / breakdown"},
+    {"section": "outro", "energy": 0.1, "description": "Fade out"}
+  ],
+  
+  "energy_interpolation": "smooth",
+  "energy_smoothing_bars": 4,
+  
+  "change_rate_bars": 8,
+  
+  "instrument_layers": {
+    "intro": {
+      "required": ["kick", "pad"],
+      "optional": ["fx"],
+      "forbidden": []
+    },
+    "verse": {
+      "required": ["kick", "snare", "hats", "bass"],
+      "optional": ["pad", "percussion"],
+      "forbidden": []
+    },
+    "hook": {
+      "required": ["kick", "snare", "hats", "bass", "lead"],
+      "optional": ["pad", "fx", "synth"],
+      "forbidden": []
+    },
+    "bridge": {
+      "required": ["kick", "pad"],
+      "optional": ["snare"],
+      "forbidden": []
+    },
+    "outro": {
+      "required": ["kick", "pad"],
+      "optional": [],
+      "forbidden": []
+    }
+  },
+  
+  "variation_moves": [
+    {
+      "type": "hihat_roll",
+      "probability": 0.7,
+      "intensity": 0.7,
+      "bar_offset": 4
+    },
+    {
+      "type": "drum_fill",
+      "probability": 0.6,
+      "intensity": 0.8,
+      "bar_offset": 8
+    },
+    {
+      "type": "fx_automation",
+      "probability": 0.8,
+      "intensity": 0.6,
+      "bar_offset": 6
+    }
+  ],
+  
+  "transitions": [
+    {
+      "from": "intro",
+      "to": "hook",
+      "type": "drum_fill",
+      "duration_bars": 0.5,
+      "intensity": 0.8
+    },
+    {
+      "from": "hook",
+      "to": "bridge",
+      "type": "silence_drop",
+      "duration_bars": 0.25,
+      "intensity": 1.0
+    },
+    {
+      "from": "bridge",
+      "to": "hook",
+      "type": "riser",
+      "duration_bars": 1,
+      "intensity": 0.9
+    }
+  ],
+  
+  "drop_rules": {
+    "intro_type": "fade_in",
+    "pre_drop_bars": 2,
+    "drop_silence_bars": 0.5,
+    "drop_drum_fill": true
+  },
+  
+  "vocal_space": {
+    "primary_sections": ["hook", "verse"],
+    "remove_instruments_for_vocals": ["lead", "fx"],
+    "reduce_instruments_for_vocals": ["hats"],
+    "pad_underneath": true
+  },
+  
+  "tempo_range": [130, 150],
+  "swing_factor": 0.0,
+  "groove_pocket": "on_beat",
+  
+  "mixing": {
+    "bass_presence": 0.85,
+    "drum_clarity": 0.9,
+    "melody_presence": 0.5,
+    "stereo_width": 0.6,
+    "master_loudness": "loud"
+  },
+  
+  "production_notes": {
+    "key_elements": [
+      "Massive 808 kick",
+      "Snappy snare with transient",
+      "Dark atmospheric pad",
+      "Minimal hi-hats (hi-passed)"
+    ],
+    "avoid": [
+      "Bright melodic elements",
+      "Complex arrangements",
+      "Too much reverb"
+    ]
+  }
+}

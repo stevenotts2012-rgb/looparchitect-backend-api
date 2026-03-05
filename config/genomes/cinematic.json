@@ -1,0 +1,138 @@
+{
+  "name": "Cinematic",
+  "genre": "cinematic",
+  "mood": "epic",
+  "version": "1.0",
+  "description": "Orchestral, film-score style with slow builds and dramatic dynamics",
+  
+  "section_lengths": {
+    "intro": 16,
+    "verse": 24,
+    "hook": 16,
+    "bridge": 16,
+    "outro": 8
+  },
+  
+  "recommended_arrangement": [
+    "intro",
+    "verse",
+    "hook",
+    "verse",
+    "bridge",
+    "hook",
+    "outro"
+  ],
+  
+  "energy_curve": [
+    {"section": "intro", "energy": 0.1, "description": "Tension building"},
+    {"section": "hook", "energy": 1.0, "description": "Epic climax"},
+    {"section": "verse", "energy": 0.5, "description": "Storytelling"},
+    {"section": "bridge", "energy": 0.3, "description": "Introspection"},
+    {"section": "outro", "energy": 0.1, "description": "Resolution"}
+  ],
+  
+  "energy_interpolation": "smooth",
+  "energy_smoothing_bars": 8,
+  
+  "change_rate_bars": 16,
+  
+  "instrument_layers": {
+    "intro": {
+      "required": ["pad", "strings"],
+      "optional": ["horn"],
+      "forbidden": ["kick", "snare", "hats"]
+    },
+    "verse": {
+      "required": ["pad", "strings"],
+      "optional": ["kick", "horn", "melody"],
+      "forbidden": []
+    },
+    "hook": {
+      "required": ["pad", "strings", "horn", "synth"],
+      "optional": ["kick", "percussion", "lead"],
+      "forbidden": []
+    },
+    "bridge": {
+      "required": ["pad"],
+      "optional": ["strings"],
+      "forbidden": []
+    },
+    "outro": {
+      "required": ["pad"],
+      "optional": ["strings"],
+      "forbidden": []
+    }
+  },
+  
+  "variation_moves": [
+    {
+      "type": "fx_automation",
+      "probability": 0.9,
+      "intensity": 0.8,
+      "bar_offset": 8
+    },
+    {
+      "type": "velocity_change",
+      "probability": 0.7,
+      "intensity": 0.7,
+      "bar_offset": 8
+    }
+  ],
+  
+  "transitions": [
+    {
+      "from": "intro",
+      "to": "verse",
+      "type": "crossfade",
+      "duration_bars": 2,
+      "intensity": 0.6
+    },
+    {
+      "from": "verse",
+      "to": "hook",
+      "type": "riser",
+      "duration_bars": 2,
+      "intensity": 1.0
+    }
+  ],
+  
+  "drop_rules": {
+    "intro_type": "building",
+    "pre_drop_bars": 4,
+    "drop_silence_bars": 0,
+    "drop_drum_fill": false
+  },
+  
+  "vocal_space": {
+    "primary_sections": ["verse", "hook"],
+    "remove_instruments_for_vocals": [],
+    "reduce_instruments_for_vocals": ["melody"],
+    "pad_underneath": true
+  },
+  
+  "tempo_range": [60, 90],
+  "swing_factor": 0.0,
+  "groove_pocket": "on_beat",
+  
+  "mixing": {
+    "bass_presence": 0.5,
+    "drum_clarity": 0.3,
+    "melody_presence": 0.9,
+    "stereo_width": 1.0,
+    "master_loudness": "quiet"
+  },
+  
+  "production_notes": {
+    "key_elements": [
+      "Rich orchestral strings",
+      "Sweeping pad layers",
+      "Brass/horn stabs",
+      "Dramatic dynamics"
+    ],
+    "avoid": [
+      "Electronic beats",
+      "Modern FX",
+      "Quirky percussion"
+    ]
+  }
+}

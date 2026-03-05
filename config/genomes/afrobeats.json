@@ -1,0 +1,145 @@
+{
+  "name": "Afrobeats",
+  "genre": "afrobeats",
+  "mood": "energetic",
+  "version": "1.0",
+  "description": "Afrobeats and Amapiano with polyrhythmic percussion and groovy bass",
+  
+  "section_lengths": {
+    "intro": 8,
+    "verse": 16,
+    "hook": 8,
+    "bridge": 8,
+    "outro": 4
+  },
+  
+  "recommended_arrangement": [
+    "intro",
+    "verse",
+    "hook",
+    "verse",
+    "hook",
+    "bridge",
+    "hook",
+    "outro"
+  ],
+  
+  "energy_curve": [
+    {"section": "intro", "energy": 0.4, "description": "Steady groove"},
+    {"section": "hook", "energy": 0.95, "description": "Dance peak"},
+    {"section": "verse", "energy": 0.7, "description": "Happy groove"},
+    {"section": "bridge", "energy": 0.5, "description": "Breakdown"},
+    {"section": "outro", "energy": 0.2, "description": "Fade"}
+  ],
+  
+  "energy_interpolation": "smooth",
+  "energy_smoothing_bars": 4,
+  
+  "change_rate_bars": 4,
+  
+  "instrument_layers": {
+    "intro": {
+      "required": ["kick", "percussion"],
+      "optional": ["pad"],
+      "forbidden": []
+    },
+    "verse": {
+      "required": ["kick", "snare", "hats", "bass", "percussion"],
+      "optional": ["pad", "melody"],
+      "forbidden": []
+    },
+    "hook": {
+      "required": ["kick", "snare", "hats", "bass", "percussion", "lead"],
+      "optional": ["pad", "synth", "strings"],
+      "forbidden": []
+    },
+    "bridge": {
+      "required": ["kick", "percussion"],
+      "optional": ["pad"],
+      "forbidden": []
+    },
+    "outro": {
+      "required": ["kick", "percussion"],
+      "optional": [],
+      "forbidden": []
+    }
+  },
+  
+  "variation_moves": [
+    {
+      "type": "hihat_roll",
+      "probability": 0.8,
+      "intensity": 0.8,
+      "bar_offset": 4
+    },
+    {
+      "type": "bass_variation",
+      "probability": 0.9,
+      "intensity": 0.7,
+      "bar_offset": 4
+    },
+    {
+      "type": "drum_fill",
+      "probability": 0.7,
+      "intensity": 0.8,
+      "bar_offset": 4
+    }
+  ],
+  
+  "transitions": [
+    {
+      "from": "intro",
+      "to": "verse",
+      "type": "drum_fill",
+      "duration_bars": 0.5,
+      "intensity": 0.7
+    },
+    {
+      "from": "verse",
+      "to": "hook",
+      "type": "riser",
+      "duration_bars": 1,
+      "intensity": 0.8
+    }
+  ],
+  
+  "drop_rules": {
+    "intro_type": "building",
+    "pre_drop_bars": 2,
+    "drop_silence_bars": 0,
+    "drop_drum_fill": true
+  },
+  
+  "vocal_space": {
+    "primary_sections": ["hook"],
+    "remove_instruments_for_vocals": [],
+    "reduce_instruments_for_vocals": ["lead"],
+    "pad_underneath": false
+  },
+  
+  "tempo_range": [96, 128],
+  "swing_factor": 0.12,
+  "groove_pocket": "on_beat",
+  
+  "mixing": {
+    "bass_presence": 0.9,
+    "drum_clarity": 0.85,
+    "melody_presence": 0.7,
+    "stereo_width": 0.8,
+    "master_loudness": "loud"
+  },
+  
+  "production_notes": {
+    "key_elements": [
+      "Bouncy, syncopated hi-hats",
+      "Deep groovy bassline",
+      "Polyrhythmic percussion",
+      "Energetic overall vibe"
+    ],
+    "avoid": [
+      "Static drums",
+      "Minimal arrangements",
+      "Dark moody sounds"
+    ]
+  }
+}
