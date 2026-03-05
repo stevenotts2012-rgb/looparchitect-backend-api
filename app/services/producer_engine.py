@@ -202,9 +202,18 @@ class ProducerEngine:
 
         # Apply style profile if provided
         if style_profile:
-            arrangement.drum_style = style_profile.drum_style
-            arrangement.melody_style = style_profile.melody_style
-            arrangement.bass_style = style_profile.bass_style
+            # Handle both old and new StyleProfile formats
+            # New format has resolved_params dict instead of drum_style/melody_style/bass_style
+            if hasattr(style_profile, 'drum_style'):
+                arrangement.drum_style = style_profile.drum_style
+                arrangement.melody_style = style_profile.melody_style
+                arrangement.bass_style = style_profile.bass_style
+            elif hasattr(style_profile, 'resolved_params'):
+                # New LLM-based StyleProfile format - map params to arrangement
+                params = style_profile.resolved_params or {}
+                arrangement.drum_style = f"drum_density_{params.get('drum_density', 0.5)}"
+                arrangement.melody_style = f"complexity_{params.get('melody_complexity', 0.5)}"
+                arrangement.bass_style = f"presence_{params.get('bass_presence', 0.5)}"
 
         # Build sections from template
         arrangement.sections = ProducerEngine._build_sections(

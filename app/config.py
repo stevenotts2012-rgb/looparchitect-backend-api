@@ -1,4 +1,6 @@
 import os
+from typing import Any
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -6,41 +8,63 @@ class Settings(BaseSettings):
     app_name: str = "LoopArchitect API"
     app_version: str = "1.0.0"
     debug: bool = False
-    environment: str = os.getenv("ENVIRONMENT", "development")
-    storage_backend: str = os.getenv("STORAGE_BACKEND", "")
-    redis_url: str = os.getenv("REDIS_URL", "")
-    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
-    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-    aws_region: str = os.getenv("AWS_REGION", "")
-    aws_s3_bucket: str = os.getenv("AWS_S3_BUCKET", "")
-    s3_bucket_name: str = os.getenv("S3_BUCKET_NAME", "")
-    frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "")
-    cors_allowed_origins: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-    api_base_url: str = os.getenv("API_BASE_URL", "")
-    feature_style_engine: bool = os.getenv("FEATURE_STYLE_ENGINE", "false").lower() == "true"
-    feature_style_sliders: bool = os.getenv("FEATURE_STYLE_SLIDERS", "false").lower() == "true"
-    feature_variations: bool = os.getenv("FEATURE_VARIATIONS", "false").lower() == "true"
-    feature_beat_switch: bool = os.getenv("FEATURE_BEAT_SWITCH", "false").lower() == "true"
-    feature_midi_export: bool = os.getenv("FEATURE_MIDI_EXPORT", "false").lower() == "true"
-    feature_stem_export: bool = os.getenv("FEATURE_STEM_EXPORT", "false").lower() == "true"
-    feature_pattern_generation: bool = os.getenv("FEATURE_PATTERN_GENERATION", "false").lower() == "true"
-    feature_producer_engine: bool = os.getenv("FEATURE_PRODUCER_ENGINE", "false").lower() == "true"
-    dev_fallback_loop_only: bool = os.getenv("DEV_FALLBACK_LOOP_ONLY", "false").lower() == "true"
+    environment: str = Field(default="development", validation_alias="ENVIRONMENT")
+    storage_backend: str = Field(default="", validation_alias="STORAGE_BACKEND")
+    redis_url: str = Field(default="", validation_alias="REDIS_URL")
+    aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str = Field(default="", validation_alias="AWS_SECRET_ACCESS_KEY")
+    aws_region: str = Field(default="", validation_alias="AWS_REGION")
+    aws_s3_bucket: str = Field(default="", validation_alias="AWS_S3_BUCKET")
+    s3_bucket_name: str = Field(default="", validation_alias="S3_BUCKET_NAME")
+    frontend_origin: str = Field(default="", validation_alias="FRONTEND_ORIGIN")
+    cors_allowed_origins: str = Field(default="", validation_alias="CORS_ALLOWED_ORIGINS")
+    api_base_url: str = Field(default="", validation_alias="API_BASE_URL")
+    feature_style_engine: bool = Field(default=False, validation_alias="FEATURE_STYLE_ENGINE")
+    feature_style_sliders: bool = Field(default=False, validation_alias="FEATURE_STYLE_SLIDERS")
+    feature_variations: bool = Field(default=False, validation_alias="FEATURE_VARIATIONS")
+    feature_beat_switch: bool = Field(default=False, validation_alias="FEATURE_BEAT_SWITCH")
+    feature_midi_export: bool = Field(default=False, validation_alias="FEATURE_MIDI_EXPORT")
+    feature_stem_export: bool = Field(default=False, validation_alias="FEATURE_STEM_EXPORT")
+    feature_pattern_generation: bool = Field(default=False, validation_alias="FEATURE_PATTERN_GENERATION")
+    feature_producer_engine: bool = Field(default=False, validation_alias="FEATURE_PRODUCER_ENGINE")
+    dev_fallback_loop_only: bool = Field(default=False, validation_alias="DEV_FALLBACK_LOOP_ONLY")
     
     # LLM Style Engine V2 settings
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4")
-    openai_timeout: int = int(os.getenv("OPENAI_TIMEOUT", "30"))
-    openai_max_retries: int = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
-    feature_llm_style_parsing: bool = os.getenv("FEATURE_LLM_STYLE_PARSING", "false").lower() == "true"
-    ffmpeg_binary: str = os.getenv("FFMPEG_BINARY", "")
-    ffprobe_binary: str = os.getenv("FFPROBE_BINARY", "")
-    enforce_audio_binaries: str = os.getenv("ENFORCE_AUDIO_BINARIES", "auto")
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(default="https://api.openai.com/v1", validation_alias="OPENAI_BASE_URL")
+    openai_model: str = Field(default="gpt-4", validation_alias="OPENAI_MODEL")
+    openai_timeout: int = Field(default=30, validation_alias="OPENAI_TIMEOUT")
+    openai_max_retries: int = Field(default=3, validation_alias="OPENAI_MAX_RETRIES")
+    feature_llm_style_parsing: bool = Field(default=False, validation_alias="FEATURE_LLM_STYLE_PARSING")
+    ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
+    ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
+    enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
     
     # Request size limits
-    max_upload_size_mb: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "100"))
-    max_request_body_size_mb: int = int(os.getenv("MAX_REQUEST_BODY_SIZE_MB", "100"))
+    max_upload_size_mb: int = Field(default=100, validation_alias="MAX_UPLOAD_SIZE_MB")
+    max_request_body_size_mb: int = Field(default=100, validation_alias="MAX_REQUEST_BODY_SIZE_MB")
+
+    @field_validator(
+        "feature_style_engine",
+        "feature_style_sliders",
+        "feature_variations",
+        "feature_beat_switch",
+        "feature_midi_export",
+        "feature_stem_export",
+        "feature_pattern_generation",
+        "feature_producer_engine",
+        "dev_fallback_loop_only",
+        "feature_llm_style_parsing",
+        mode="before",
+    )
+    @classmethod
+    def convert_bool(cls, v: Any) -> bool:
+        """Convert string boolean values to actual booleans."""
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "on")
+        if isinstance(v, bool):
+            return v
+        return bool(v)
 
     @property
     def allowed_origins(self) -> list[str]:
@@ -99,7 +123,7 @@ class Settings(BaseSettings):
         return "local"
 
     # Use DATABASE_URL from environment if available, otherwise local SQLite for development
-    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+    database_url: str = Field(default="sqlite:///./test.db", validation_alias="DATABASE_URL")
 
     @property
     def is_production(self) -> bool:
@@ -154,8 +178,10 @@ class Settings(BaseSettings):
                 "LLM-powered style parsing will fail. Set OPENAI_API_KEY to enable this feature."
             )
 
-    class Config:
-        env_file = ".env"
+    model_config = {
+        "env_file": ".env",
+        "extra": "allow",
+    }
 
 
 settings = Settings()

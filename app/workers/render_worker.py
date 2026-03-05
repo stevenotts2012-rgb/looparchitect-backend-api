@@ -126,7 +126,17 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
             return
         
-        logger.info(f"[{job_id}] Starting render for loop {loop_id}")
+        # Load arrangement with producer data (if available)
+        from app.models.arrangement import Arrangement
+        
+        arrangement = db.query(Arrangement).filter(
+            Arrangement.loop_id == loop_id
+        ).order_by(Arrangement.created_at.desc()).first()
+        
+        logger.info(
+            f"[{job_id}] Starting render for loop {loop_id} "
+            f"(producer_data={'YES' if arrangement and arrangement.producer_arrangement_json else 'NO'})"
+        )
         
         # Mark as processing
         update_job_status(db, job_id, "processing", progress=10.0)
@@ -148,42 +158,150 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             except Exception as e:
                 raise ValueError(f"Failed to load audio: {e}")
             
-            # Build variation profiles from params
-            from app.routes.render import _compute_variation_profiles, _build_variation
-            
-            profiles = _compute_variation_profiles(type('RenderConfig', (), params)())
-            output_files: List[OutputFile] = []
-            
-            # Render variations
-            for i, profile in enumerate(profiles):
-                progress = 40.0 + (50.0 / len(profiles)) * i
+            # Check if we have ProducerEngine arrangement data
+            if arrangement and arrangement.producer_arrangement_json:
+                # ========================================
+                # ProducerEngine Path (Structured Render)
+                # ========================================
+                logger.info(f"[{job_id}] Using ProducerEngine arrangement for structured render")
+                
+                import json
+                from app.services.producer_models import ProducerArrangement, Section, InstrumentType
+                from app.services.audio_renderer import render_arrangement
+                
+                # Parse ProducerArrangement from JSON
+                try:
+                    wrapper_data = json.loads(arrangement.producer_arrangement_json)
+                    
+                    # Handle nested structure: {"version": "2.0", "producer_arrangement": {...}}
+                    if "producer_arrangement" in wrapper_data:
+                        producer_data = wrapper_data["producer_arrangement"]
+                    else:
+                        producer_data = wrapper_data
+                    
+                    # Reconstruct ProducerArrangement object
+                    # Note: JSON doesn't preserve dataclass types, need to reconstruct
+                    sections = []
+                    for s_data in producer_data.get("sections", []):
+                        from app.services.producer_models import SectionType
+                        section = Section(
+                            name=s_data.get("name", ""),
+                            section_type=SectionType(s_data.get("type", "Verse")),
+                            bar_start=s_data.get("bar_start", 0),
+                            bars=s_data.get("bars", 8),
+                            energy_level=s_data.get("energy", 0.5),
+                            instruments=[InstrumentType(i) for i in s_data.get("instruments", [])],
+                        )
+                        sections.append(section)
+                    
+                    # Reconstruct energy curve
+                    from app.services.producer_models import EnergyPoint
+                    energy_curve = [
+                        EnergyPoint(bar=ep["bar"], energy=ep["energy"])
+                        for ep in producer_data.get("energy_curve", [])
+                    ]
+                    
+                    # Create ProducerArrangement
+                    producer_arrangement = ProducerArrangement(
+                        tempo=producer_data.get("tempo", loop.bpm or 120.0),
+                        total_bars=producer_data.get("total_bars", 64),
+                        total_seconds=producer_data.get("total_seconds", 60.0),
+                        sections=sections,
+                        energy_curve=energy_curve,
+                        genre=producer_data.get("genre", "generic"),
+                    )
+                    
+                    logger.info(
+                        f"[{job_id}] Parsed ProducerArrangement: "
+                        f"{len(sections)} sections, {producer_arrangement.total_bars} bars"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"[{job_id}] Failed to parse producer_arrangement_json: {e}")
+                    raise ValueError(f"Invalid producer arrangement data: {e}")
+                
+                # Render using ProducerEngine structure
                 update_job_status(
                     db,
                     job_id,
                     "processing",
-                    progress=progress,
-                    progress_message=f"Rendering {profile['name']} ({i+1}/{len(profiles)})",
+                    progress=60.0,
+                    progress_message="Rendering structured arrangement",
                 )
                 
-                variation_audio = _build_variation(audio, profile["transformations"])
-                filename = f"{profile['name'].replace(' ', '_')}.wav"
+                try:
+                    output_audio = render_arrangement(
+                        audio,
+                        producer_arrangement,
+                        loop.bpm or 120.0
+                    )
+                except Exception as e:
+                    logger.error(f"[{job_id}] Render failed: {e}")
+                    raise ValueError(f"Audio rendering failed: {e}")
+                
+                # Export single arrangement file
+                filename = "arrangement.wav"
                 output_path = temp_dir / filename
                 
                 try:
-                    variation_audio.export(str(output_path), format="wav")
-                    logger.info(f"[{job_id}] Exported variation: {filename}")
+                    output_audio.export(str(output_path), format="wav")
+                    logger.info(f"[{job_id}] Exported arrangement: {filename}")
                 except Exception as e:
-                    raise ValueError(f"Failed to export variation {profile['name']}: {e}")
+                    raise ValueError(f"Failed to export arrangement: {e}")
                 
                 # Upload to S3
+                update_job_status(db, job_id, "processing", progress=90.0, progress_message="Uploading")
                 s3_key, content_type = _upload_render_output(job_id, filename, output_path)
-                output_files.append(
+                output_files = [
                     OutputFile(
-                        name=profile["name"],
+                        name="Producer Arrangement",
                         s3_key=s3_key,
                         content_type=content_type,
                     )
-                )
+                ]
+                
+            else:
+                # ========================================
+                # Legacy Path (Simple Variations)
+                # ========================================
+                logger.info(f"[{job_id}] No producer data, using legacy variation rendering")
+                
+                # Build variation profiles from params
+                from app.routes.render import _compute_variation_profiles, _build_variation
+            
+                profiles = _compute_variation_profiles(type('RenderConfig', (), params)())
+                output_files: List[OutputFile] = []
+                
+                # Render variations
+                for i, profile in enumerate(profiles):
+                    progress = 40.0 + (50.0 / len(profiles)) * i
+                    update_job_status(
+                        db,
+                        job_id,
+                        "processing",
+                        progress=progress,
+                        progress_message=f"Rendering {profile['name']} ({i+1}/{len(profiles)})",
+                    )
+                    
+                    variation_audio = _build_variation(audio, profile["transformations"])
+                    filename = f"{profile['name'].replace(' ', '_')}.wav"
+                    output_path = temp_dir / filename
+                    
+                    try:
+                        variation_audio.export(str(output_path), format="wav")
+                        logger.info(f"[{job_id}] Exported variation: {filename}")
+                    except Exception as e:
+                        raise ValueError(f"Failed to export variation {profile['name']}: {e}")
+                    
+                    # Upload to S3
+                    s3_key, content_type = _upload_render_output(job_id, filename, output_path)
+                    output_files.append(
+                        OutputFile(
+                            name=profile["name"],
+                            s3_key=s3_key,
+                            content_type=content_type,
+                        )
+                    )
             
             # Mark as succeeded
             update_job_status(

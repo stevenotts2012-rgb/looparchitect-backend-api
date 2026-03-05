@@ -299,15 +299,18 @@ async def generate_arrangement(
             logger.info(f"Style profile parsed: preset={style_preset}, confidence={style_profile.intent.confidence}")
             
             # PRODUCER ENGINE INTEGRATION: Generate professional arrangement if feature enabled
+            logger.info(f"DEBUG: settings.feature_producer_engine = {settings.feature_producer_engine}")
             if settings.feature_producer_engine:
                 try:
-                    logger.info(f"ProducerEngine enabled - generating arrangement for genre: {style_profile.genre}")
+                    # Extract genre from resolved preset (archetype)
+                    genre_for_producer = style_profile.resolved_preset or style_profile.intent.archetype.split('_')[0] or "generic"
+                    logger.info(f"ProducerEngine enabled - generating arrangement for genre: {genre_for_producer}")
                     
                     # Call ProducerEngine with style profile
                     producer_arrangement = ProducerEngine.generate(
                         target_seconds=request.target_seconds,
                         tempo=float(loop.bpm or loop.tempo or 120.0),
-                        genre=style_profile.genre,
+                        genre=genre_for_producer,
                         style_profile=style_profile,
                         structure_template="standard",
                     )
@@ -323,9 +326,12 @@ async def generate_arrangement(
                     }, default=str)
                     
                     logger.info(f"ProducerEngine arrangement generated with {len(producer_arrangement.sections)} sections")
+                    logger.info(f"producer_arrangement_json set to: {len(producer_arrangement_json) if producer_arrangement_json else 0} bytes")
                 except Exception as producer_error:
                     logger.warning(f"ProducerEngine generation failed: {producer_error}", exc_info=True)
                     # Continue with fallback - producer_arrangement_json stays None
+            else:
+                logger.warning(f"ProducerEngine NOT enabled - feature flag is {settings.feature_producer_engine}")
         except Exception as llm_error:
             logger.warning(f"LLM style parsing failed: {llm_error}")
             # Fall through to preset-based or default handling
@@ -355,6 +361,7 @@ async def generate_arrangement(
             logger.warning("Style preview generation skipped: %s", style_error)
 
     # Create arrangement record
+    logger.info(f"DEBUG-SAVE: Creating arrangement with: ai_parsing_used={ai_parsing_used}, has_producer_json={producer_arrangement_json is not None}, json_len={len(producer_arrangement_json) if producer_arrangement_json else 0}")
     arrangement = Arrangement(
         loop_id=request.loop_id,
         status="queued",

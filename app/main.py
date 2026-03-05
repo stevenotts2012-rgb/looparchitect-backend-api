@@ -204,6 +204,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("✅ http://localhost:3000 is allowed")
     
+    # Log feature flags
+    logger.info(f"Feature flags: producer_engine={settings.feature_producer_engine}, style_engine={settings.feature_style_engine}, llm_parsing={settings.feature_llm_style_parsing}")
+    
     # Log environment
     logger.info(
         "Startup configuration: environment=%s debug=%s storage_backend=%s railway=%s port=%s db_configured=%s redis_configured=%s",
