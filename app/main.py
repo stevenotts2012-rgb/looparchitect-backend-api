@@ -134,6 +134,33 @@ def create_tables_if_missing():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
+
+            # Ensure newer arrangement columns exist for deployments that skipped migrations
+            inspector = sa.inspect(connection)
+            if "arrangements" in inspector.get_table_names():
+                existing_columns = {col["name"] for col in inspector.get_columns("arrangements")}
+                required_columns = {
+                    "style_profile_json": "TEXT",
+                    "ai_parsing_used": "BOOLEAN DEFAULT false",
+                    "producer_arrangement_json": "TEXT",
+                    "render_plan_json": "TEXT",
+                    "progress": "FLOAT DEFAULT 0.0",
+                    "progress_message": "VARCHAR(256)",
+                    "output_s3_key": "VARCHAR",
+                    "output_url": "VARCHAR",
+                }
+
+                for column_name, column_type in required_columns.items():
+                    if column_name not in existing_columns:
+                        connection.execute(
+                            text(
+                                f"ALTER TABLE arrangements ADD COLUMN {column_name} {column_type}"
+                            )
+                        )
+                        logger.info(
+                            "✅ Added missing column arrangements.%s during startup",
+                            column_name,
+                        )
             
             # Create indexes
             connection.execute(text("""
