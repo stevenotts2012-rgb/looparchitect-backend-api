@@ -45,6 +45,39 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _ensure_arrangements_schema(db: Session) -> None:
+    """Best-effort schema reconciliation for deployments with stale arrangement columns."""
+    try:
+        import sqlalchemy as sa
+        from sqlalchemy import text
+
+        bind = db.get_bind()
+        inspector = sa.inspect(bind)
+        if "arrangements" not in inspector.get_table_names():
+            return
+
+        existing_columns = {col["name"] for col in inspector.get_columns("arrangements")}
+        required_columns = {
+            "style_profile_json": "TEXT",
+            "ai_parsing_used": "BOOLEAN DEFAULT false",
+            "producer_arrangement_json": "TEXT",
+            "render_plan_json": "TEXT",
+            "progress": "FLOAT DEFAULT 0.0",
+            "progress_message": "VARCHAR(256)",
+            "output_s3_key": "VARCHAR",
+            "output_url": "VARCHAR",
+        }
+
+        for column_name, column_type in required_columns.items():
+            if column_name not in existing_columns:
+                db.execute(text(f"ALTER TABLE arrangements ADD COLUMN {column_name} {column_type}"))
+                logger.info("Added missing arrangements.%s column on-demand", column_name)
+
+        db.flush()
+    except Exception:
+        logger.warning("Could not auto-reconcile arrangements schema on request path", exc_info=True)
+
+
 def _generate_producer_arrangement(
     loop_id: int,
     tempo: float,
@@ -361,6 +394,7 @@ async def generate_arrangement(
             logger.warning("Style preview generation skipped: %s", style_error)
 
     # Create arrangement record
+    _ensure_arrangements_schema(db)
     logger.info(f"DEBUG-SAVE: Creating arrangement with: ai_parsing_used={ai_parsing_used}, has_producer_json={producer_arrangement_json is not None}, json_len={len(producer_arrangement_json) if producer_arrangement_json else 0}")
     arrangement = Arrangement(
         loop_id=request.loop_id,
@@ -375,7 +409,15 @@ async def generate_arrangement(
         producer_arrangement_json=producer_arrangement_json,
     )
     db.add(arrangement)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as commit_error:
+        db.rollback()
+        logger.exception("Failed to create arrangement row")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create arrangement record: {str(commit_error)}",
+        )
     db.refresh(arrangement)
 
     log_feature_event(
