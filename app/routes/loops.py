@@ -1,6 +1,8 @@
 import logging
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, Query, Request
+from pathlib import Path
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, Query, Request, status
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -447,6 +449,123 @@ def update_loop(loop_id: int, loop_in: LoopUpdate, db: Session = Depends(get_db)
     except Exception as e:
         logger.exception("Failed to update loop")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.get(
+    "/loops/{loop_id}/download",
+    response_class=FileResponse,
+    summary="Download loop audio file",
+    description="Download the original loop audio file. Returns 404 if the loop or file doesn't exist.",
+)
+def download_loop(
+    loop_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Download the original loop audio file.
+
+    Returns 404 if the loop doesn't exist or the file is missing.
+    Returns file download response if available.
+    """
+    loop = db.query(Loop).filter(Loop.id == loop_id).first()
+
+    if not loop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Loop with ID {loop_id} not found",
+        )
+
+    if not loop.file_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Loop record exists but file key is missing",
+        )
+
+    storage_backend = settings.get_storage_backend()
+    download_filename = loop.filename or f"loop_{loop_id}.wav"
+    content_type = "audio/wav"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_filename}"',
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
+
+    referer = request.headers.get("referer", "")
+    is_swagger_request = "/docs" in referer or "/redoc" in referer
+
+    if storage_backend == "local":
+        local_filename = loop.file_key.split("/")[-1]
+        local_path = Path("uploads") / local_filename
+        if not local_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Loop file not found in local storage",
+            )
+
+        if is_swagger_request:
+            return FileResponse(
+                path=str(local_path),
+                media_type=content_type,
+                filename=download_filename,
+                headers=headers,
+            )
+
+        def iter_local_stream():
+            with open(local_path, "rb") as f:
+                while chunk := f.read(65536):
+                    yield chunk
+
+        return StreamingResponse(
+            iter_local_stream(),
+            media_type=content_type,
+            headers=headers,
+        )
+
+    # S3 storage backend
+    try:
+        from app.services.storage import get_s3_client
+
+        s3 = get_s3_client()
+        response = s3.get_object(Bucket=settings.s3_bucket, Key=loop.file_key)
+
+        if is_swagger_request:
+            file_content = response["Body"].read()
+            import tempfile
+            import os
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                tmp.write(file_content)
+                tmp_path = tmp.name
+
+            try:
+                return FileResponse(
+                    path=tmp_path,
+                    media_type=content_type,
+                    filename=download_filename,
+                    headers=headers,
+                )
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+        def stream_s3():
+            for chunk in iter(lambda: response["Body"].read(65536), b""):
+                yield chunk
+
+        return StreamingResponse(
+            stream_s3(),
+            media_type=content_type,
+            headers=headers,
+        )
+
+    except Exception as e:
+        logger.exception(f"Failed to download loop {loop_id} from S3: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve loop file from storage",
+        )
 
 
 @router.delete("/loops/{loop_id}", status_code=200)
