@@ -96,6 +96,29 @@ python -m app.workers.main
 - Uploads: `uploads/{uuid}.wav`
 - Renders: `renders/{job_id}/{filename}.wav`
 
+## Post-Processing Pipeline (Producer-Grade Runtime)
+
+The runtime path now includes two optional post-processing stages that run in real execution paths (`arrangement_jobs` and `render_worker`) through the shared `render_executor`:
+
+1. **Stem Separation (Loop ingest stage)**
+   - Service: `app/services/stem_separation.py`
+   - Trigger: loop upload endpoints after source loop is persisted.
+   - Result: generated stem artifacts (`bass`, `drums`, `vocals`, `other`) are uploaded to storage and metadata is attached to `Loop.analysis_json.stem_separation`.
+   - Fallback: on decode/backend failure, upload flow continues and stores failure metadata instead of blocking loop creation.
+
+2. **Final Mastering/Polish (Render stage)**
+   - Service: `app/services/mastering.py`
+   - Trigger: after arrangement audio is rendered from `render_plan_json`, before final WAV export.
+   - Result: genre-aware profile (`rnb_smooth`, `low_end_focus`, or `transparent`) plus peak-level metadata persisted to `render_plan_json.render_profile.postprocess.mastering`.
+   - Fallback: when disabled, render completes unchanged and records `profile=disabled`.
+
+### Runtime Flags
+
+- `FEATURE_STEM_SEPARATION` (default: `false`)
+- `STEM_SEPARATION_BACKEND` (default: `builtin`)
+- `FEATURE_MASTERING_STAGE` (default: `true`)
+- `MASTERING_PROFILE_DEFAULT` (default: `transparent`, `auto` enables genre-driven selection)
+
 ## API Endpoints
 
 ### Async Render Pipeline

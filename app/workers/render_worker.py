@@ -255,6 +255,16 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
 
             timeline_json = render_result["timeline_json"]
+            postprocess = render_result.get("postprocess") or {}
+            if postprocess and arrangement and arrangement.render_plan_json:
+                try:
+                    current_plan = json.loads(arrangement.render_plan_json)
+                    current_plan.setdefault("render_profile", {})["postprocess"] = postprocess
+                    arrangement.render_plan_json = json.dumps(current_plan)
+                    db.commit()
+                except Exception:
+                    logger.warning("[%s] Failed to persist worker postprocess metadata", job_id, exc_info=True)
+
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
 
             update_job_status(db, job_id, "processing", progress=90.0, progress_message="Uploading")

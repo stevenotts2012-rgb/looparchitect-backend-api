@@ -62,6 +62,7 @@ class LoopResponse(BaseModel):
     status: Optional[str]
     processed_file_url: Optional[str]
     analysis_json: Optional[str]
+    stem_metadata: Optional[dict] = None
     created_at: datetime
 
     class Config:

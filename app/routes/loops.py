@@ -1,10 +1,13 @@
 import logging
+import io
+import json
 from typing import List, Optional
 from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from pydub import AudioSegment
 
 from app.config import settings
 from app.db import get_db
@@ -13,9 +16,49 @@ from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 from app.services.loop_service import loop_service
 from app.services.loop_analyzer import loop_analyzer
 from app.services.audit_logging import log_feature_event
+from app.services.stem_separation import separate_and_store_stems
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _build_stem_analysis_json(
+    existing_analysis: dict,
+    *,
+    source_content: bytes,
+    source_filename: str,
+    loop_id: int,
+    source_key: str,
+) -> str:
+    payload = dict(existing_analysis or {})
+    if not settings.feature_stem_separation:
+        payload["stem_separation"] = {
+            "enabled": False,
+            "backend": settings.stem_separation_backend,
+            "succeeded": False,
+            "reason": "feature_disabled",
+        }
+        return json.dumps(payload)
+
+    try:
+        source_audio = AudioSegment.from_file(io.BytesIO(source_content), format=source_filename.split(".")[-1].lower())
+    except Exception as e:
+        logger.warning("Failed to decode source audio for stem separation: %s", e)
+        payload["stem_separation"] = {
+            "enabled": True,
+            "backend": settings.stem_separation_backend,
+            "succeeded": False,
+            "error": f"decode_failed: {e}",
+        }
+        return json.dumps(payload)
+
+    stem_result = separate_and_store_stems(
+        source_audio=source_audio,
+        loop_id=loop_id,
+        source_key=source_key,
+    )
+    payload["stem_separation"] = stem_result.to_dict()
+    return json.dumps(payload)
 
 
 @router.post("/loops/upload", status_code=201)
@@ -99,6 +142,17 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
         db.add(new_loop)
         db.commit()
         db.refresh(new_loop)
+
+        new_loop.analysis_json = _build_stem_analysis_json(
+            analysis_result,
+            source_content=content,
+            source_filename=safe_filename,
+            loop_id=new_loop.id,
+            source_key=file_key,
+        )
+        db.commit()
+        db.refresh(new_loop)
+
         logger.info(f"Loop uploaded: {new_loop.id} - {file_key}")
         correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
         log_feature_event(
@@ -323,6 +377,17 @@ async def create_loop_with_upload(
         db.add(loop)
         db.commit()
         db.refresh(loop)
+
+        loop.analysis_json = _build_stem_analysis_json(
+            analysis_result,
+            source_content=content,
+            source_filename=safe_filename,
+            loop_id=loop.id,
+            source_key=file_key,
+        )
+        db.commit()
+        db.refresh(loop)
+
         logger.info(f"Loop created successfully with ID: {loop.id}")
         correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
         log_feature_event(

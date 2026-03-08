@@ -1043,6 +1043,9 @@ def run_arrangement_job(arrangement_id: int):
                     output_path=temp_wav_path,
                 )
                 timeline_json = render_result["timeline_json"]
+                postprocess = render_result.get("postprocess") or {}
+                if postprocess:
+                    render_plan.setdefault("render_profile", {})["postprocess"] = postprocess
 
                 with open(temp_wav_path, "rb") as temp_audio_file:
                     output_bytes = temp_audio_file.read()
@@ -1082,6 +1085,9 @@ def run_arrangement_job(arrangement_id: int):
                         output_path=temp_wav_path,
                     )
                     timeline_json = render_result["timeline_json"]
+                    postprocess = render_result.get("postprocess") or {}
+                    if postprocess:
+                        render_plan.setdefault("render_profile", {})["postprocess"] = postprocess
                     with open(temp_wav_path, "rb") as temp_audio_file:
                         output_bytes = temp_audio_file.read()
                 finally:

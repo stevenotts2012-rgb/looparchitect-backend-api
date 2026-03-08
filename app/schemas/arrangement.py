@@ -293,6 +293,7 @@ class ArrangementResponse(BaseModel):
     output_s3_key: Optional[str] = None
     output_url: Optional[str] = None
     stems_zip_url: Optional[str] = None
+    mastering_metadata: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
 
@@ -315,6 +316,9 @@ class AudioArrangementResponse(BaseModel):
     )
     stems_zip_url: Optional[str] = Field(
         default=None, description="URL to download stems ZIP (if generated)"
+    )
+    mastering_metadata: Optional[dict] = Field(
+        default=None, description="Final mastering metadata/profile applied to render"
     )
     arrangement_json: Optional[str] = Field(
         default=None, description="JSON timeline with sections"

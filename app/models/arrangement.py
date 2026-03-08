@@ -1,6 +1,7 @@
 """SQLAlchemy model for Arrangement (audio generation workflow)."""
 
 from datetime import datetime
+import json
 from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Index, Float
 from sqlalchemy.orm import relationship
 
@@ -44,3 +45,17 @@ class Arrangement(Base):
     
     # Index for efficient status queries
     __table_args__ = (Index("idx_arrangement_loop_status", "loop_id", "status"),)
+
+    @property
+    def mastering_metadata(self):
+        if not self.render_plan_json:
+            return None
+        try:
+            payload = json.loads(self.render_plan_json)
+            render_profile = payload.get("render_profile") if isinstance(payload, dict) else None
+            postprocess = render_profile.get("postprocess") if isinstance(render_profile, dict) else None
+            if isinstance(postprocess, dict):
+                return postprocess.get("mastering")
+        except Exception:
+            return None
+        return None

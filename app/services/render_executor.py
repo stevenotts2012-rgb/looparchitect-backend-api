@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from pydub import AudioSegment
+from app.services.mastering import apply_mastering
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +148,24 @@ def render_from_plan(
         bpm=float(producer_payload.get("tempo", 120.0)),
     )
 
+    mastering_result = apply_mastering(
+        output_audio,
+        genre=producer_payload.get("genre") or render_plan.get("render_profile", {}).get("genre_profile"),
+    )
+    output_audio = mastering_result.audio
+
     output_path = Path(output_path)
     output_audio.export(str(output_path), format="wav")
 
     return {
         "timeline_json": timeline_json,
         "summary": summary,
+        "postprocess": {
+            "mastering": {
+                "applied": mastering_result.applied,
+                "profile": mastering_result.profile,
+                "peak_dbfs_before": mastering_result.peak_dbfs_before,
+                "peak_dbfs_after": mastering_result.peak_dbfs_after,
+            }
+        },
     }

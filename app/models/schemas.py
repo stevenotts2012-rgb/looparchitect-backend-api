@@ -46,6 +46,7 @@ class LoopResponse(LoopBase):
     status: Optional[str] = None
     processed_file_url: Optional[str] = None
     analysis_json: Optional[str] = None
+    stem_metadata: Optional[dict] = None
     created_at: Optional[datetime] = None
     
     model_config = ConfigDict(from_attributes=True)
