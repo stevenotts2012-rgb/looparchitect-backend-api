@@ -213,10 +213,8 @@ def _build_varied_section_audio(
             
         elif section_type == "outro":
             # Outro: Progressive diminishment
-            fade_factor = 1.0 - (bar_idx / max(1, section_bars))
-            bar_audio = bar_audio * fade_factor  # Gradual fade
-            if bar_idx > 0:
-                bar_audio = bar_audio - (bar_idx * 1.5)  # Progressive volume reduction
+            fade_db = -(bar_idx * 1.5)  # Progressive volume reduction (-1.5dB per bar)
+            bar_audio = bar_audio + fade_db
 
         section_audio += bar_audio
 
