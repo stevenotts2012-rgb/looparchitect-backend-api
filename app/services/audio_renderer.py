@@ -1,20 +1,34 @@
 """
 Audio Renderer: Converts ProducerArrangement structures into audio.
 
-Takes a loop audio file and ProducerArrangement metadata, then renders
-structured arrangements with sections, energy curves, and transitions.
+Uses producer-style logic:
+1. Analyze loop to detect components (kick, bass, melody, hats, snare)
+2. For each section: apply layer masks, energy modulation, variations, transitions
+3. Output: fully arranged audio that's different from input loop
+
+Integrates:
+- LayerEngine: Control which instruments are active per section
+- EnergyModulationEngine: Translate energy curve to audio effects (volume, EQ, reverb, compression)
+- VariationEngine: Add fills, dropouts, chops, filter sweeps
+- TransitionEngine: Create risers, impacts, swells between sections
 """
 
 import logging
 from typing import Optional
+import numpy as np
 from pydub import AudioSegment
-from app.services.producer_models import ProducerArrangement, Section, TransitionType
+
+from app.services.producer_models import ProducerArrangement, Section, SectionType, TransitionType
+from app.services.layer_engine import LayerEngine, LoopComponents
+from app.services.energy_engine import EnergyModulationEngine
+from app.services.variation_engine import VariationEngine
+from app.services.transition_engine import TransitionEngine
 
 logger = logging.getLogger(__name__)
 
 
 class AudioRenderer:
-    """Renders audio based on ProducerArrangement structures."""
+    """Renders audio based on ProducerArrangement structures using producer-style logic."""
     
     def __init__(self, loop_audio: AudioSegment, bpm: float):
         """
@@ -22,22 +36,32 @@ class AudioRenderer:
         
         Args:
             loop_audio: Base loop AudioSegment to build from
-            bpm: Tempo in beats per minute
+            bpm: Tempo in beats per minute (used for beat/bar calculations)
         """
         self.loop_audio = loop_audio
         self.bpm = bpm
         self.ms_per_beat = (60.0 / bpm) * 1000  # milliseconds per beat
         self.ms_per_bar = self.ms_per_beat * 4  # assume 4/4 time
         
+        # Analyze loop to detect components (kick, bass, melody, hats, snare presence)
+        self.loop_components = LayerEngine.analyze_loop_components(loop_audio, bpm)
+        logger.info(f"Analyzed loop components: {self.loop_components}")
+        
     def render_arrangement(self, arrangement: ProducerArrangement) -> AudioSegment:
         """
         Render complete arrangement from ProducerArrangement structure.
         
+        Strategy:
+        1. For each section: build base loop, apply layer masks, add energy effects
+        2. Add variation audio (fills, dropouts) within sections
+        3. Add transition audio between sections
+        4. Concatenate all sections
+        
         Args:
-            arrangement: ProducerArrangement with sections and metadata
+            arrangement: ProducerArrangement with sections, energy curve, transitions
             
         Returns:
-            Rendered AudioSegment of full arrangement
+            Rendered AudioSegment of full arrangement (unique, producer-style)
         """
         logger.info(
             f"Rendering arrangement: {len(arrangement.sections)} sections, "
@@ -54,30 +78,47 @@ class AudioRenderer:
             logger.info(
                 f"Rendering section {i+1}/{len(arrangement.sections)}: "
                 f"{section.name} ({section.section_type.value}), "
-                f"bars {section.bar_start}-{section.bar_end}"
+                f"{section.bars} bars @ energy={section.energy_level:.2f}"
             )
             
-            # Render section audio
+            # 1. Render section with layer masks and energy effects
             section_audio = self._render_section(section, arrangement)
             
-            # Apply transition if not the last section
+            # 2. Add variations (fills, dropouts) within section
+            section_audio = VariationEngine.add_section_variations(
+                section_audio,
+                section,
+                bpm=self.bpm,
+            )
+            
+            # 3. Add transition before next section (if not last)
             if i < len(arrangement.sections) - 1:
-                transition = self._find_transition(arrangement, i, i + 1)
-                if transition:
-                    section_audio = self._apply_transition(
-                        section_audio,
-                        transition.transition_type,
-                        transition.intensity
-                    )
+                next_section = arrangement.sections[i + 1]
+                transition_audio = TransitionEngine.create_transition(
+                    transition_type=TransitionType.RISER,  # Default riser between sections
+                    duration_ms=2000,  # 2-second transition
+                    intensity=section.energy_level,  # Intensity matches current section energy
+                    bpm=self.bpm,
+                )
+                
+                # Mix transition audio at end of section
+                transition_position = len(section_audio) - int(2 * self.ms_per_bar)
+                transition_position = max(0, transition_position)
+                section_audio =  section_audio.overlay(transition_audio.apply_gain(2), position=transition_position)
+                
+                logger.debug(f"Added transition from {section.name} to {next_section.name}")
             
             rendered_segments.append(section_audio)
         
         # Concatenate all sections
-        full_audio = sum(rendered_segments) if len(rendered_segments) > 1 else rendered_segments[0]
+        if len(rendered_segments) > 1:
+            full_audio = sum(rendered_segments)
+        else:
+            full_audio = rendered_segments[0]
         
         logger.info(
-            f"Render complete: {len(full_audio)}ms "
-            f"(target: {arrangement.total_seconds * 1000}ms)"
+            f"Render complete: {len(full_audio)}ms ({len(full_audio)/1000:.1f}s) "
+            f"(target: {arrangement.total_seconds*1000:.0f}ms)"
         )
         
         return full_audio
@@ -88,7 +129,10 @@ class AudioRenderer:
         arrangement: ProducerArrangement
     ) -> AudioSegment:
         """
-        Render a single section with energy modulation.
+        Render a single section with:
+        1. Loop repetition to fill section duration
+        2. Layer masking (selective instrument muting based on section.instruments)
+        3. Energy modulation (effects applied based on energy level)
         
         Args:
             section: Section to render
@@ -100,22 +144,43 @@ class AudioRenderer:
         # Calculate section duration in milliseconds
         duration_ms = int(section.bars * self.ms_per_bar)
         
-        # Build base by repeating loop
+        # Step 1: Build base by repeating loop to fill section duration
         loop_duration_ms = len(self.loop_audio)
-        num_repeats = int(duration_ms / loop_duration_ms) + 1
+        if loop_duration_ms < 100:
+            logger.warning(f"Loop too short ({loop_duration_ms}ms), using fallback")
+            # Fallback: just repeat once
+            base = self.loop_audio
+        else:
+            num_repeats = max(1, int(duration_ms / loop_duration_ms) + 1)
+            base = self.loop_audio
+            for _ in range(num_repeats - 1):
+                base = base + self.loop_audio
+            
+            # Trim to exact section length
+            base = base[:duration_ms]
         
-        base = self.loop_audio * num_repeats
-        base = base[:duration_ms]  # Trim to exact section length
+        # Step 2: Apply layer masks (control which instruments are present)
+        # The LayerEngine will mute/attenuate instruments not in section.instruments
+        base = LayerEngine.apply_layer_mask(
+            base,
+            section=section,
+            components=self.loop_components,
+            energy_level=section.energy_level,
+        )
         
-        # Apply energy curve modulation
-        base = self._apply_energy_curve(base, section, arrangement)
-        
-        # Apply section-specific effects based on type
-        base = self._apply_section_effects(base, section)
+        # Step 3: Apply energy-based effect (volume, EQ, reverb, compression)
+        # Energy level 0.0 = sparse/quiet, 1.0 = full/loud with effects
+        base = EnergyModulationEngine.apply_energy_effects(
+            base,
+            energy_level=section.energy_level,
+            section_type=section.section_type,
+        )
         
         logger.debug(
             f"Section {section.name}: {len(base)}ms "
-            f"(target: {duration_ms}ms, bars: {section.bars})"
+            f"({len(base)/1000:.1f}s, target {duration_ms}ms), "
+            f"energy={section.energy_level:.2f}, "
+            f"instruments={[i.value for i in section.instruments]}"
         )
         
         return base
@@ -127,91 +192,30 @@ class AudioRenderer:
         arrangement: ProducerArrangement
     ) -> AudioSegment:
         """
-        Apply energy curve modulation to audio.
+        DEPRECATED: Integrated into EnergyModulationEngine.apply_energy_effects()
         
-        Adjusts volume based on energy level and curve points.
-        
-        Args:
-            audio: Input audio
-            section: Current section
-            arrangement: Full arrangement with energy_curve
-            
-        Returns:
-            Audio with energy modulation applied
+        Kept for compatibility, but actual energy modulation is done in _render_section.
         """
-        # Use section's energy level as base
-        energy_level = section.energy_level
-        
-        # Check if there are energy curve points for this section
-        section_energy_points = [
-            ep for ep in arrangement.energy_curve
-            if section.bar_start <= ep.bar <= section.bar_end
-        ]
-        
-        if section_energy_points:
-            # Use average of energy points in this section
-            avg_energy = sum(ep.energy for ep in section_energy_points) / len(section_energy_points)
-            energy_level = avg_energy
-        
-        # Convert energy (0-1) to volume adjustment in dB
-        # energy 0.0 = -20dB, energy 0.5 = 0dB, energy 1.0 = +6dB
-        if energy_level < 0.5:
-            db_adjustment = -20 + (energy_level * 40)  # -20 to 0 dB
-        else:
-            db_adjustment = (energy_level - 0.5) * 12  # 0 to +6 dB
-        
-        logger.debug(
-            f"Energy modulation for {section.name}: "
-            f"level={energy_level:.2f}, db_adjustment={db_adjustment:+.1f}dB"
-        )
-        
-        # Apply volume adjustment
-        return audio + db_adjustment
-    
-    def _apply_section_effects(
-        self,
-        audio: AudioSegment,
-        section: Section
-    ) -> AudioSegment:
-        """
-        Apply section-type specific effects.
-        
-        Args:
-            audio: Input audio
-            section: Section metadata
-            
-        Returns:
-            Audio with section effects applied
-        """
-        from app.services.producer_models import SectionType
-        
-        # Intro: Fade in
-        if section.section_type == SectionType.INTRO:
-            fade_duration = min(2000, len(audio) // 2)  # Max 2 seconds
-            audio = audio.fade_in(fade_duration)
-        
-        # Outro: Fade out
-        elif section.section_type == SectionType.OUTRO:
-            fade_duration = min(3000, len(audio) // 2)  # Max 3 seconds
-            audio = audio.fade_out(fade_duration)
-        
-        # Bridge: Apply subtle filter effect (reduce high end)
-        elif section.section_type == SectionType.BRIDGE:
-            # Reduce volume slightly for contrast
-            audio = audio - 2
-        
+        # This is now done by EnergyModulationEngine
         return audio
     
-    def _find_transition(
-        self,
-        arrangement: ProducerArrangement,
-        from_idx: int,
-        to_idx: int
-    ) -> Optional[object]:
-        """Find transition between two sections."""
-        for trans in arrangement.transitions:
-            if trans.from_section == from_idx and trans.to_section == to_idx:
-                return trans
+    def _apply_section_effects(self, audio: AudioSegment, section: Section) -> AudioSegment:
+        """
+        DEPRECATED: Integrated into EnergyModulationEngine and LayerEngine
+        
+        Kept for compatibility.
+        """
+        # Layer-based effects are done by LayerEngine
+        # Energy-based effects are done by EnergyModulationEngine
+        return audio
+    
+    def _find_transition(self, arrangement: ProducerArrangement, from_idx: int, to_idx: int):
+        """
+        DEPRECATED: Transitions now handled directly in render_arrangement()
+        
+        Kept for compatibility.
+        """
+        # Transitions are created directly by TransitionEngine in render_arrangement
         return None
     
     def _apply_transition(
@@ -221,54 +225,11 @@ class AudioRenderer:
         intensity: float
     ) -> AudioSegment:
         """
-        Apply transition effect to end of audio segment.
+        DEPRECATED: Use TransitionEngine directly
         
-        Args:
-            audio: Input audio
-            transition_type: Type of transition effect
-            intensity: Effect intensity (0-1)
-            
-        Returns:
-            Audio with transition effect applied
+        Kept for compatibility.
         """
-        transition_duration = min(1000, len(audio) // 4)  # Max 1 second
-        
-        if transition_type == TransitionType.RISER:
-            # Fade in volume at end for riser effect
-            split_point = len(audio) - transition_duration
-            pre_transition = audio[:split_point]
-            transition_part = audio[split_point:]
-            
-            # Apply gain increase
-            db_increase = 3 * intensity  # Up to +3dB
-            transition_part = transition_part + db_increase
-            
-            audio = pre_transition + transition_part
-        
-        elif transition_type == TransitionType.SILENCE_DROP:
-            # Add brief silence before next section
-            from pydub import AudioSegment as AS
-            silence_ms = int(500 * intensity)  # Up to 500ms
-            silence = AS.silent(duration=silence_ms)
-            audio = audio + silence
-        
-        elif transition_type == TransitionType.FILTER_SWEEP:
-            # Fade out high frequencies at end
-            split_point = len(audio) - transition_duration
-            pre_transition = audio[:split_point]
-            transition_part = audio[split_point:]
-            
-            # Reduce volume slightly to simulate filter
-            db_reduction = -6 * intensity  # Up to -6dB
-            transition_part = transition_part + db_reduction
-            
-            audio = pre_transition + transition_part
-        
-        logger.debug(
-            f"Applied transition: {transition_type.value} "
-            f"(intensity={intensity:.2f})"
-        )
-        
+        # Transitions are created directly by TransitionEngine
         return audio
 
 

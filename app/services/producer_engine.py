@@ -461,6 +461,22 @@ class ProducerEngine:
                 section.variations.append(variation)
                 variation_idx += 1
 
+            # Ensure short sections still get at least one variation cue
+            if section.bars >= 4 and not section.variations:
+                fallback_bar = section.bar_start + max(1, section.bars - 1)
+                fallback_variation = Variation(
+                    bar=fallback_bar,
+                    section_index=section_idx,
+                    variation_type=variation_types[
+                        variation_idx % len(variation_types)
+                    ],
+                    intensity=0.6,
+                    description=f"Section-end variation in {section.name}",
+                )
+                variations.append(fallback_variation)
+                section.variations.append(fallback_variation)
+                variation_idx += 1
+
         return variations
 
     @staticmethod
