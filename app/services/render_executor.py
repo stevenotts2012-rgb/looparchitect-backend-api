@@ -10,6 +10,24 @@ from app.services.mastering import apply_mastering
 
 logger = logging.getLogger(__name__)
 
+_RENDER_MOVE_EVENT_TYPES = {
+    "variation",
+    "beat_switch",
+    "halftime_drop",
+    "stop_time",
+    "drum_fill",
+    "fill",
+    "pre_hook_drum_mute",
+    "silence_drop_before_hook",
+    "hat_density_variation",
+    "end_section_fill",
+    "verse_melody_reduction",
+    "bridge_bass_removal",
+    "final_hook_expansion",
+    "outro_strip_down",
+    "call_response_variation",
+}
+
 
 def extract_producer_moves(events: list[dict]) -> list[str]:
     """Extract producer move hints from render plan events."""
@@ -18,7 +36,7 @@ def extract_producer_moves(events: list[dict]) -> list[str]:
         event_type = str(event.get("type", "")).strip().lower()
         description = str(event.get("description", "")).strip().lower()
 
-        if event_type in {"variation", "beat_switch", "halftime_drop", "stop_time", "drum_fill", "fill"}:
+        if event_type in _RENDER_MOVE_EVENT_TYPES:
             moves.append(event_type)
 
         for token in ("beat switch", "halftime", "stop time", "drum fill", "drop", "roll"):
@@ -71,7 +89,7 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
 
     for event in events:
         event_type = str(event.get("type", "")).strip().lower()
-        if event_type not in {"variation", "beat_switch", "halftime_drop", "stop_time", "drum_fill", "fill"}:
+        if event_type not in _RENDER_MOVE_EVENT_TYPES:
             continue
         event_bar = int(event.get("bar", 0) or 0)
         target = None
@@ -88,7 +106,8 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
                 {
                     "bar": event_bar,
                     "variation_type": event_type,
-                    "intensity": 0.7,
+                    "intensity": float(event.get("intensity", 0.7) or 0.7),
+                    "duration_bars": event.get("duration_bars"),
                     "description": event.get("description", ""),
                 }
             )
@@ -109,6 +128,8 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         "transitions": render_plan.get("transitions") or [],
         "energy_curve": render_plan.get("energy_curve") or [],
         "genre": render_profile.get("genre_profile", "generic"),
+        "render_profile": render_profile,
+        "stem_separation": render_profile.get("stem_separation") or {},
     }
 
     return producer_arrangement, summary

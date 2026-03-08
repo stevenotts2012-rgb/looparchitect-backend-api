@@ -24,6 +24,7 @@ from app.config import settings
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
 from app.services.audit_logging import log_feature_event
+from app.services.producer_moves_engine import ProducerMovesEngine
 from app.services.render_executor import render_from_plan
 from app.services.storage import storage
 
@@ -135,6 +136,22 @@ def _parse_producer_arrangement(producer_arrangement_json: str | None) -> dict |
         return None
 
 
+def _parse_stem_metadata_from_loop(loop: Loop) -> dict | None:
+    """Extract stem metadata from loop.analysis_json when available."""
+    if not loop or not loop.analysis_json:
+        return None
+    try:
+        payload = json.loads(loop.analysis_json)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    stem_meta = payload.get("stem_separation")
+    if not isinstance(stem_meta, dict):
+        return None
+    return stem_meta
+
+
 def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
     if target_ms <= 0:
         return AudioSegment.silent(duration=0)
@@ -219,6 +236,89 @@ def _build_varied_section_audio(
         section_audio += bar_audio
 
     return section_audio
+
+
+_PRODUCER_MOVE_TYPES = {
+    "pre_hook_drum_mute",
+    "silence_drop_before_hook",
+    "hat_density_variation",
+    "end_section_fill",
+    "verse_melody_reduction",
+    "bridge_bass_removal",
+    "final_hook_expansion",
+    "outro_strip_down",
+    "call_response_variation",
+}
+
+
+def _apply_producer_move_effect(
+    segment: AudioSegment,
+    move_type: str,
+    intensity: float,
+    stem_available: bool,
+    bar_duration_ms: int,
+) -> AudioSegment:
+    """Apply audible producer move effects using stems when available, DSP fallback otherwise."""
+    intensity = max(0.1, min(1.0, float(intensity or 0.7)))
+
+    if move_type == "pre_hook_drum_mute":
+        mute_ms = int(min(len(segment), bar_duration_ms * (0.45 + 0.35 * intensity)))
+        return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
+
+    if move_type == "silence_drop_before_hook":
+        gap_ms = int(min(len(segment), bar_duration_ms * (0.30 + 0.30 * intensity)))
+        tail = segment[gap_ms:] + (4 * intensity)
+        return AudioSegment.silent(duration=gap_ms) + tail
+
+    if move_type == "hat_density_variation":
+        top_band = segment.high_pass_filter(5500)
+        grid = max(30, int(bar_duration_ms / (16 + int(8 * intensity))))
+        rolled = AudioSegment.silent(duration=0)
+        for ms in range(0, len(top_band), grid):
+            slice_end = min(len(top_band), ms + grid)
+            chunk = top_band[ms:slice_end]
+            if (ms // grid) % 2 == 0:
+                rolled += chunk + 5
+            else:
+                rolled += chunk - 2
+        return segment.overlay(rolled, gain_during_overlay=-4)
+
+    if move_type == "end_section_fill":
+        fill_len = int(min(len(segment), bar_duration_ms * 0.5))
+        fill_start = max(0, len(segment) - fill_len)
+        fill = segment[fill_start:]
+        fill = fill.high_pass_filter(2500) + (4 + 3 * intensity)
+        return segment[:fill_start] + fill
+
+    if move_type == "verse_melody_reduction":
+        if stem_available:
+            melody_band = segment.high_pass_filter(700).low_pass_filter(5000)
+            return segment.overlay(melody_band - (10 + 5 * intensity), gain_during_overlay=0)
+        return segment.low_pass_filter(4200) - (2 + 2 * intensity)
+
+    if move_type == "bridge_bass_removal":
+        if stem_available:
+            return segment.high_pass_filter(220)
+        return segment.high_pass_filter(140) - 1
+
+    if move_type == "final_hook_expansion":
+        expanded = segment + (3 + 2 * intensity)
+        bright = expanded.high_pass_filter(1800) + (2 + 2 * intensity)
+        body = expanded.low_pass_filter(250) + (1 + intensity)
+        return expanded.overlay(bright).overlay(body)
+
+    if move_type == "outro_strip_down":
+        stripped = segment.low_pass_filter(2200) - (4 + 3 * intensity)
+        return stripped.fade_out(min(len(stripped), int(bar_duration_ms * 0.8)))
+
+    if move_type == "call_response_variation":
+        quarter = max(1, bar_duration_ms // 4)
+        call = segment[:quarter * 2]
+        response = segment[quarter * 2: quarter * 3] - 8
+        tail = segment[quarter * 3:]
+        return call + response + tail
+
+    return segment
 
 
 def _render_producer_arrangement(
@@ -404,6 +504,10 @@ def _render_producer_arrangement(
         # APPLY VARIATIONS (FILLS, ROLLS, DROPS)
         # ====================================================================
         
+        render_profile = producer_arrangement.get("render_profile") or {}
+        stem_meta = producer_arrangement.get("stem_separation") or render_profile.get("stem_separation") or {}
+        stem_available = bool(stem_meta.get("enabled") and stem_meta.get("succeeded"))
+
         variations = section.get("variations", [])
         if not variations and isinstance(producer_arrangement.get("all_variations"), list):
             for variation in producer_arrangement.get("all_variations", []):
@@ -446,6 +550,14 @@ def _render_producer_arrangement(
                 elif var_type == "reverse":
                     # Reverse effect
                     variation_segment = variation_segment.reverse()
+                elif var_type in _PRODUCER_MOVE_TYPES:
+                    variation_segment = _apply_producer_move_effect(
+                        segment=variation_segment,
+                        move_type=var_type,
+                        intensity=float(var_intensity or 0.7),
+                        stem_available=stem_available,
+                        bar_duration_ms=bar_duration_ms,
+                    )
                 
                 # Splice back in
                 section_audio = section_audio[:var_start_ms] + variation_segment + section_audio[var_end_ms:]
@@ -597,6 +709,7 @@ def _build_pre_render_plan(
     producer_arrangement: dict | None,
     style_sections: list[dict] | None,
     genre_hint: str | None,
+    stem_metadata: dict | None = None,
 ) -> dict:
     """Build render_plan_json before rendering begins so all render paths consume the same plan."""
 
@@ -719,7 +832,7 @@ def _build_pre_render_plan(
             for s in sections
         ]
 
-    return {
+    render_plan = {
         "arrangement_id": arrangement_id,
         "bpm": bpm,
         "target_seconds": target_seconds,
@@ -733,8 +846,15 @@ def _build_pre_render_plan(
         "render_profile": {
             "genre_profile": genre_hint or "generic",
             "producer_arrangement_used": bool(producer_arrangement),
+            "stem_separation": stem_metadata or {
+                "enabled": False,
+                "succeeded": False,
+                "reason": "not_available",
+            },
         },
     }
+
+    return ProducerMovesEngine.inject(render_plan)
 
 
 def _build_dev_fallback_plan(arrangement_id: int, bpm: float, target_seconds: int) -> dict:
@@ -1020,6 +1140,7 @@ def run_arrangement_job(arrangement_id: int):
             producer_arrangement=producer_arrangement,
             style_sections=style_sections,
             genre_hint=(arrangement.genre or loop.genre),
+            stem_metadata=_parse_stem_metadata_from_loop(loop),
         )
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
