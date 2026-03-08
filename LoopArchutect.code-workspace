@@ -1,11 +1,61 @@
 {
 	"folders": [
 		{
+			"name": "looparchitect-backend-api",
 			"path": "."
 		},
 		{
+			"name": "looparchitect-frontend",
 			"path": "../looparchitect-frontend"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"python.defaultInterpreterPath": "${workspaceFolder:looparchitect-backend-api}/.venv/bin/python",
+		"editor.formatOnSave": true,
+		"[python]": {
+			"editor.defaultFormatter": "ms-python.black-formatter",
+			"editor.formatOnSave": true,
+			"editor.codeActionsOnSave": {
+				"source.organizeImports": "explicit"
+			}
+		},
+		"black-formatter.args": [
+			"--line-length",
+			"100"
+		],
+		"isort.args": [
+			"--profile",
+			"black",
+			"--line-length",
+			"100"
+		],
+		"python.testing.pytestEnabled": true,
+		"python.testing.unittestEnabled": false,
+		"python.testing.pytestArgs": [
+			"tests",
+			"-v"
+		],
+		"editor.rulers": [
+			100
+		],
+		"files.trimTrailingWhitespace": true,
+		"files.insertFinalNewline": true
+	},
+	"extensions": {
+		"recommendations": [
+			"ms-python.python",
+			"ms-python.pylance",
+			"ms-python.black-formatter",
+			"ms-python.isort",
+			"humao.rest-client",
+			"mtxr.sqltools",
+			"mtxr.sqltools-driver-pg",
+			"ms-azuretools.vscode-docker",
+			"mikestead.dotenv",
+			"redhat.vscode-yaml",
+			"eamodio.gitlens",
+			"streetsidesoftware.code-spell-checker",
+			"gruntfuggly.todo-tree"
+		]
+	}
 }

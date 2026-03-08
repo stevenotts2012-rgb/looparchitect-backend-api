@@ -1,0 +1,32 @@
+{
+  "recommendations": [
+    // Python core
+    "ms-python.python",
+    "ms-python.pylance",
+    "ms-python.black-formatter",
+    "ms-python.isort",
+
+    // FastAPI / REST helpers
+    "humao.rest-client",
+
+    // Database
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-pg",
+
+    // Docker
+    "ms-azuretools.vscode-docker",
+
+    // Environment files
+    "mikestead.dotenv",
+
+    // YAML / TOML config files (docker-compose, alembic.ini, nixpacks.toml, etc.)
+    "redhat.vscode-yaml",
+
+    // Git
+    "eamodio.gitlens",
+
+    // General productivity
+    "streetsidesoftware.code-spell-checker",
+    "gruntfuggly.todo-tree"
+  ]
+}
