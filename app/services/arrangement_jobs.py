@@ -149,7 +149,15 @@ def _build_varied_section_audio(
     section_idx: int,
     section_type: str,
 ) -> AudioSegment:
-    """Create a section from loop audio with per-bar variation so output is not a static repeat."""
+    """Create a section from loop audio with per-bar variation so output is not a static repeat.
+    
+    Applies audible effects per section type:
+    - Intro: Subtle filtered start
+    - Verse: Thin EQ + rhythmic gaps every 4 bars for variation
+    - Hook/Drop: Bright, punchy high-frequency emphasis  
+    - Breakdown/Bridge: Sparse gaps, filtered
+    - Outro: Fading diminishment
+    """
     section_audio = AudioSegment.silent(duration=0)
     loop_len = len(loop_audio)
     quarter = max(1, loop_len // 4)
@@ -163,15 +171,52 @@ def _build_varied_section_audio(
 
         bar_audio = _repeat_to_duration(bar_source, bar_duration_ms)
 
-        # Add light rhythmic contrast by section type.
-        if section_type in {"hook", "drop", "chorus"} and (bar_idx % 2 == 1):
-            accent = bar_audio.high_pass_filter(180) + 2
-            bar_audio = bar_audio.overlay(accent)
-        elif section_type in {"verse"} and (bar_idx % 4 == 3):
-            bar_audio = bar_audio - 2
+        # Add audible rhythmic contrast per section type
+        if section_type in {"intro"}:
+            # Intro: Gentle filtering for soft start
+            if bar_idx == 0:
+                bar_audio = bar_audio.low_pass_filter(1000)  # Filtered first bar
+            
+        elif section_type in {"hook", "drop", "chorus"}:
+            # Hook: Bright and punchy with high-frequency emphasis
+            if bar_idx % 2 == 0:
+                # Even bars: brighten with high-pass filter + boost
+                accent = bar_audio.high_pass_filter(150) + 3
+                bar_audio = bar_audio.overlay(accent, gain_during_overlay=-3)  # Boost HF
+            else:
+                # Odd bars: add extra punch
+                bar_audio = bar_audio + 2  # Small additional boost
+            
+        elif section_type in {"verse"}:
+            # Verse: Create texture variation with filtered gaps
+            if bar_idx % 6 == 4:
+                # Every 4-6 bars: Insert half-bar silence for rhythmic surprise
+                quarter_bar = max(1, bar_duration_ms // 4)
+                bar_audio = bar_audio[:quarter_bar] + AudioSegment.silent(duration=quarter_bar * 2) + bar_audio[quarter_bar * 3:]
+                bar_audio = bar_audio - 1  # Slight volume reduction to emphasize the gap
+            elif bar_idx % 4 == 0:
+                # Every 4 bars: Apply thin EQ by boosting mids, cutting lows/highs
+                bar_audio = bar_audio.high_pass_filter(200)  # Cut low bass
+                bar_audio = bar_audio.low_pass_filter(6000)  # Cut harsh highs
+                bar_audio = bar_audio - 3  # Slight reduction
+            else:
+                # Normal verses: light processing for warmth
+                pass
+                
         elif section_type in {"breakdown", "bridge", "break"}:
-            half_bar = max(1, bar_duration_ms // 2)
-            bar_audio = bar_audio[:half_bar] + AudioSegment.silent(duration=half_bar)
+            # Breakdown: Sparse with strong filtering
+            if len(section_audio) > 4000 or bar_idx > 0:  # After first bar
+                half_bar = max(1, bar_duration_ms // 2)
+                bar_audio = bar_audio[:half_bar] + AudioSegment.silent(duration=half_bar)
+            # Add filtering for ambient feel
+            bar_audio = bar_audio.low_pass_filter(1500)
+            
+        elif section_type == "outro":
+            # Outro: Progressive diminishment
+            fade_factor = 1.0 - (bar_idx / max(1, section_bars))
+            bar_audio = bar_audio * fade_factor  # Gradual fade
+            if bar_idx > 0:
+                bar_audio = bar_audio - (bar_idx * 1.5)  # Progressive volume reduction
 
         section_audio += bar_audio
 
@@ -295,17 +340,29 @@ def _render_producer_arrangement(
             section_audio = sum(buildup_segments)
             
         elif section_type in {"drop", "hook", "chorus"}:
-            # DROP: MAXIMUM IMPACT - full volume, no filtering, hard hit
+            # DROP/HOOK: MAXIMUM IMPACT - full volume, no filtering, hard hit
             logger.info(f"Processing DROP section: {section_name}")
             
-            # Add silence before drop for impact (if it's the first part)
-            if bar_start > 0:
-                silence_gap = min(500, bar_duration_ms // 4)  # Short silence gap
-                arranged = arranged[:-silence_gap]  # Cut off end of previous section
-                arranged += AudioSegment.silent(duration=silence_gap)
+            # Add dramatic silence before hook for impact (unless it's the very first section)
+            if bar_start > 0 and section_idx > 0:
+                # Create pre-hook silence - at least 1/2 bar for dramatic pause
+                silence_gap = int(bar_duration_ms * 0.5)  # Half-bar silence
+                
+                # Check if previous section exists and if we should cut
+                if len(arranged) > silence_gap:
+                    # Remove end of previous section and insert silence
+                    arranged = arranged[:-int(bar_duration_ms * 0.25)]  # Trim trailing quarter-bar
+                    arranged += AudioSegment.silent(duration=silence_gap)
+                    logger.info(f"  Added pre-hook silence: {silence_gap}ms before {section_name}")
             
-            section_audio = section_audio + 6  # LOUD (+6dB)
+            section_audio = section_audio + 8  # LOUD (+8dB from normal, even louder than before)
             # No filtering - full frequency range for maximum impact
+            
+            # Add slight brightness for punch on hook sections
+            if section_type in {"hook", "chorus"}:
+                # Overlay a bright signal for extra punch
+                bright = section_audio.high_pass_filter(100) + 2
+                section_audio = section_audio.overlay(bright, gain_during_overlay=-2)
             
         elif section_type in {"breakdown", "bridge", "break"}:
             # BREAKDOWN: Very quiet, sparse, ambient
@@ -334,9 +391,15 @@ def _render_producer_arrangement(
             section_audio = section_audio.fade_out(min(4000, section_ms // 2))  # Long fade out
             
         else:
-            # VERSE/HOOK/OTHER: Apply energy-based volume
-            energy_db = -6 + (section_energy * 10)  # Range: -6dB (low) to +4dB (high)
+            # VERSE/STANDARD: Apply energy-based volume (quieter baseline than drop)
+            # This makes the verse feel different from the punch of the hook
+            energy_db = -8 + (section_energy * 9)  # Range: -8dB (low) to +1dB (high energy verses only)
             logger.info(f"Processing {section_type.upper()} section: {section_name} (energy={section_energy:.2f}, volume={energy_db:+.1f}dB)")
+            
+            # Verses get a slightly thinner texture by HF reduction
+            if section_type == "verse":
+                section_audio = section_audio.low_pass_filter(7000)  # Slight HF reduction for warmth
+            
             section_audio = section_audio + energy_db
         
         # ====================================================================
