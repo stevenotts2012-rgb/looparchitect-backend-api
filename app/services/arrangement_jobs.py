@@ -538,6 +538,58 @@ def _build_pre_render_plan(
     genre_hint: str | None,
 ) -> dict:
     """Build render_plan_json before rendering begins so all render paths consume the same plan."""
+
+    def _build_default_structured_sections(total_bars: int) -> list[dict]:
+        """Create a musically structured fallback when no style/producer sections exist."""
+        total_bars = max(1, int(total_bars))
+        templates = [
+            ("Intro", "intro", 4, 0.35, ["kick", "bass"]),
+            ("Verse", "verse", 8, 0.58, ["kick", "snare", "bass"]),
+            ("Hook", "hook", 8, 0.86, ["kick", "snare", "bass", "melody"]),
+            ("Verse 2", "verse", 8, 0.62, ["kick", "snare", "bass"]),
+            ("Hook 2", "hook", 8, 0.90, ["kick", "snare", "bass", "melody"]),
+            ("Bridge", "bridge", 4, 0.50, ["bass", "melody"]),
+            ("Final Hook", "hook", 8, 0.95, ["kick", "snare", "bass", "melody"]),
+            ("Outro", "outro", 4, 0.42, ["kick", "bass"]),
+        ]
+
+        sections: list[dict] = []
+        remaining = total_bars
+        current_bar = 0
+
+        for name, section_type, preferred_bars, energy, instruments in templates:
+            if remaining <= 0:
+                break
+            bars = min(preferred_bars, remaining)
+            if bars <= 0:
+                continue
+            sections.append(
+                {
+                    "name": name,
+                    "type": section_type,
+                    "bar_start": current_bar,
+                    "bars": bars,
+                    "energy": float(energy),
+                    "instruments": list(instruments),
+                }
+            )
+            current_bar += bars
+            remaining -= bars
+
+        if remaining > 0:
+            sections.append(
+                {
+                    "name": "Extension",
+                    "type": "hook" if remaining >= 4 else "outro",
+                    "bar_start": current_bar,
+                    "bars": remaining,
+                    "energy": 0.82 if remaining >= 4 else 0.45,
+                    "instruments": ["kick", "snare", "bass", "melody"] if remaining >= 4 else ["kick", "bass"],
+                }
+            )
+
+        return sections
+
     if producer_arrangement and producer_arrangement.get("sections"):
         sections = []
         events = []
@@ -593,16 +645,7 @@ def _build_pre_render_plan(
         if not sections:
             bar_duration_seconds = (60.0 / bpm) * 4.0
             total_bars = max(1, int(round(target_seconds / bar_duration_seconds)))
-            sections = [
-                {
-                    "name": "Main",
-                    "type": "verse",
-                    "bar_start": 0,
-                    "bars": total_bars,
-                    "energy": 0.6,
-                    "instruments": ["kick", "snare", "bass"],
-                }
-            ]
+            sections = _build_default_structured_sections(total_bars)
         total_bars = int(sum(int(s.get("bars", 1) or 1) for s in sections))
         key = "C"
         tracks = []
