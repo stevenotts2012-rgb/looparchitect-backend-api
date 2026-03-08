@@ -23,8 +23,12 @@ Creates ZIP with:
 
 import logging
 import json
+import csv
+import io
+import zipfile
 from typing import Dict, List
 from pathlib import Path
+from pydub import AudioSegment
 from app.services.producer_models import ProducerArrangement, Section
 
 logger = logging.getLogger(__name__)
@@ -288,3 +292,195 @@ For issues or questions, visit the LoopArchitect project.
             "duration_bars": arrangement.total_bars,
             "duration_seconds": arrangement.total_seconds,
         }
+
+    @staticmethod
+    def build_export_zip(
+        arrangement_id: int,
+        full_mix: AudioSegment,
+        bpm: float,
+        musical_key: str,
+        sections: List[Dict],
+        midi_files: Dict[str, bytes] | None = None,
+    ) -> tuple[bytes, Dict]:
+        """Build a real DAW export ZIP with non-empty stems and metadata files."""
+        midi_files = midi_files or {}
+
+        stems = DAWExporter._derive_stems_from_mix(full_mix)
+        DAWExporter._validate_stems(stems, expected_duration_ms=len(full_mix))
+
+        markers_csv = DAWExporter._generate_markers_csv_from_sections(sections, bpm)
+        tempo_map_json = json.dumps(
+            {
+                "constant_tempo": True,
+                "bpm": bpm,
+                "time_signature": "4/4",
+                "total_bars": DAWExporter._estimate_total_bars(sections),
+                "changes": [{"bar": 1, "bpm": bpm, "time_signature": "4/4"}],
+            },
+            indent=2,
+        )
+        readme = DAWExporter._generate_readme_text(
+            arrangement_id=arrangement_id,
+            bpm=bpm,
+            musical_key=musical_key,
+            sections=sections,
+            midi_included=sorted(list(midi_files.keys())),
+        )
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            stem_names: list[str] = []
+            for stem_name, stem_audio in stems.items():
+                stem_bytes = io.BytesIO()
+                stem_audio.export(stem_bytes, format="wav")
+                raw = stem_bytes.getvalue()
+                if not raw:
+                    raise ValueError(f"Generated empty stem file: {stem_name}")
+                archive.writestr(f"stems/{stem_name}.wav", raw)
+                stem_names.append(f"stems/{stem_name}.wav")
+
+            midi_paths: list[str] = []
+            for midi_filename, midi_content in midi_files.items():
+                if not midi_content:
+                    continue
+                path = f"midi/{midi_filename}"
+                archive.writestr(path, midi_content)
+                midi_paths.append(path)
+
+            archive.writestr("markers.csv", markers_csv.encode("utf-8"))
+            archive.writestr("tempo_map.json", tempo_map_json.encode("utf-8"))
+            archive.writestr("README.txt", readme.encode("utf-8"))
+
+        payload = zip_buffer.getvalue()
+        if not payload:
+            raise ValueError("Generated DAW export ZIP is empty")
+
+        return payload, {
+            "stems": stem_names,
+            "midi": midi_paths,
+            "metadata": ["markers.csv", "tempo_map.json", "README.txt"],
+        }
+
+    @staticmethod
+    def _derive_stems_from_mix(full_mix: AudioSegment) -> Dict[str, AudioSegment]:
+        """Create real, non-empty stem tracks from the rendered mix using frequency bands."""
+        duration_ms = len(full_mix)
+
+        kick = full_mix.low_pass_filter(140)
+        bass = full_mix.high_pass_filter(45).low_pass_filter(260)
+        snare = full_mix.high_pass_filter(180).low_pass_filter(4000)
+        hats = full_mix.high_pass_filter(5000)
+        melody = full_mix.high_pass_filter(700).low_pass_filter(8500)
+        pads = full_mix.high_pass_filter(180).low_pass_filter(2200)
+
+        stems = {
+            "kick": DAWExporter._normalize_stem_duration(kick, duration_ms),
+            "bass": DAWExporter._normalize_stem_duration(bass, duration_ms),
+            "snare": DAWExporter._normalize_stem_duration(snare, duration_ms),
+            "hats": DAWExporter._normalize_stem_duration(hats, duration_ms),
+            "melody": DAWExporter._normalize_stem_duration(melody, duration_ms),
+            "pads": DAWExporter._normalize_stem_duration(pads, duration_ms),
+        }
+        return stems
+
+    @staticmethod
+    def _normalize_stem_duration(stem: AudioSegment, duration_ms: int) -> AudioSegment:
+        """Ensure all stems start at 0:00 and have equal total duration."""
+        clipped = stem[:duration_ms]
+        if len(clipped) < duration_ms:
+            clipped = clipped + AudioSegment.silent(duration=duration_ms - len(clipped))
+        return clipped
+
+    @staticmethod
+    def _validate_stems(stems: Dict[str, AudioSegment], expected_duration_ms: int) -> None:
+        """Validate non-empty stems and exact duration alignment."""
+        if not stems:
+            raise ValueError("No stems were generated")
+
+        for name, segment in stems.items():
+            if len(segment) <= 0:
+                raise ValueError(f"Stem has zero duration: {name}")
+            if len(segment) != expected_duration_ms:
+                raise ValueError(
+                    f"Stem duration mismatch for {name}: expected {expected_duration_ms}ms, got {len(segment)}ms"
+                )
+
+    @staticmethod
+    def _generate_markers_csv_from_sections(sections: List[Dict], bpm: float) -> str:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Name", "Start (bars)", "Start (seconds)", "End (bars)", "End (seconds)", "Color"])
+
+        color_map = {
+            "intro": "Blue",
+            "verse": "Green",
+            "hook": "Red",
+            "chorus": "Red",
+            "bridge": "Orange",
+            "breakdown": "Yellow",
+            "outro": "Blue",
+        }
+
+        bar_duration_seconds = (60.0 / max(bpm, 1.0)) * 4.0
+        for section in sections:
+            name = str(section.get("name", "Section"))
+            start_bar = int(section.get("bar_start", section.get("start_bar", 0)))
+            bars = int(section.get("bars", 1))
+            end_bar = max(start_bar, start_bar + bars - 1)
+            start_seconds = start_bar * bar_duration_seconds
+            end_seconds = (end_bar + 1) * bar_duration_seconds
+            color = color_map.get(name.lower(), "Gray")
+            writer.writerow([name, start_bar, f"{start_seconds:.2f}", end_bar, f"{end_seconds:.2f}", color])
+
+        return output.getvalue()
+
+    @staticmethod
+    def _estimate_total_bars(sections: List[Dict]) -> int:
+        max_end_bar = 0
+        for section in sections:
+            start_bar = int(section.get("bar_start", section.get("start_bar", 0)))
+            bars = int(section.get("bars", 1))
+            max_end_bar = max(max_end_bar, start_bar + bars)
+        return max_end_bar
+
+    @staticmethod
+    def _generate_readme_text(
+        arrangement_id: int,
+        bpm: float,
+        musical_key: str,
+        sections: List[Dict],
+        midi_included: List[str],
+    ) -> str:
+        lines = [
+            "# LoopArchitect DAW Export",
+            "",
+            f"Arrangement ID: {arrangement_id}",
+            f"Tempo: {bpm} BPM",
+            f"Key: {musical_key}",
+            "",
+            "Contents:",
+            "- stems/*.wav (derived from final rendered mix)",
+        ]
+        if midi_included:
+            lines.append("- midi/*.mid (real MIDI artifacts found for this arrangement)")
+        else:
+            lines.append("- midi/*.mid not included (no real MIDI artifacts available yet)")
+        lines.extend([
+            "- markers.csv",
+            "- tempo_map.json",
+            "- README.txt",
+            "",
+            "Section markers:",
+        ])
+
+        for section in sections:
+            name = str(section.get("name", "Section"))
+            start_bar = int(section.get("bar_start", section.get("start_bar", 0)))
+            bars = int(section.get("bars", 1))
+            lines.append(f"- {name}: bars {start_bar}-{start_bar + bars - 1}")
+
+        lines.append("")
+        lines.append("Notes:")
+        lines.append("- All stems start at 0:00 and have equal duration for DAW alignment.")
+        lines.append("- Stems are generated from the completed arrangement render using band-splitting.")
+        return "\n".join(lines)

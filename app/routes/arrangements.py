@@ -9,6 +9,7 @@ import os
 import tempfile
 import json
 import asyncio
+import io
 from pathlib import Path
 
 import boto3
@@ -17,6 +18,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
+from pydub import AudioSegment
 
 from app.config import settings
 from app.db import get_db
@@ -40,6 +42,7 @@ from app.services.style_direction_engine import StyleDirectionEngine
 from app.services.render_plan import RenderPlanGenerator
 from app.services.arrangement_validator import ArrangementValidator
 from app.services.daw_export import DAWExporter
+from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,7 @@ def _ensure_arrangements_schema(db: Session) -> None:
             "progress_message": "VARCHAR(256)",
             "output_s3_key": "VARCHAR",
             "output_url": "VARCHAR",
+            "stems_zip_url": "VARCHAR",
         }
 
         for column_name, column_type in required_columns.items():
@@ -77,6 +81,119 @@ def _ensure_arrangements_schema(db: Session) -> None:
         db.flush()
     except Exception:
         logger.warning("Could not auto-reconcile arrangements schema on request path", exc_info=True)
+
+
+def _extract_sections_for_export(arrangement: Arrangement) -> list[dict]:
+    sections: list[dict] = []
+
+    if arrangement.producer_arrangement_json:
+        try:
+            producer_payload = json.loads(arrangement.producer_arrangement_json)
+            for section in producer_payload.get("sections", []):
+                sections.append(
+                    {
+                        "name": section.get("name") or section.get("type") or "Section",
+                        "bar_start": int(section.get("bar_start", section.get("start_bar", 0))),
+                        "bars": int(section.get("bars", 1)),
+                    }
+                )
+        except Exception:
+            logger.warning("Failed to parse producer_arrangement_json for arrangement %s", arrangement.id, exc_info=True)
+
+    if not sections and arrangement.render_plan_json:
+        try:
+            render_plan = json.loads(arrangement.render_plan_json)
+            for section in render_plan.get("sections", []):
+                sections.append(
+                    {
+                        "name": section.get("name", "Section"),
+                        "bar_start": int(section.get("start_bar", section.get("bar_start", 0))),
+                        "bars": int(section.get("bars", 1)),
+                    }
+                )
+        except Exception:
+            logger.warning("Failed to parse render_plan_json for arrangement %s", arrangement.id, exc_info=True)
+
+    if not sections:
+        sections = [{"name": "Full Arrangement", "bar_start": 0, "bars": 1}]
+
+    return sections
+
+
+def _load_output_audio_segment(arrangement: Arrangement) -> AudioSegment:
+    if not arrangement.output_s3_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Arrangement output key missing. Cannot generate DAW export.",
+        )
+
+    storage_backend = settings.get_storage_backend()
+
+    if storage_backend == "local":
+        local_filename = arrangement.output_s3_key.split("/")[-1]
+        local_path = Path("uploads") / local_filename
+        if not local_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Rendered arrangement file not found in local storage.",
+            )
+        return AudioSegment.from_wav(str(local_path))
+
+    if storage_backend != "s3":
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Invalid STORAGE_BACKEND: {storage_backend}",
+        )
+
+    bucket_name = settings.get_s3_bucket()
+    if not bucket_name:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="S3 bucket is not configured.",
+        )
+
+    try:
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
+            region_name=settings.aws_region,
+        )
+        response = s3_client.get_object(Bucket=bucket_name, Key=arrangement.output_s3_key)
+        file_bytes = response["Body"].read()
+        if not file_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Rendered arrangement file is empty in storage.",
+            )
+        return AudioSegment.from_wav(io.BytesIO(file_bytes))
+    except ClientError as exc:
+        logger.exception("Failed to fetch rendered arrangement from S3")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Failed to load rendered arrangement from S3: {exc}",
+        )
+
+
+def _collect_existing_midi_artifacts(arrangement_id: int) -> dict[str, bytes]:
+    """Collect real MIDI artifacts if they already exist. No placeholder MIDI is generated."""
+    midi_artifacts: dict[str, bytes] = {}
+    local_uploads = Path("uploads")
+    if not local_uploads.exists():
+        return midi_artifacts
+
+    possible_names = [
+        f"arrangement_{arrangement_id}_drums.mid",
+        f"arrangement_{arrangement_id}_bass.mid",
+        f"arrangement_{arrangement_id}_melody.mid",
+        f"arrangement_{arrangement_id}.mid",
+    ]
+    for filename in possible_names:
+        candidate = local_uploads / filename
+        if candidate.exists() and candidate.stat().st_size > 0:
+            midi_artifacts[filename] = candidate.read_bytes()
+
+    return midi_artifacts
 
 
 def _generate_producer_arrangement(
@@ -304,10 +421,16 @@ async def generate_arrangement(
     producer_arrangement_json = None
     correlation_id = getattr(http_request.state, "correlation_id", None) or http_request.headers.get("x-correlation-id")
 
+    effective_style_text = (request.style_text_input or "").strip()
+    if request.producer_moves:
+        moves_text = ", ".join(move for move in request.producer_moves if move)
+        if moves_text:
+            effective_style_text = f"{effective_style_text}; producer moves: {moves_text}" if effective_style_text else f"producer moves: {moves_text}"
+
     # V2: Handle LLM-based style parsing
-    if request.use_ai_parsing and request.style_text_input:
+    if request.use_ai_parsing and effective_style_text:
         try:
-            logger.info(f"Parsing style text: {request.style_text_input}")
+            logger.info(f"Parsing style text: {effective_style_text}")
             loop_metadata = {
                 "bpm": float(loop.bpm or loop.tempo or 120.0),
                 "key": loop.key or "C",
@@ -322,7 +445,7 @@ async def generate_arrangement(
             
             # Parse style intent using LLM with optional slider overrides
             style_profile = await llm_style_parser.parse_style_intent(
-                user_input=request.style_text_input,
+                user_input=effective_style_text,
                 loop_metadata=loop_metadata,
                 overrides=style_overrides,
             )
@@ -849,61 +972,186 @@ def get_daw_export_info(
             detail=f"Arrangement {arrangement_id} not found",
         )
     
-    # Parse producer arrangement if available
-    try:
-        if arrangement.producer_arrangement_json:
-            from app.services.producer_models import ProducerArrangement
-            import json as json_module
-            arrangement_dict = json_module.loads(arrangement.producer_arrangement_json)
-            # Reconstruct a minimal object for DAW export info
-            # For now, return generic export info
-            return {
-                "arrangement_id": arrangement.id,
-                "supported_daws": DAWExporter.SUPPORTED_DAWS,
-                "stems": [
-                    "kick.wav",
-                    "snare.wav",
-                    "hats.wav",
-                    "bass.wav",
-                    "melody.wav",
-                    "pads.wav",
-                ],
-                "midi": [
-                    "drums.mid",
-                    "bass.mid",
-                    "melody.mid",
-                ],
-                "metadata": [
-                    "markers.csv",
-                    "tempo_map.json",
-                    "README.txt",
-                ],
-                "ready_for_export": arrangement.status == "done",
-            }
-    except Exception as e:
-        logger.warning(f"Failed to generate DAW export info: {e}")
-    
-    # Fallback generic export info
+    _ensure_arrangements_schema(db)
+
+    if arrangement.status != "done":
+        return {
+            "arrangement_id": arrangement.id,
+            "ready_for_export": False,
+            "status": arrangement.status,
+            "message": "Arrangement must be done before DAW export can be generated.",
+        }
+
+    export_key = f"exports/{arrangement.id}.zip"
+    if not storage.file_exists(export_key):
+        full_mix_audio = _load_output_audio_segment(arrangement)
+        loop = db.query(Loop).filter(Loop.id == arrangement.loop_id).first()
+        tempo = float(loop.bpm) if loop and loop.bpm else 120.0
+        musical_key = loop.musical_key if loop and loop.musical_key else "C"
+        sections = _extract_sections_for_export(arrangement)
+        midi_artifacts = _collect_existing_midi_artifacts(arrangement.id)
+
+        zip_bytes, contents = DAWExporter.build_export_zip(
+            arrangement_id=arrangement.id,
+            full_mix=full_mix_audio,
+            bpm=tempo,
+            musical_key=musical_key,
+            sections=sections,
+            midi_files=midi_artifacts,
+        )
+
+        storage.upload_file(
+            file_bytes=zip_bytes,
+            content_type="application/zip",
+            key=export_key,
+        )
+        arrangement.stems_zip_url = f"/api/v1/arrangements/{arrangement.id}/daw-export/download"
+        db.commit()
+        db.refresh(arrangement)
+    else:
+        sections = _extract_sections_for_export(arrangement)
+        contents = {
+            "stems": [
+                "stems/kick.wav",
+                "stems/bass.wav",
+                "stems/snare.wav",
+                "stems/hats.wav",
+                "stems/melody.wav",
+                "stems/pads.wav",
+            ],
+            "midi": [],
+            "metadata": ["markers.csv", "tempo_map.json", "README.txt"],
+        }
+
+    if not arrangement.stems_zip_url:
+        arrangement.stems_zip_url = f"/api/v1/arrangements/{arrangement.id}/daw-export/download"
+        db.commit()
+        db.refresh(arrangement)
+
+    download_url = arrangement.stems_zip_url or f"/api/v1/arrangements/{arrangement.id}/daw-export/download"
+
     return {
         "arrangement_id": arrangement.id,
+        "ready_for_export": True,
         "supported_daws": DAWExporter.SUPPORTED_DAWS,
-        "stems": [
-            "kick.wav",
-            "snare.wav",
-            "hats.wav",
-            "bass.wav",
-            "melody.wav",
-            "pads.wav",
-        ],
-        "midi": [
-            "drums.mid",
-            "bass.mid",
-            "melody.mid",
-        ],
-        "metadata": [
-            "markers.csv",
-            "tempo_map.json",
-            "README.txt",
-        ],
-        "ready_for_export": arrangement.status == "done",
+        "download_url": download_url,
+        "export_s3_key": export_key,
+        "contents": contents,
+        "sections": sections,
+        "midi_note": "MIDI files are included only when real MIDI artifacts are present.",
     }
+
+
+@router.get(
+    "/{arrangement_id}/daw-export/download",
+    summary="Download DAW export ZIP",
+    description="Download the generated DAW export ZIP artifact for an arrangement.",
+)
+def download_daw_export(
+    arrangement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    arrangement = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
+    if not arrangement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Arrangement {arrangement_id} not found",
+        )
+
+    export_key = f"exports/{arrangement.id}.zip"
+    if not storage.file_exists(export_key):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="DAW export ZIP has not been generated yet.",
+        )
+
+    storage_backend = settings.get_storage_backend()
+    download_filename = f"arrangement_{arrangement_id}_daw_export.zip"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_filename}"',
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
+
+    referer = request.headers.get("referer", "")
+    is_swagger_request = "/docs" in referer or "/redoc" in referer
+
+    if storage_backend == "local":
+        local_filename = export_key.split("/")[-1]
+        local_path = Path("uploads") / local_filename
+        if not local_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="DAW export file not found in local storage",
+            )
+
+        if is_swagger_request:
+            return FileResponse(
+                path=str(local_path),
+                media_type="application/zip",
+                filename=download_filename,
+                headers=headers,
+            )
+
+        def iter_local_stream():
+            with open(local_path, "rb") as local_file:
+                while True:
+                    chunk = local_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return StreamingResponse(
+            iter_local_stream(),
+            media_type="application/zip",
+            headers=headers,
+        )
+
+    if storage_backend != "s3":
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Invalid STORAGE_BACKEND: {storage_backend}",
+        )
+
+    if not settings.get_s3_bucket():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="S3 bucket is not configured",
+        )
+
+    try:
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
+            region_name=settings.aws_region,
+        )
+
+        s3_object = s3_client.get_object(Bucket=settings.get_s3_bucket(), Key=export_key)
+        body = s3_object["Body"]
+
+        if is_swagger_request:
+            suffix = os.path.splitext(download_filename)[1] or ".zip"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(body.read())
+                temp_path = temp_file.name
+            return FileResponse(
+                path=temp_path,
+                media_type="application/zip",
+                filename=download_filename,
+                headers=headers,
+                background=BackgroundTask(lambda path=temp_path: Path(path).unlink(missing_ok=True)),
+            )
+
+        return StreamingResponse(
+            body.iter_chunks(chunk_size=1024 * 1024),
+            media_type="application/zip",
+            headers=headers,
+        )
+    except ClientError as exc:
+        logger.exception("Failed to download DAW export %s from S3", arrangement_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Failed to download DAW export from S3: {exc}",
+        )

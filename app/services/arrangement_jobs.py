@@ -23,8 +23,8 @@ from app.db import SessionLocal
 from app.config import settings
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
-from app.services.arrangement_engine import render_phase_b_arrangement
 from app.services.audit_logging import log_feature_event
+from app.services.render_executor import render_from_plan
 from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
@@ -529,6 +529,148 @@ def _build_render_plan_artifact(
     }
 
 
+def _build_pre_render_plan(
+    arrangement_id: int,
+    bpm: float,
+    target_seconds: int,
+    producer_arrangement: dict | None,
+    style_sections: list[dict] | None,
+    genre_hint: str | None,
+) -> dict:
+    """Build render_plan_json before rendering begins so all render paths consume the same plan."""
+    if producer_arrangement and producer_arrangement.get("sections"):
+        sections = []
+        events = []
+        for section in producer_arrangement.get("sections", []):
+            section_type = section.get("section_type") or section.get("type") or "verse"
+            section_record = {
+                "name": section.get("name") or section_type,
+                "type": section_type,
+                "bar_start": int(section.get("bar_start", 0) or 0),
+                "bars": int(section.get("bars", 1) or 1),
+                "energy": float(section.get("energy_level", section.get("energy", 0.6)) or 0.6),
+                "instruments": section.get("instruments") or [],
+            }
+            sections.append(section_record)
+            events.append(
+                {
+                    "type": "section_start",
+                    "bar": section_record["bar_start"],
+                    "description": f"{section_record['name']} starts",
+                }
+            )
+            for variation in section.get("variations", []) or []:
+                events.append(
+                    {
+                        "type": variation.get("variation_type") or variation.get("type") or "variation",
+                        "bar": int(
+                            variation.get("bar", variation.get("bar_start", section_record["bar_start"]))
+                            or section_record["bar_start"]
+                        ),
+                        "description": variation.get("description") or "section variation",
+                    }
+                )
+
+        total_bars = int(producer_arrangement.get("total_bars") or sum(int(s["bars"]) for s in sections))
+        key = producer_arrangement.get("key", "C")
+        tracks = producer_arrangement.get("tracks") or []
+    else:
+        sections = []
+        source_sections = style_sections or []
+        for section in source_sections:
+            name = str(section.get("name") or "section")
+            sections.append(
+                {
+                    "name": name,
+                    "type": name.lower(),
+                    "bar_start": int(section.get("start_bar", 0) or 0),
+                    "bars": int(section.get("bars", 1) or 1),
+                    "energy": float(section.get("energy", 0.6) or 0.6),
+                    "instruments": ["kick", "snare", "bass"],
+                }
+            )
+
+        if not sections:
+            bar_duration_seconds = (60.0 / bpm) * 4.0
+            total_bars = max(1, int(round(target_seconds / bar_duration_seconds)))
+            sections = [
+                {
+                    "name": "Main",
+                    "type": "verse",
+                    "bar_start": 0,
+                    "bars": total_bars,
+                    "energy": 0.6,
+                    "instruments": ["kick", "snare", "bass"],
+                }
+            ]
+        total_bars = int(sum(int(s.get("bars", 1) or 1) for s in sections))
+        key = "C"
+        tracks = []
+        events = [
+            {
+                "type": "section_start",
+                "bar": int(s.get("bar_start", 0) or 0),
+                "description": f"{s.get('name', 'section')} starts",
+            }
+            for s in sections
+        ]
+
+    return {
+        "arrangement_id": arrangement_id,
+        "bpm": bpm,
+        "target_seconds": target_seconds,
+        "key": key,
+        "total_bars": total_bars,
+        "sections": sections,
+        "events": events,
+        "sections_count": len(sections),
+        "events_count": len(events),
+        "tracks": tracks,
+        "render_profile": {
+            "genre_profile": genre_hint or "generic",
+            "producer_arrangement_used": bool(producer_arrangement),
+        },
+    }
+
+
+def _build_dev_fallback_plan(arrangement_id: int, bpm: float, target_seconds: int) -> dict:
+    """Build a minimal fallback render plan used only when DEV_FALLBACK_LOOP_ONLY is enabled."""
+    bar_duration_seconds = (60.0 / bpm) * 4.0
+    bars = max(1, int(round(target_seconds / bar_duration_seconds)))
+    return {
+        "arrangement_id": arrangement_id,
+        "bpm": bpm,
+        "target_seconds": target_seconds,
+        "key": "C",
+        "total_bars": bars,
+        "sections": [
+            {
+                "name": "Fallback Loop",
+                "type": "verse",
+                "bar_start": 0,
+                "bars": bars,
+                "energy": 0.55,
+                "instruments": ["kick", "snare", "bass"],
+            }
+        ],
+        "events": [
+            {
+                "type": "variation",
+                "bar": idx,
+                "description": "dev fallback variation",
+            }
+            for idx in range(0, bars, 4)
+        ],
+        "sections_count": 1,
+        "events_count": len(list(range(0, bars, 4))),
+        "tracks": [],
+        "render_profile": {
+            "genre_profile": "fallback_loop_only",
+            "fallback_used": True,
+        },
+    }
+
+
 def _decode_with_ffmpeg_cli(audio_bytes: bytes, input_format: str | None = None) -> AudioSegment:
     """Decode arbitrary audio bytes to WAV using ffmpeg CLI (no ffprobe dependency)."""
     converter = getattr(AudioSegment, "converter", None) or shutil.which("ffmpeg") or "ffmpeg"
@@ -766,28 +908,49 @@ def run_arrangement_job(arrangement_id: int):
                     len(producer_arrangement.get("tracks", [])),
                 )
 
+        # Build render plan BEFORE rendering so all paths consume render_plan_json.
+        render_plan = _build_pre_render_plan(
+            arrangement_id=arrangement_id,
+            bpm=bpm,
+            target_seconds=target_seconds,
+            producer_arrangement=producer_arrangement,
+            style_sections=style_sections,
+            genre_hint=(arrangement.genre or loop.genre),
+        )
+        arrangement.render_plan_json = json.dumps(render_plan)
+        db.commit()
+
+        log_feature_event(
+            logger,
+            event="render_plan_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            sections_count=render_plan.get("sections_count", 0),
+            events_count=render_plan.get("events_count", 0),
+        )
+
         try:
-            # Use ProducerArrangement renderer if available (most advanced)
-            if producer_arrangement:
-                arranged_audio, timeline_json = _render_producer_arrangement(
-                    loop_audio=loop_audio,
-                    producer_arrangement=producer_arrangement,
-                    bpm=bpm,
+            fd, temp_wav_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            try:
+                render_result = render_from_plan(
+                    render_plan_json=arrangement.render_plan_json,
+                    audio_source=loop_audio,
+                    output_path=temp_wav_path,
                 )
-            else:
-                # Fallback to basic renderer
-                arranged_audio, timeline_json = render_phase_b_arrangement(
-                    loop_audio=loop_audio,
-                    bpm=bpm,
-                    target_seconds=target_seconds,
-                    sections_override=style_sections,
-                    seed=seed,
-                    style_params=style_params,
-                )
+                timeline_json = render_result["timeline_json"]
+
+                with open(temp_wav_path, "rb") as temp_audio_file:
+                    output_bytes = temp_audio_file.read()
+            finally:
+                try:
+                    Path(temp_wav_path).unlink(missing_ok=True)
+                except PermissionError:
+                    logger.warning("Could not remove temporary file: %s", temp_wav_path)
         except Exception as render_error:
             if settings.dev_fallback_loop_only and not settings.is_production:
                 logger.warning(
-                    "DEV_FALLBACK_LOOP_ONLY enabled - using loop-only fallback for arrangement %s: %s",
+                    "DEV_FALLBACK_LOOP_ONLY enabled - using fallback render plan for arrangement %s: %s",
                     arrangement_id,
                     render_error,
                 )
@@ -798,71 +961,32 @@ def run_arrangement_job(arrangement_id: int):
                     arrangement_id=arrangement_id,
                     reason=str(render_error),
                 )
-                target_ms = target_seconds * 1000
-                repeats = (target_ms // len(loop_audio)) + 1
-                arranged_audio = (loop_audio * repeats)[:target_ms]
-                bar_duration_seconds = (60.0 / bpm) * 4.0
-                bars = max(1, int(round(target_seconds / bar_duration_seconds)))
-                events = [
-                    {
-                        "type": "fallback_loop_bar",
-                        "bar": idx,
-                        "time_seconds": round(idx * bar_duration_seconds, 3),
-                        "genre_profile": "fallback_loop_only",
-                    }
-                    for idx in range(bars)
-                ]
-                timeline_json = json.dumps(
-                    {
-                        "bpm": bpm,
-                        "render_profile": {
-                            "genre_profile": "fallback_loop_only",
-                            "fallback_used": True,
-                        },
-                        "events": events,
-                        "sections": [
-                            {
-                                "name": "fallback_loop",
-                                "bars": bars,
-                                "energy": 0.5,
-                                "start_bar": 0,
-                                "end_bar": bars - 1,
-                                "start_seconds": 0.0,
-                                "end_seconds": round(target_seconds, 3),
-                            }
-                        ],
-                    }
+                render_plan = _build_dev_fallback_plan(
+                    arrangement_id=arrangement_id,
+                    bpm=bpm,
+                    target_seconds=target_seconds,
                 )
+                arrangement.render_plan_json = json.dumps(render_plan)
+                db.commit()
+
+                fd, temp_wav_path = tempfile.mkstemp(suffix=".wav")
+                os.close(fd)
+                try:
+                    render_result = render_from_plan(
+                        render_plan_json=arrangement.render_plan_json,
+                        audio_source=loop_audio,
+                        output_path=temp_wav_path,
+                    )
+                    timeline_json = render_result["timeline_json"]
+                    with open(temp_wav_path, "rb") as temp_audio_file:
+                        output_bytes = temp_audio_file.read()
+                finally:
+                    try:
+                        Path(temp_wav_path).unlink(missing_ok=True)
+                    except PermissionError:
+                        logger.warning("Could not remove temporary file: %s", temp_wav_path)
             else:
                 raise
-
-        render_plan = _build_render_plan_artifact(
-            arrangement_id=arrangement_id,
-            bpm=bpm,
-            target_seconds=target_seconds,
-            timeline_json=timeline_json,
-        )
-        log_feature_event(
-            logger,
-            event="render_plan_built",
-            correlation_id=correlation_id,
-            arrangement_id=arrangement_id,
-            sections_count=render_plan.get("sections_count", 0),
-            events_count=render_plan.get("events_count", 0),
-        )
-
-        # Export to temp WAV and upload to S3
-        fd, temp_wav_path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        try:
-            arranged_audio.export(temp_wav_path, format="wav")
-            with open(temp_wav_path, "rb") as temp_audio_file:
-                output_bytes = temp_audio_file.read()
-        finally:
-            try:
-                Path(temp_wav_path).unlink(missing_ok=True)
-            except PermissionError:
-                logger.warning("Could not remove temporary file: %s", temp_wav_path)
 
         output_key = f"arrangements/{arrangement_id}.wav"
         storage.upload_file(

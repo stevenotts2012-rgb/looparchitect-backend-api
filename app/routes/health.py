@@ -5,6 +5,7 @@ Provides basic health check and detailed readiness check.
 """
 
 import logging
+import shutil
 from fastapi import APIRouter, Depends, HTTPException
 import boto3
 from botocore.exceptions import ClientError
@@ -26,9 +27,10 @@ async def health_live():
 
 @router.get("/health/ready")
 async def health_ready(db: Session = Depends(get_db)):
-    """Readiness probe: DB + Redis + optional S3 checks."""
+    """Readiness probe: DB + Redis + optional S3 + FFmpeg checks."""
     db_ok = False
     redis_ok = False
+    ffmpeg_ok = False
     active_storage_backend = settings.get_storage_backend()
     s3_ok = active_storage_backend != "s3"
 
@@ -44,6 +46,17 @@ async def health_ready(db: Session = Depends(get_db)):
         redis_ok = bool(redis_conn.ping())
     except Exception:
         logger.exception("Readiness Redis check failed")
+
+    # Check FFmpeg availability
+    try:
+        ffmpeg_path = settings.ffmpeg_binary or shutil.which("ffmpeg")
+        ffprobe_path = settings.ffprobe_binary or shutil.which("ffprobe")
+        ffmpeg_ok = bool(ffmpeg_path and ffprobe_path)
+        if not ffmpeg_ok and settings.should_enforce_audio_binaries:
+            logger.warning("FFmpeg/FFprobe not found but required in production")
+    except Exception:
+        logger.exception("Readiness FFmpeg check failed")
+        ffmpeg_ok = False
 
     if active_storage_backend == "s3":
         try:
@@ -77,10 +90,11 @@ async def health_ready(db: Session = Depends(get_db)):
             s3_ok = False
 
     payload = {
-        "ok": bool(db_ok and redis_ok and s3_ok),
+        "ok": bool(db_ok and redis_ok and s3_ok and ffmpeg_ok),
         "db_ok": db_ok,
         "redis_ok": redis_ok,
         "s3_ok": s3_ok,
+        "ffmpeg_ok": ffmpeg_ok,
         "storage_backend": active_storage_backend,
     }
 

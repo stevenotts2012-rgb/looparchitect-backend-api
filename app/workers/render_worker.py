@@ -4,9 +4,10 @@ import logging
 import os
 import tempfile
 import traceback
+import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from app.db import SessionLocal, engine
 from app.models.job import RenderJob
 from app.models.loop import Loop
 from app.services.job_service import update_job_status
+from app.services.render_executor import render_from_plan
 from app.services.storage import storage
 from app.schemas.job import OutputFile
 
@@ -27,6 +29,60 @@ MODELS_TO_REGISTER = [
     "app.models.arrangement",
     "app.models.job",
 ]
+
+
+def _should_use_dev_fallback() -> bool:
+    """Dev fallback is opt-in only and never on in production."""
+    return bool(settings.dev_fallback_loop_only and not settings.is_production)
+
+
+def _select_render_mode(has_render_plan: bool) -> str:
+    """Select worker render mode using render_plan as source of truth."""
+    if has_render_plan:
+        return "render_plan"
+    if _should_use_dev_fallback():
+        return "dev_fallback"
+    raise ValueError(
+        "render_plan_json is required for worker rendering. "
+        "Legacy fallback is disabled by default. "
+        "Set DEV_FALLBACK_LOOP_ONLY=true in non-production only for temporary fallback."
+    )
+
+
+def _build_dev_fallback_render_plan(loop: Loop, params: Dict) -> dict:
+    """Build a minimal render_plan_json when dev fallback is explicitly enabled."""
+    bpm = float(loop.bpm or 120.0)
+    length_seconds = int(params.get("length_seconds") or 60)
+    bar_duration_seconds = (60.0 / bpm) * 4.0
+    bars = max(1, int(round(length_seconds / bar_duration_seconds)))
+    return {
+        "bpm": bpm,
+        "key": "C",
+        "total_bars": bars,
+        "render_profile": {
+            "genre_profile": str(params.get("genre") or loop.genre or "generic"),
+            "fallback_used": True,
+        },
+        "sections": [
+            {
+                "name": "Fallback Loop",
+                "type": "verse",
+                "bar_start": 0,
+                "bars": bars,
+                "energy": 0.55,
+                "instruments": ["kick", "snare", "bass"],
+            }
+        ],
+        "events": [
+            {
+                "type": "variation",
+                "bar": idx,
+                "description": "dev fallback variation",
+            }
+            for idx in range(0, bars, 4)
+        ],
+        "tracks": [],
+    }
 
 
 def _ensure_db_models():
@@ -129,13 +185,26 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
         # Load arrangement with producer data (if available)
         from app.models.arrangement import Arrangement
         
-        arrangement = db.query(Arrangement).filter(
-            Arrangement.loop_id == loop_id
-        ).order_by(Arrangement.created_at.desc()).first()
+        arrangement = (
+            db.query(Arrangement)
+            .filter(
+                Arrangement.loop_id == loop_id,
+                Arrangement.render_plan_json.isnot(None),
+            )
+            .order_by(Arrangement.created_at.desc())
+            .first()
+        )
+        if not arrangement:
+            arrangement = (
+                db.query(Arrangement)
+                .filter(Arrangement.loop_id == loop_id)
+                .order_by(Arrangement.created_at.desc())
+                .first()
+            )
         
         logger.info(
             f"[{job_id}] Starting render for loop {loop_id} "
-            f"(producer_data={'YES' if arrangement and arrangement.producer_arrangement_json else 'NO'})"
+            f"(render_plan={'YES' if arrangement and arrangement.render_plan_json else 'NO'})"
         )
         
         # Mark as processing
@@ -158,150 +227,45 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             except Exception as e:
                 raise ValueError(f"Failed to load audio: {e}")
             
-            # Check if we have ProducerEngine arrangement data
-            if arrangement and arrangement.producer_arrangement_json:
-                # ========================================
-                # ProducerEngine Path (Structured Render)
-                # ========================================
-                logger.info(f"[{job_id}] Using ProducerEngine arrangement for structured render")
-                
-                import json
-                from app.services.producer_models import ProducerArrangement, Section, InstrumentType
-                from app.services.audio_renderer import render_arrangement
-                
-                # Parse ProducerArrangement from JSON
-                try:
-                    wrapper_data = json.loads(arrangement.producer_arrangement_json)
-                    
-                    # Handle nested structure: {"version": "2.0", "producer_arrangement": {...}}
-                    if "producer_arrangement" in wrapper_data:
-                        producer_data = wrapper_data["producer_arrangement"]
-                    else:
-                        producer_data = wrapper_data
-                    
-                    # Reconstruct ProducerArrangement object
-                    # Note: JSON doesn't preserve dataclass types, need to reconstruct
-                    sections = []
-                    for s_data in producer_data.get("sections", []):
-                        from app.services.producer_models import SectionType
-                        section = Section(
-                            name=s_data.get("name", ""),
-                            section_type=SectionType(s_data.get("type", "Verse")),
-                            bar_start=s_data.get("bar_start", 0),
-                            bars=s_data.get("bars", 8),
-                            energy_level=s_data.get("energy", 0.5),
-                            instruments=[InstrumentType(i) for i in s_data.get("instruments", [])],
-                        )
-                        sections.append(section)
-                    
-                    # Reconstruct energy curve
-                    from app.services.producer_models import EnergyPoint
-                    energy_curve = [
-                        EnergyPoint(bar=ep["bar"], energy=ep["energy"])
-                        for ep in producer_data.get("energy_curve", [])
-                    ]
-                    
-                    # Create ProducerArrangement
-                    producer_arrangement = ProducerArrangement(
-                        tempo=producer_data.get("tempo", loop.bpm or 120.0),
-                        total_bars=producer_data.get("total_bars", 64),
-                        total_seconds=producer_data.get("total_seconds", 60.0),
-                        sections=sections,
-                        energy_curve=energy_curve,
-                        genre=producer_data.get("genre", "generic"),
-                    )
-                    
-                    logger.info(
-                        f"[{job_id}] Parsed ProducerArrangement: "
-                        f"{len(sections)} sections, {producer_arrangement.total_bars} bars"
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"[{job_id}] Failed to parse producer_arrangement_json: {e}")
-                    raise ValueError(f"Invalid producer arrangement data: {e}")
-                
-                # Render using ProducerEngine structure
-                update_job_status(
-                    db,
-                    job_id,
-                    "processing",
-                    progress=60.0,
-                    progress_message="Rendering structured arrangement",
-                )
-                
-                try:
-                    output_audio = render_arrangement(
-                        audio,
-                        producer_arrangement,
-                        loop.bpm or 120.0
-                    )
-                except Exception as e:
-                    logger.error(f"[{job_id}] Render failed: {e}")
-                    raise ValueError(f"Audio rendering failed: {e}")
-                
-                # Export single arrangement file
-                filename = "arrangement.wav"
-                output_path = temp_dir / filename
-                
-                try:
-                    output_audio.export(str(output_path), format="wav")
-                    logger.info(f"[{job_id}] Exported arrangement: {filename}")
-                except Exception as e:
-                    raise ValueError(f"Failed to export arrangement: {e}")
-                
-                # Upload to S3
-                update_job_status(db, job_id, "processing", progress=90.0, progress_message="Uploading")
-                s3_key, content_type = _upload_render_output(job_id, filename, output_path)
-                output_files = [
-                    OutputFile(
-                        name="Producer Arrangement",
-                        s3_key=s3_key,
-                        content_type=content_type,
-                    )
-                ]
-                
+            render_mode = _select_render_mode(bool(arrangement and arrangement.render_plan_json))
+
+            if render_mode == "render_plan":
+                render_plan_json = arrangement.render_plan_json
             else:
-                # ========================================
-                # Legacy Path (Simple Variations)
-                # ========================================
-                logger.info(f"[{job_id}] No producer data, using legacy variation rendering")
-                
-                # Build variation profiles from params
-                from app.routes.render import _compute_variation_profiles, _build_variation
-            
-                profiles = _compute_variation_profiles(type('RenderConfig', (), params)())
-                output_files: List[OutputFile] = []
-                
-                # Render variations
-                for i, profile in enumerate(profiles):
-                    progress = 40.0 + (50.0 / len(profiles)) * i
-                    update_job_status(
-                        db,
-                        job_id,
-                        "processing",
-                        progress=progress,
-                        progress_message=f"Rendering {profile['name']} ({i+1}/{len(profiles)})",
-                    )
-                    
-                    variation_audio = _build_variation(audio, profile["transformations"])
-                    filename = f"{profile['name'].replace(' ', '_')}.wav"
-                    output_path = temp_dir / filename
-                    
-                    try:
-                        variation_audio.export(str(output_path), format="wav")
-                        logger.info(f"[{job_id}] Exported variation: {filename}")
-                    except Exception as e:
-                        raise ValueError(f"Failed to export variation {profile['name']}: {e}")
-                    
-                    # Upload to S3
-                    s3_key, content_type = _upload_render_output(job_id, filename, output_path)
-                    output_files.append(
-                        OutputFile(
-                            name=profile["name"],
-                            s3_key=s3_key,
-                            content_type=content_type,
-                        )
-                    )
+                logger.warning(
+                    "[%s] No render_plan_json found; DEV_FALLBACK_LOOP_ONLY enabled, using synthetic fallback render plan",
+                    job_id,
+                )
+                render_plan_json = json.dumps(_build_dev_fallback_render_plan(loop, params))
+
+            update_job_status(
+                db,
+                job_id,
+                "processing",
+                progress=60.0,
+                progress_message="Rendering from render_plan_json",
+            )
+
+            filename = "arrangement.wav"
+            output_path = temp_dir / filename
+            render_result = render_from_plan(
+                render_plan_json=render_plan_json,
+                audio_source=audio,
+                output_path=output_path,
+            )
+
+            timeline_json = render_result["timeline_json"]
+            logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
+
+            update_job_status(db, job_id, "processing", progress=90.0, progress_message="Uploading")
+            s3_key, content_type = _upload_render_output(job_id, filename, output_path)
+            output_files = [
+                OutputFile(
+                    name="Render Plan Arrangement",
+                    s3_key=s3_key,
+                    content_type=content_type,
+                )
+            ]
             
             # Mark as succeeded
             update_job_status(

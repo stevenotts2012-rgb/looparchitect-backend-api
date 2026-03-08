@@ -213,6 +213,10 @@ class AudioArrangementGenerateRequest(BaseModel):
         default=False,
         description="V2: Use LLM to parse style_text_input instead of style_preset",
     )
+    producer_moves: Optional[List[str]] = Field(
+        default=None,
+        description="Optional producer move directives (e.g., beat_switch, halftime_drop, stop_time)",
+    )
     seed: Optional[int | str] = Field(
         default=None,
         description="Optional deterministic seed",
@@ -288,6 +292,7 @@ class ArrangementResponse(BaseModel):
     error_message: Optional[str] = None
     output_s3_key: Optional[str] = None
     output_url: Optional[str] = None
+    stems_zip_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -244,6 +244,10 @@ class ProducerEngine:
         # Validate
         arrangement = ProducerEngine._validate(arrangement)
 
+        # Apply producer behavior polish (musical realism improvements)
+        from app.services.producer_behavior_polish import ProducerBehaviorPolish
+        arrangement = ProducerBehaviorPolish.polish(arrangement)
+
         return arrangement
 
     @staticmethod
