@@ -31,6 +31,7 @@ async def health_ready(db: Session = Depends(get_db)):
     db_ok = False
     redis_ok = False
     ffmpeg_ok = False
+    redis_required = settings.is_production
     active_storage_backend = settings.get_storage_backend()
     s3_ok = active_storage_backend != "s3"
 
@@ -45,15 +46,22 @@ async def health_ready(db: Session = Depends(get_db)):
         redis_conn = get_redis_conn()
         redis_ok = bool(redis_conn.ping())
     except Exception:
-        logger.exception("Readiness Redis check failed")
+        if redis_required:
+            logger.exception("Readiness Redis check failed (required in production)")
+        else:
+            logger.warning("Readiness Redis check failed in development mode (non-blocking)")
 
     # Check FFmpeg availability
     try:
         ffmpeg_path = settings.ffmpeg_binary or shutil.which("ffmpeg")
         ffprobe_path = settings.ffprobe_binary or shutil.which("ffprobe")
         ffmpeg_ok = bool(ffmpeg_path and ffprobe_path)
-        if not ffmpeg_ok and settings.should_enforce_audio_binaries:
-            logger.warning("FFmpeg/FFprobe not found but required in production")
+        if ffmpeg_ok:
+            logger.info("FFmpeg detected: ffmpeg=%s, ffprobe=%s", ffmpeg_path, ffprobe_path)
+        elif settings.should_enforce_audio_binaries:
+            logger.warning("FFmpeg/FFprobe missing and required (production policy enabled)")
+        else:
+            logger.warning("FFmpeg/FFprobe missing in development mode (audio decode may be limited)")
     except Exception:
         logger.exception("Readiness FFmpeg check failed")
         ffmpeg_ok = False
@@ -90,9 +98,10 @@ async def health_ready(db: Session = Depends(get_db)):
             s3_ok = False
 
     payload = {
-        "ok": bool(db_ok and redis_ok and s3_ok and ffmpeg_ok),
+        "ok": bool(db_ok and (redis_ok or not redis_required) and s3_ok and ffmpeg_ok),
         "db_ok": db_ok,
         "redis_ok": redis_ok,
+        "redis_required": redis_required,
         "s3_ok": s3_ok,
         "ffmpeg_ok": ffmpeg_ok,
         "storage_backend": active_storage_backend,

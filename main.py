@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import os
+import shutil
 import logging
 import traceback
 
@@ -15,6 +16,7 @@ from app.middleware.cors import add_cors_middleware
 from app.middleware.logging import add_request_logging
 from app.routes import api, health, db_health, loops, render, arrange, arrangements, audio
 from app.services.audio_runtime import configure_audio_binaries
+from app.queue import is_redis_available
 
 # Configure logging
 logging.basicConfig(
@@ -56,6 +58,18 @@ async def lifespan(app: FastAPI):
         ffprobe_binary=settings.ffprobe_binary or None,
         raise_if_missing=settings.should_enforce_audio_binaries,
     )
+
+    ffmpeg_detected = bool(settings.ffmpeg_binary or shutil.which("ffmpeg"))
+    ffprobe_detected = bool(settings.ffprobe_binary or shutil.which("ffprobe"))
+    logger.info("FFmpeg detected: %s (ffprobe: %s)", ffmpeg_detected, ffprobe_detected)
+
+    redis_connected = is_redis_available()
+    if redis_connected:
+        logger.info("Redis connection status: connected")
+    elif settings.is_production:
+        logger.warning("Redis connection status: unavailable (production mode)")
+    else:
+        logger.warning("Redis connection status: unavailable (development mode, non-blocking)")
     
     # Run migrations on startup
     run_migrations()
