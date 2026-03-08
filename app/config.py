@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     feature_midi_export: bool = Field(default=False, validation_alias="FEATURE_MIDI_EXPORT")
     feature_stem_export: bool = Field(default=False, validation_alias="FEATURE_STEM_EXPORT")
     feature_pattern_generation: bool = Field(default=False, validation_alias="FEATURE_PATTERN_GENERATION")
-    feature_producer_engine: bool = Field(default=False, validation_alias="FEATURE_PRODUCER_ENGINE")
+    feature_producer_engine: bool = Field(default=True, validation_alias="FEATURE_PRODUCER_ENGINE")
     dev_fallback_loop_only: bool = Field(default=False, validation_alias="DEV_FALLBACK_LOOP_ONLY")
     
     # LLM Style Engine V2 settings

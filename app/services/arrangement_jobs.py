@@ -5,12 +5,15 @@ Handles the async workflow of generating arrangements and updating database reco
 """
 
 import io
+import json
 import logging
+import math
 import os
 import tempfile
-import json
 import time
 import uuid
+import subprocess
+import shutil
 from pathlib import Path
 
 import httpx
@@ -109,6 +112,379 @@ def _parse_style_profile(style_profile_json: str | None) -> dict | None:
         return None
 
 
+def _parse_producer_arrangement(producer_arrangement_json: str | None) -> dict | None:
+    """
+    Parse ProducerArrangement from JSON.
+    Returns dict with full producer arrangement structure.
+    """
+    if not producer_arrangement_json:
+        return None
+
+    try:
+        payload = json.loads(producer_arrangement_json)
+        # Handle both direct format and wrapped format
+        if isinstance(payload, dict):
+            if "producer_arrangement" in payload:
+                return payload["producer_arrangement"]
+            # If it looks like a ProducerArrangement dict directly
+            if "sections" in payload and "tracks" in payload:
+                return payload
+        return payload
+    except Exception as e:
+        logger.warning("Failed to parse producer_arrangement_json: %s", e)
+        return None
+
+
+def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
+    if target_ms <= 0:
+        return AudioSegment.silent(duration=0)
+    repeats = (target_ms // len(audio)) + 1
+    return (audio * repeats)[:target_ms]
+
+
+def _build_varied_section_audio(
+    loop_audio: AudioSegment,
+    section_bars: int,
+    bar_duration_ms: int,
+    section_idx: int,
+    section_type: str,
+) -> AudioSegment:
+    """Create a section from loop audio with per-bar variation so output is not a static repeat."""
+    section_audio = AudioSegment.silent(duration=0)
+    loop_len = len(loop_audio)
+    quarter = max(1, loop_len // 4)
+
+    for bar_idx in range(max(1, section_bars)):
+        bar_source = loop_audio
+        # Rotate source position per bar/section to avoid identical loop restarts.
+        offset = ((section_idx * 3) + bar_idx) * quarter % loop_len
+        if offset > 0:
+            bar_source = loop_audio[offset:] + loop_audio[:offset]
+
+        bar_audio = _repeat_to_duration(bar_source, bar_duration_ms)
+
+        # Add light rhythmic contrast by section type.
+        if section_type in {"hook", "drop", "chorus"} and (bar_idx % 2 == 1):
+            accent = bar_audio.high_pass_filter(180) + 2
+            bar_audio = bar_audio.overlay(accent)
+        elif section_type in {"verse"} and (bar_idx % 4 == 3):
+            bar_audio = bar_audio - 2
+        elif section_type in {"breakdown", "bridge", "break"}:
+            half_bar = max(1, bar_duration_ms // 2)
+            bar_audio = bar_audio[:half_bar] + AudioSegment.silent(duration=half_bar)
+
+        section_audio += bar_audio
+
+    return section_audio
+
+
+def _render_producer_arrangement(
+    loop_audio: AudioSegment,
+    producer_arrangement: dict,
+    bpm: float,
+) -> tuple[AudioSegment, str]:
+    """
+    Render audio using ProducerArrangement structure for professional-quality arrangements.
+    
+    This applies DRAMATIC processing to create distinct sections:
+    - Intro: Low volume, filtered, fade in
+    - Buildup: Gradual volume increase, building energy
+    - Drop: FULL VOLUME, maximum impact
+    - Breakdown: Quiet, sparse, filtered breakdown
+    - Outro: Fade out, reduced energy
+    
+    Args:
+        loop_audio: Source loop audio
+        producer_arrangement: Parsed ProducerArrangement dict
+        bpm: Tempo in BPM
+    
+    Returns:
+        Tuple of (arranged_audio, timeline_json)
+    """
+    logger.info("Rendering with ProducerArrangement structure (professional mode)")
+    
+    sections = producer_arrangement.get("sections", [])
+    tracks = producer_arrangement.get("tracks", [])
+    transitions = producer_arrangement.get("transitions", [])
+    energy_curve = producer_arrangement.get("energy_curve", [])
+    total_bars = producer_arrangement.get("total_bars", 96)
+    
+    logger.info(
+        f"ProducerArrangement: {len(sections)} sections, {len(tracks)} tracks, "
+        f"{len(transitions)} transitions, {total_bars} total bars"
+    )
+    
+    bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
+    arranged = AudioSegment.silent(duration=0)
+    
+    timeline_events = []
+    timeline_sections = []
+    
+    for section_idx, section in enumerate(sections):
+        section_name = section.get("name", f"Section {section_idx + 1}")
+        section_type = (section.get("section_type") or section.get("type") or "verse").strip().lower()
+        bar_start = int(section.get("bar_start", 0) or 0)
+        section_bars = int(section.get("bars", 0) or 0)
+        if section_bars <= 0:
+            bar_end_value = section.get("bar_end")
+            if bar_end_value is not None:
+                section_bars = max(1, int(bar_end_value) - bar_start)
+            else:
+                section_bars = 8
+        bar_end = bar_start + section_bars
+        section_energy = float(section.get("energy_level", section.get("energy", 0.6)) or 0.6)
+        
+        section_ms = section_bars * bar_duration_ms
+        section_audio = _build_varied_section_audio(
+            loop_audio=loop_audio,
+            section_bars=section_bars,
+            bar_duration_ms=bar_duration_ms,
+            section_idx=section_idx,
+            section_type=section_type,
+        )[:section_ms]
+        
+        logger.info(
+            f"Processing section [{section_idx}] {section_name}: type={section_type} (raw={section.get('section_type') or section.get('type')}), bars={section_bars}, energy={section_energy}"
+        )
+        
+        # ====================================================================
+        # DRAMATIC SECTION-SPECIFIC PROCESSING
+        # ====================================================================
+        
+        if section_type == "intro":
+            # INTRO: Very quiet start, heavy filtering, fade in
+            logger.info(f"Processing INTRO section: {section_name}")
+            # Log audio level BEFORE processing
+            samples_before = section_audio.get_array_of_samples()
+            rms_before = int((sum(s*s for s in samples_before) / len(samples_before)) ** 0.5) if samples_before else 0
+            db_before = 20 * (rms_before / 32767) if rms_before > 0 else -999
+            
+            section_audio = section_audio - 12  # Much quieter (-12dB)
+            section_audio = section_audio.low_pass_filter(800)  # Heavy low-pass filter
+            section_audio = section_audio.fade_in(min(4000, section_ms // 2))  # Long fade in
+            
+            # Log audio level AFTER processing
+            samples_after = section_audio.get_array_of_samples()
+            rms_after = int((sum(s*s for s in samples_after) / len(samples_after)) ** 0.5) if samples_after else 0
+            db_after = 20 * (rms_after / 32767) if rms_after > 0 else -999
+            logger.info(f"  INTRO processing: BEFORE={db_before:+.1f}dB → AFTER={db_after:+.1f}dB (expected -12dB reduction)")
+            
+        elif section_type in {"buildup", "build_up", "build"}:
+            # BUILDUP: Gradual volume increase, building tension
+            logger.info(f"Processing BUILDUP section: {section_name}")
+            # Create dramatic buildup by gradually increasing volume
+            buildup_segments = []
+            num_segments = 4
+            segment_length = len(section_audio) // num_segments
+            
+            for i in range(num_segments):
+                start_pos = i * segment_length
+                end_pos = start_pos + segment_length if i < num_segments - 1 else len(section_audio)
+                segment = section_audio[start_pos:end_pos]
+                
+                # Progressive volume boost
+                boost = -8 + (i * 4)  # Goes from -8dB to +4dB
+                segment = segment + boost
+                
+                # Apply high-pass filter that opens up as build progresses
+                cutoff_freq = 200 + (i * 150)  # 200Hz -> 650Hz
+                segment = segment.high_pass_filter(cutoff_freq)
+                
+                buildup_segments.append(segment)
+            
+            section_audio = sum(buildup_segments)
+            
+        elif section_type in {"drop", "hook", "chorus"}:
+            # DROP: MAXIMUM IMPACT - full volume, no filtering, hard hit
+            logger.info(f"Processing DROP section: {section_name}")
+            
+            # Add silence before drop for impact (if it's the first part)
+            if bar_start > 0:
+                silence_gap = min(500, bar_duration_ms // 4)  # Short silence gap
+                arranged = arranged[:-silence_gap]  # Cut off end of previous section
+                arranged += AudioSegment.silent(duration=silence_gap)
+            
+            section_audio = section_audio + 6  # LOUD (+6dB)
+            # No filtering - full frequency range for maximum impact
+            
+        elif section_type in {"breakdown", "bridge", "break"}:
+            # BREAKDOWN: Very quiet, sparse, ambient
+            logger.info(f"Processing BREAKDOWN section: {section_name}")
+            section_audio = section_audio - 10  # Much quieter (-10dB)
+            section_audio = section_audio.low_pass_filter(1200)  # Filter out highs
+            section_audio = section_audio.high_pass_filter(100)  # Filter out some lows
+            
+            # Make it sparse by adding gaps
+            if len(section_audio) > 4000:
+                # Split into chunks with gaps
+                chunk_size = len(section_audio) // 4
+                sparse_audio = AudioSegment.silent(duration=0)
+                for i in range(4):
+                    chunk_start = i * chunk_size
+                    chunk_end = chunk_start + (chunk_size // 2)  # Only use half
+                    sparse_audio += section_audio[chunk_start:chunk_end]
+                    if i < 3:  # Add gap between chunks
+                        sparse_audio += AudioSegment.silent(duration=chunk_size // 2)
+                section_audio = sparse_audio
+                
+        elif section_type == "outro":
+            # OUTRO: Fade out, reduced energy
+            logger.info(f"Processing OUTRO section: {section_name}")
+            section_audio = section_audio - 6  # Quieter (-6dB)
+            section_audio = section_audio.fade_out(min(4000, section_ms // 2))  # Long fade out
+            
+        else:
+            # VERSE/HOOK/OTHER: Apply energy-based volume
+            energy_db = -6 + (section_energy * 10)  # Range: -6dB (low) to +4dB (high)
+            logger.info(f"Processing {section_type.upper()} section: {section_name} (energy={section_energy:.2f}, volume={energy_db:+.1f}dB)")
+            section_audio = section_audio + energy_db
+        
+        # ====================================================================
+        # APPLY VARIATIONS (FILLS, ROLLS, DROPS)
+        # ====================================================================
+        
+        variations = section.get("variations", [])
+        if not variations and isinstance(producer_arrangement.get("all_variations"), list):
+            for variation in producer_arrangement.get("all_variations", []):
+                target_section = variation.get("section", variation.get("section_index"))
+                if isinstance(target_section, str) and target_section.isdigit():
+                    target_section = int(target_section)
+                if target_section in {section_idx, section_name, section_type}:
+                    variations.append(variation)
+        for variation in variations:
+            var_bar_start = int(
+                variation.get("bar_start", variation.get("start_bar", variation.get("bar", bar_start)))
+                or bar_start
+            )
+            var_length = variation.get("bars") or variation.get("duration_bars") or variation.get("length_bars")
+            if var_length is not None:
+                var_bar_end = var_bar_start + int(var_length)
+            else:
+                var_bar_end = int(variation.get("bar_end", var_bar_start + 1) or (var_bar_start + 1))
+            var_type = (variation.get("variation_type") or variation.get("type") or "none").strip().lower()
+            var_intensity = variation.get("intensity", 0.5)
+            
+            # Calculate timing
+            var_start_ms = (var_bar_start - bar_start) * bar_duration_ms
+            var_end_ms = (var_bar_end - bar_start) * bar_duration_ms
+            
+            # Apply variation effects
+            if var_end_ms > var_start_ms and var_start_ms >= 0 and var_end_ms <= len(section_audio):
+                variation_segment = section_audio[var_start_ms:var_end_ms]
+                
+                if var_type in {"hats_roll", "fill", "hi_hat_stutter"}:
+                    # Hat rolls and fills: volume boost
+                    variation_segment = variation_segment + 8
+                elif var_type in {"snare_fill", "drum_fill", "kick_fill"}:
+                    # Snare fills: heavy boost
+                    variation_segment = variation_segment + 10
+                elif var_type in {"bass_drop", "drop", "bass_glide"}:
+                    # Drops: add silence then huge impact
+                    drop_gap = min(200, len(variation_segment) // 4)
+                    variation_segment = AudioSegment.silent(duration=drop_gap) + variation_segment[drop_gap:] + 12
+                elif var_type == "reverse":
+                    # Reverse effect
+                    variation_segment = variation_segment.reverse()
+                
+                # Splice back in
+                section_audio = section_audio[:var_start_ms] + variation_segment + section_audio[var_end_ms:]
+        
+        # ====================================================================
+        # APPLY TRANSITIONS BETWEEN SECTIONS
+        # ====================================================================
+        
+        transition_info = next(
+            (
+                t for t in transitions
+                if t.get("bar_position") == bar_end
+                or t.get("from_section") == section_idx
+                or t.get("from_bar") == bar_end
+            ),
+            None,
+        )
+        if transition_info:
+            trans_type = (transition_info.get("transition_type") or transition_info.get("type") or "none").strip().lower()
+            trans_duration_bars = int(transition_info.get("duration_bars", transition_info.get("bars", 0)) or 0)
+            trans_duration_ms = trans_duration_bars * bar_duration_ms
+            
+            if trans_duration_ms > 0 and trans_duration_ms <= len(section_audio):
+                if trans_type in {"sweep", "filter_sweep", "crossfade"}:
+                    # Filter sweep: fade out highs
+                    sweep_start = max(0, len(section_audio) - trans_duration_ms)
+                    pre_sweep = section_audio[:sweep_start]
+                    sweep_part = section_audio[sweep_start:]
+                    sweep_part = sweep_part.low_pass_filter(500).fade_out(len(sweep_part))
+                    section_audio = pre_sweep + sweep_part
+                    
+                elif trans_type in {"riser", "build", "drum_fill"}:
+                    # Riser: dramatic volume increase
+                    riser_start = max(0, len(section_audio) - trans_duration_ms)
+                    pre_riser = section_audio[:riser_start]
+                    riser_part = section_audio[riser_start:]
+                    # Create riser effect with volume automation
+                    riser_part = riser_part + 12  # Huge volume boost
+                    riser_part = riser_part.high_pass_filter(300)  # Filter lows
+                    section_audio = pre_riser + riser_part
+                    
+                elif trans_type == "impact" or trans_type == "hit":
+                    # Impact: silence then hit
+                    impact_gap = min(500, trans_duration_ms)
+                    section_audio = section_audio[:-impact_gap] + AudioSegment.silent(duration=impact_gap)
+        
+        arranged += section_audio
+        
+        # Track section for timeline
+        start_seconds = (bar_start * 4 * 60.0) / bpm
+        end_seconds = (bar_end * 4 * 60.0) / bpm
+        
+        timeline_sections.append({
+            "name": section_name,
+            "type": section_type,
+            "bars": section_bars,
+            "energy": section_energy,
+            "start_bar": bar_start,
+            "end_bar": bar_end,
+            "start_seconds": round(start_seconds, 3),
+            "end_seconds": round(end_seconds, 3),
+        })
+        
+        timeline_events.append({
+            "type": "section_start",
+            "section_name": section_name,
+            "section_type": section_type,
+            "bar": bar_start,
+            "time_seconds": round(start_seconds, 3),
+            "energy": section_energy,
+        })
+    
+    # Build timeline JSON
+    timeline_json = json.dumps({
+        "bpm": bpm,
+        "render_profile": {
+            "genre_profile": producer_arrangement.get("genre", "generic"),
+            "producer_arrangement_used": True,
+            "tracks_count": len(tracks),
+            "transitions_count": len(transitions),
+        },
+        "sections": timeline_sections,
+        "events": timeline_events,
+        "metadata": {
+            "total_bars": total_bars,
+            "key": producer_arrangement.get("key", "C"),
+            "drum_style": producer_arrangement.get("drum_style", "acoustic"),
+            "melody_style": producer_arrangement.get("melody_style", "melodic"),
+            "bass_style": producer_arrangement.get("bass_style", "synth"),
+        },
+    })
+    
+    logger.info(
+        f"ProducerArrangement rendered: {len(arranged)}ms, {len(timeline_sections)} sections, "
+        f"{len(timeline_events)} events"
+    )
+    
+    return arranged, timeline_json
+
+
 def _extract_correlation_id(arrangement_json: str | None) -> str | None:
     """Extract correlation id from arrangement JSON payload if present."""
     if not arrangement_json:
@@ -153,49 +529,92 @@ def _build_render_plan_artifact(
     }
 
 
+def _decode_with_ffmpeg_cli(audio_bytes: bytes, input_format: str | None = None) -> AudioSegment:
+    """Decode arbitrary audio bytes to WAV using ffmpeg CLI (no ffprobe dependency)."""
+    converter = getattr(AudioSegment, "converter", None) or shutil.which("ffmpeg") or "ffmpeg"
+
+    cmd = [converter, "-hide_banner", "-loglevel", "error"]
+    if input_format:
+        cmd.extend(["-f", input_format])
+    cmd.extend(["-i", "pipe:0", "-f", "wav", "pipe:1"])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            input=audio_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except Exception as e:
+        raise ValueError(f"ffmpeg process launch failed: {e}") from e
+
+    if result.returncode != 0 or not result.stdout:
+        stderr = (result.stderr or b"").decode("utf-8", errors="ignore")[:200]
+        raise ValueError(f"ffmpeg decode failed (code={result.returncode}): {stderr or 'no stderr'}")
+
+    try:
+        return AudioSegment.from_wav(io.BytesIO(result.stdout))
+    except Exception as e:
+        raise ValueError(f"ffmpeg produced invalid WAV output: {e}") from e
+
+
 def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
     """Load WAV/audio bytes with multiple fallback strategies."""
     if not wav_bytes or len(wav_bytes) < 44:
         raise ValueError(f"Audio file too small: {len(wav_bytes)} bytes")
-    
-    # Strategy 1: Try pydub with automatic format detection (works for most files)
+
+    errors = {}
+
     try:
         logger.info("Attempting audio load with format auto-detection...")
-        # Don't specify format - let pydub auto-detect
         return AudioSegment.from_file(io.BytesIO(wav_bytes))
-    except Exception as e1:
-        logger.warning("Auto-detection failed: %s. Trying explicit WAV format...", str(e1)[:100])
-    
-    # Strategy 2: Try explicit WAV format with codec handling
+    except Exception as e:
+        errors['auto_detect'] = str(e)[:100]
+        logger.warning("Auto-detection failed: %s. Trying explicit WAV format...", errors['auto_detect'])
+
     try:
         logger.info("Attempting audio load with explicit WAV format...")
-        # Try with explicit WAV format specification
         return AudioSegment.from_file(io.BytesIO(wav_bytes), format="wav")
-    except Exception as e2:
-        logger.warning("Explicit WAV format failed: %s. Trying MP3 format...", str(e2)[:100])
-    
-    # Strategy 3: Try MP3 format (sometimes files are mislabeled)
+    except Exception as e:
+        errors['wav'] = str(e)[:100]
+        logger.warning("Explicit WAV format failed: %s. Trying MP3 format...", errors['wav'])
+
     try:
         logger.info("Attempting audio load with MP3 format...")
         return AudioSegment.from_file(io.BytesIO(wav_bytes), format="mp3")
-    except Exception as e3:
-        logger.warning("MP3 format failed: %s", str(e3)[:100])
-    
-    # Strategy 4: Try OGG format
+    except Exception as e:
+        errors['mp3'] = str(e)[:100]
+        logger.warning("MP3 format failed: %s", errors['mp3'])
+
     try:
         logger.info("Attempting audio load with OGG format...")
         return AudioSegment.from_file(io.BytesIO(wav_bytes), format="ogg")
-    except Exception as e4:
-        logger.warning("OGG format failed: %s", str(e4)[:100])
-    
-    # All strategies failed - provide detailed error
-    error_details = f"Auto-detect: {str(e1)[:80]} | WAV: {str(e2)[:80]} | MP3: {str(e3)[:80]} | OGG: {str(e4)[:80]}"
+    except Exception as e:
+        errors['ogg'] = str(e)[:100]
+        logger.warning("OGG format failed: %s", errors['ogg'])
+
+    try:
+        logger.info("Attempting ffmpeg CLI fallback decode...")
+        sig = wav_bytes[:4]
+        inferred_format = "mp3" if sig[:3] == b"ID3" else None
+        return _decode_with_ffmpeg_cli(wav_bytes, input_format=inferred_format)
+    except Exception as e:
+        errors['ffmpeg_cli'] = str(e)[:160]
+        logger.warning("ffmpeg CLI fallback failed: %s", errors['ffmpeg_cli'])
+
+    error_details = (
+        f"Auto-detect: {errors.get('auto_detect', 'N/A')} | "
+        f"WAV: {errors.get('wav', 'N/A')} | "
+        f"MP3: {errors.get('mp3', 'N/A')} | "
+        f"OGG: {errors.get('ogg', 'N/A')} | "
+        f"FFMPEG_CLI: {errors.get('ffmpeg_cli', 'N/A')}"
+    )
     logger.error("Audio decoding failed after all strategies. Details: %s", error_details)
-    
-    # Log file signature for debugging
+
     sig = wav_bytes[:4].hex() if len(wav_bytes) >= 4 else "???"
     logger.error("Audio file signature (first 4 bytes): %s", sig)
-    
+
     raise ValueError(f"Cannot decode audio file in any supported format. File signature: {sig}. Errors: {error_details}")
 
 
@@ -275,7 +694,7 @@ def run_arrangement_job(arrangement_id: int):
         else:
             # Local fallback for development
             filename = loop.file_key.split("/")[-1]
-            local_path = Path.cwd() / "uploads" / filename
+            local_path = storage.upload_dir / filename
             if not local_path.exists():
                 raise FileNotFoundError(f"Loop file not found: {local_path}")
             with open(local_path, "rb") as local_audio_file:
@@ -335,15 +754,36 @@ def run_arrangement_job(arrangement_id: int):
             if seed is not None:
                 logger.info("Using seed %s for pattern generation in arrangement %s", seed, arrangement_id)
 
+        # V3: Check for ProducerArrangement (most advanced)
+        producer_arrangement = None
+        if arrangement.producer_arrangement_json:
+            producer_arrangement = _parse_producer_arrangement(arrangement.producer_arrangement_json)
+            if producer_arrangement:
+                logger.info(
+                    "Using ProducerArrangement for arrangement %s (sections: %d, tracks: %d)",
+                    arrangement_id,
+                    len(producer_arrangement.get("sections", [])),
+                    len(producer_arrangement.get("tracks", [])),
+                )
+
         try:
-            arranged_audio, timeline_json = render_phase_b_arrangement(
-                loop_audio=loop_audio,
-                bpm=bpm,
-                target_seconds=target_seconds,
-                sections_override=style_sections,
-                seed=seed,
-                style_params=style_params,
-            )
+            # Use ProducerArrangement renderer if available (most advanced)
+            if producer_arrangement:
+                arranged_audio, timeline_json = _render_producer_arrangement(
+                    loop_audio=loop_audio,
+                    producer_arrangement=producer_arrangement,
+                    bpm=bpm,
+                )
+            else:
+                # Fallback to basic renderer
+                arranged_audio, timeline_json = render_phase_b_arrangement(
+                    loop_audio=loop_audio,
+                    bpm=bpm,
+                    target_seconds=target_seconds,
+                    sections_override=style_sections,
+                    seed=seed,
+                    style_params=style_params,
+                )
         except Exception as render_error:
             if settings.dev_fallback_loop_only and not settings.is_production:
                 logger.warning(
@@ -457,6 +897,7 @@ def run_arrangement_job(arrangement_id: int):
         arrangement.output_s3_key = output_key
         arrangement.output_url = output_url
         arrangement.arrangement_json = timeline_json
+        arrangement.render_plan_json = json.dumps(render_plan)
         arrangement.error_message = None
         db.commit()
 

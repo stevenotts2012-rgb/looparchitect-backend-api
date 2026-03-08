@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ArrangementSection(BaseModel):
@@ -172,11 +172,17 @@ class AudioArrangementGenerateRequest(BaseModel):
     """Request to generate an audio arrangement from a loop."""
 
     loop_id: int = Field(..., ge=1, description="ID of the source loop")
-    target_seconds: int = Field(
-        ...,
+    target_seconds: Optional[int] = Field(
+        default=None,
         ge=10,
         le=3600,
-        description="Target duration in seconds (10s to 60 minutes)",
+        description="Target duration in seconds (10s to 60 minutes). Optional when bars is provided.",
+    )
+    bars: Optional[int] = Field(
+        default=None,
+        ge=4,
+        le=4096,
+        description="Optional bar count. When provided, server derives target_seconds from loop BPM",
     )
     genre: Optional[str] = Field(
         default=None,
@@ -217,6 +223,13 @@ class AudioArrangementGenerateRequest(BaseModel):
         le=3,
         description="Optional number of variations to queue (feature-flagged)",
     )
+    
+    @model_validator(mode='after')
+    def validate_duration_params(self):
+        """Ensure at least one of target_seconds or bars is provided."""
+        if self.target_seconds is None and self.bars is None:
+            raise ValueError("Either target_seconds or bars must be provided")
+        return self
 
 
 class StructurePreviewItem(BaseModel):

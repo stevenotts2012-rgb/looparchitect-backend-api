@@ -1,6 +1,7 @@
 import logging
 import shutil
 from typing import Optional
+from pathlib import Path
 
 from pydub import AudioSegment
 
@@ -22,6 +23,25 @@ def configure_audio_binaries(
     """
     ffmpeg_path = ffmpeg_binary or shutil.which("ffmpeg")
     ffprobe_path = ffprobe_binary or shutil.which("ffprobe")
+
+    # Fallback to bundled binary from imageio-ffmpeg when system binaries are unavailable
+    if not ffmpeg_path or not ffprobe_path:
+        try:
+            import imageio_ffmpeg
+
+            bundled_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            if bundled_ffmpeg:
+                ffmpeg_path = ffmpeg_path or bundled_ffmpeg
+                ffprobe_candidate = str(Path(bundled_ffmpeg).with_name("ffprobe.exe"))
+                if not ffprobe_path and Path(ffprobe_candidate).exists():
+                    ffprobe_path = ffprobe_candidate
+                logger.info(
+                    "Using bundled ffmpeg from imageio-ffmpeg: ffmpeg=%s, ffprobe=%s",
+                    ffmpeg_path,
+                    ffprobe_path or "(not found)",
+                )
+        except Exception as exc:
+            logger.debug("imageio-ffmpeg fallback not available: %s", exc)
 
     if ffmpeg_path:
         AudioSegment.converter = ffmpeg_path

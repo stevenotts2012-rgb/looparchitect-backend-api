@@ -15,6 +15,7 @@ ROUTE_CONFIG = {
     "db_health": {"prefix": "/api/v1", "tags": ["database"]},
     "api": {"prefix": "/api/v1", "tags": ["api"]},
     "loops": {"prefix": "/api/v1", "tags": ["loops"]},
+    "loop_analysis": {"prefix": "/api/v1", "tags": ["loop_analysis"]},
     "audio": {"prefix": "/api/v1", "tags": ["audio"]},
     "render": {"prefix": "/api/v1", "tags": ["render"]},
     "render_jobs": {"prefix": "/api/v1", "tags": ["jobs"]},

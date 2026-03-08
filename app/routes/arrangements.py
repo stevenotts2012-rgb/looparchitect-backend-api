@@ -35,6 +35,7 @@ from app.services.style_service import style_service
 from app.services.llm_style_parser import llm_style_parser
 from app.services.rule_based_fallback import parse_with_rules
 from app.services.producer_engine import ProducerEngine
+from app.services.loop_metadata_analyzer import LoopMetadataAnalyzer
 from app.services.style_direction_engine import StyleDirectionEngine
 from app.services.render_plan import RenderPlanGenerator
 from app.services.arrangement_validator import ArrangementValidator
@@ -272,6 +273,17 @@ async def generate_arrangement(
                 ),
             )
 
+    bpm_for_duration = float(loop.bpm or loop.tempo or 120.0)
+    effective_target_seconds = request.target_seconds
+    if request.bars is not None:
+        effective_target_seconds = max(10, int(round((request.bars * 4 * 60.0) / bpm_for_duration)))
+        logger.info(
+            "Using bars override for arrangement generation: bars=%s bpm=%.2f target_seconds=%s",
+            request.bars,
+            bpm_for_duration,
+            effective_target_seconds,
+        )
+
         local_filename = loop.file_key.split("/")[-1]
         local_path = Path("uploads") / local_filename
         if not local_path.exists():
@@ -299,7 +311,7 @@ async def generate_arrangement(
             loop_metadata = {
                 "bpm": float(loop.bpm or loop.tempo or 120.0),
                 "key": loop.key or "C",
-                "duration": request.target_seconds,
+                "duration": effective_target_seconds,
                 "bars": int(loop.bars or 4),
             }
             
@@ -341,7 +353,7 @@ async def generate_arrangement(
                     
                     # Call ProducerEngine with style profile
                     producer_arrangement = ProducerEngine.generate(
-                        target_seconds=request.target_seconds,
+                        target_seconds=effective_target_seconds,
                         tempo=float(loop.bpm or loop.tempo or 120.0),
                         genre=genre_for_producer,
                         style_profile=style_profile,
@@ -376,7 +388,7 @@ async def generate_arrangement(
             loop_bars = int(loop.bars or 4)
             style_preview = style_service.preview_structure(
                 style_preset=request.style_preset,
-                target_seconds=request.target_seconds,
+                target_seconds=effective_target_seconds,
                 bpm=bpm_for_plan,
                 loop_bars=loop_bars,
                 seed=request.seed,
@@ -393,13 +405,111 @@ async def generate_arrangement(
         except Exception as style_error:
             logger.warning("Style preview generation skipped: %s", style_error)
 
+    # METADATA ANALYZER INTEGRATION: Auto-detect genre/mood if not already determined
+    # This runs when ProducerEngine is enabled but no genre/style was parsed from AI or preset
+    if settings.feature_producer_engine and not ai_parsing_used and not request.genre:
+        try:
+            logger.info("Auto-detecting genre/mood from loop metadata for ProducerEngine")
+            
+            # Extract tags from loop if available
+            tags = []
+            if hasattr(loop, 'tags') and loop.tags:
+                if isinstance(loop.tags, str):
+                    tags = [t.strip() for t in loop.tags.split(',')]
+                elif isinstance(loop.tags, list):
+                    tags = loop.tags
+            
+            # Analyze loop metadata
+            metadata_analysis = LoopMetadataAnalyzer.analyze(
+                bpm=loop.bpm or loop.tempo,
+                tags=tags,
+                filename=loop.filename,
+                mood_keywords=[],
+                genre_hint=request.genre,
+                bars=loop.bars,
+                musical_key=loop.musical_key,
+            )
+            
+            detected_genre = metadata_analysis["detected_genre"]
+            detected_mood = metadata_analysis["detected_mood"]
+            energy_level = metadata_analysis["energy_level"]
+            confidence = metadata_analysis["confidence"]
+            
+            logger.info(
+                f"Metadata analysis complete: genre={detected_genre}, mood={detected_mood}, "
+                f"energy={energy_level:.2f}, confidence={confidence:.2f}"
+            )
+            
+            # Generate ProducerArrangement using detected genre/mood
+            if confidence >= 0.4:  # Minimum confidence threshold
+                try:
+                    logger.info(f"Generating ProducerArrangement with detected genre: {detected_genre}")
+                    
+                    # Build style profile from metadata analysis
+                    from app.schemas.style_profile import StyleProfile, StyleIntent, StyleParameters
+                    
+                    auto_style_profile = StyleProfile(
+                        intent=StyleIntent(
+                            raw=f"Auto-detected {detected_genre} with {detected_mood} mood",
+                            archetype=detected_genre,
+                            energy=energy_level,
+                            mood=detected_mood,
+                            confidence=confidence,
+                        ),
+                        parameters=StyleParameters(
+                            aggression=energy_level,
+                            darkness=0.7 if detected_mood == "dark" else 0.3,
+                            bounce=energy_level,
+                            melody_complexity=0.6 if "melodic" in detected_genre else 0.4,
+                            fx_density=0.5,
+                        ),
+                        resolved_preset=detected_genre,
+                        sections=[],  # Will be generated by ProducerEngine
+                        seed=None,
+                    )
+                    
+                    # Generate producer arrangement
+                    producer_arrangement = ProducerEngine.generate(
+                        target_seconds=effective_target_seconds,
+                        tempo=float(loop.bpm or loop.tempo or 120.0),
+                        genre=detected_genre,
+                        style_profile=auto_style_profile,
+                        structure_template=metadata_analysis["recommended_template"],
+                    )
+                    
+                    # Serialize producer arrangement
+                    from dataclasses import asdict
+                    producer_arrangement_json = json.dumps({
+                        "version": "2.0",
+                        "producer_arrangement": asdict(producer_arrangement),
+                        "metadata_analysis": metadata_analysis,
+                        "auto_detected": True,
+                        "correlation_id": correlation_id,
+                    }, default=str)
+                    
+                    # Also store style profile for tracking
+                    style_profile_json = auto_style_profile.model_dump_json()
+                    ai_parsing_used = False  # Mark as metadata-based, not AI-based
+                    
+                    logger.info(
+                        f"ProducerArrangement auto-generated from metadata with {len(producer_arrangement.sections)} sections"
+                    )
+                except Exception as producer_error:
+                    logger.warning(f"ProducerEngine generation from metadata failed: {producer_error}", exc_info=True)
+            else:
+                logger.warning(f"Metadata analysis confidence too low ({confidence:.2f}), skipping auto-generation")
+                
+        except Exception as metadata_error:
+            logger.warning(f"Metadata analysis failed: {metadata_error}", exc_info=True)
+            # Continue without metadata-based generation
+
     # Create arrangement record
     _ensure_arrangements_schema(db)
     logger.info(f"DEBUG-SAVE: Creating arrangement with: ai_parsing_used={ai_parsing_used}, has_producer_json={producer_arrangement_json is not None}, json_len={len(producer_arrangement_json) if producer_arrangement_json else 0}")
     arrangement = Arrangement(
         loop_id=request.loop_id,
         status="queued",
-        target_seconds=request.target_seconds,
+        target_seconds=effective_target_seconds,
         genre=request.genre,
         intensity=request.intensity,
         include_stems=request.include_stems,
