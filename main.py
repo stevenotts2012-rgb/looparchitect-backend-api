@@ -209,3 +209,13 @@ app.include_router(render.router, prefix="/api/v1", tags=["render"])
 app.include_router(arrange.router, prefix="/api/v1", tags=["arrange"])
 app.include_router(arrangements.router, prefix="/api/v1/arrangements", tags=["arrangements"])
 app.include_router(styles.router, prefix="/api/v1", tags=["styles"])
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=settings.debug,
+        log_level="info",
+    )

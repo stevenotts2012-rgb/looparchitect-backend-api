@@ -24,6 +24,11 @@ from app.config import settings
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
 from app.services.audit_logging import log_feature_event
+from app.services.loop_variation_engine import (
+    assign_section_variants,
+    generate_loop_variations,
+    validate_variation_plan_usage,
+)
 from app.services.producer_moves_engine import ProducerMovesEngine
 from app.services.render_executor import render_from_plan
 from app.services.storage import storage
@@ -150,6 +155,68 @@ def _parse_stem_metadata_from_loop(loop: Loop) -> dict | None:
     if not isinstance(stem_meta, dict):
         return None
     return stem_meta
+
+
+def _validate_render_plan_quality(render_plan: dict) -> None:
+    """
+    Validate render plan meets minimum quality standards before rendering.
+    
+    Ensures plan is not just "repeated loop with volume changes" syndrome.
+    Checks:
+    - At least 3 sections
+    - At least 10 meaningful events
+    - Section type variety (intro/verse/hook/outro)
+    
+    Args:
+        render_plan: The render plan dict
+    
+    Raises:
+        ValueError: If plan fails critical quality checks
+    """
+    sections = render_plan.get("sections", [])
+    events = render_plan.get("events", [])
+    
+    # Check 1: At least 3 sections
+    if len(sections) < 3:
+        raise ValueError(
+            f"render_plan has only {len(sections)} sections - need at least 3 for real arrangement"
+        )
+    
+    # Check 2: At least 10 meaningful events to avoid "repeated loop" syndrome
+    meaningful_event_types = {
+        "variation", "beat_switch", "halftime_drop", "stop_time", "drum_fill", "fill",
+        "pre_hook_drum_mute", "silence_drop_before_hook", "hat_density_variation",
+        "end_section_fill", "verse_melody_reduction", "bridge_bass_removal",
+        "final_hook_expansion", "outro_strip_down", "call_response_variation",
+    }
+    
+    meaningful_events = [
+        e for e in events
+        if e.get("type") in meaningful_event_types
+    ]
+    
+    if len(meaningful_events) < 10:
+        logger.warning(
+            f"⚠️ Only {len(meaningful_events)} meaningful events in render plan - "
+            f"may sound repetitive (need at least 10)"
+        )
+    
+    # Check 3: Section type variety
+    section_types = [s.get("type", "unknown") for s in sections]
+    unique_types = set(section_types)
+    
+    if len(unique_types) < 2:
+        raise ValueError(
+            f"render_plan has only {len(unique_types)} unique section types - "
+            f"need at least intro/verse/hook/outro"
+        )
+    
+    logger.info(
+        f"✅ Render plan quality validation passed: {len(sections)} sections, "
+        f"{len(meaningful_events)} events, {len(unique_types)} section types"
+    )
+
+    validate_variation_plan_usage(render_plan)
 
 
 def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
@@ -321,10 +388,64 @@ def _apply_producer_move_effect(
     return segment
 
 
+def _build_section_audio_from_stems(
+    stems: dict[str, AudioSegment],
+    section_bars: int,
+    bar_duration_ms: int,
+    section_idx: int,
+) -> AudioSegment:
+    """
+    Build section audio by repeating and mixing enabled stems.
+    
+    This creates REAL layer-based arrangement by:
+    - Only mixing the stems that should be active in this section
+    - Other stems are completely absent (not just filtered)
+    - Creates actual producer-style layer control
+    
+    Args:
+        stems: Dict of stem name to AudioSegment (only enabled stems)
+        section_bars: Number of bars in section
+        bar_duration_ms: Duration of one bar in milliseconds
+        section_idx: Section index (for variation)
+    
+    Returns:
+        Mixed audio for this section with only specified stems
+    """
+    if not stems:
+        # Shouldn't happen, but fallback to silence
+        return AudioSegment.silent(duration=section_bars * bar_duration_ms)
+    
+    target_ms = section_bars * bar_duration_ms
+    
+    # Mix all enabled stems with per-bar offset variation
+    mixed = AudioSegment.silent(duration=target_ms)
+    
+    for stem_name, stem_audio in stems.items():
+        # Repeat stem to fill section duration
+        stem_repeated = _repeat_to_duration(stem_audio, target_ms)
+        
+        # Apply per-bar offset for variation (same as stereo mode)
+        stem_len = len(stem_audio)
+        if stem_len > 0:
+            quarter = max(1, stem_len // 4)
+            offset = (section_idx * 3) * quarter % stem_len
+            if offset > 0:
+                stem_repeated = stem_repeated[offset:] + stem_repeated[:offset]
+                stem_repeated = stem_repeated[:target_ms]
+        
+        # Mix this stem in
+        mixed = mixed.overlay(stem_repeated)
+        logger.debug(f"    Mixed stem '{stem_name}' into section (duration: {len(stem_repeated)}ms)")
+    
+    return mixed
+
+
 def _render_producer_arrangement(
     loop_audio: AudioSegment,
     producer_arrangement: dict,
     bpm: float,
+    stems: dict[str, AudioSegment] | None = None,
+    loop_variations: dict[str, AudioSegment] | None = None,
 ) -> tuple[AudioSegment, str]:
     """
     Render audio using ProducerArrangement structure for professional-quality arrangements.
@@ -336,15 +457,33 @@ def _render_producer_arrangement(
     - Breakdown: Quiet, sparse, filtered breakdown
     - Outro: Fade out, reduced energy
     
+    When stems are available, uses real layer muting/enabling per section.
+    When stems unavailable, falls back to DSP processing on full stereo loop.
+    
     Args:
-        loop_audio: Source loop audio
+        loop_audio: Source loop audio (full stereo mix)
         producer_arrangement: Parsed ProducerArrangement dict
         bpm: Tempo in BPM
+        stems: Optional dict of {"drums": AudioSegment, "bass": AudioSegment, ...}
     
     Returns:
         Tuple of (arranged_audio, timeline_json)
     """
-    logger.info("Rendering with ProducerArrangement structure (professional mode)")
+    use_stems = bool(stems and len(stems) > 0)
+    use_loop_variations = bool(loop_variations and len(loop_variations) > 0)
+    logger.info(
+        f"Rendering with ProducerArrangement structure "
+        f"(loop_variations={'ENABLED' if use_loop_variations else 'DISABLED'}, "
+        f"stems={'ENABLED' if use_stems else 'DISABLED - using stereo fallback'})"
+    )
+    
+    if use_stems:
+        logger.info(f"Available stems: {list(stems.keys())}")
+        # Normalize stems to same duration
+        from app.services.stem_loader import normalize_stem_durations, validate_stem_sync
+        if not validate_stem_sync(stems, tolerance_ms=200):
+            logger.warning("Stem sync validation failed, normalizing durations")
+        stems = normalize_stem_durations(stems)
     
     sections = producer_arrangement.get("sections", [])
     tracks = producer_arrangement.get("tracks", [])
@@ -378,13 +517,88 @@ def _render_producer_arrangement(
         section_energy = float(section.get("energy_level", section.get("energy", 0.6)) or 0.6)
         
         section_ms = section_bars * bar_duration_ms
-        section_audio = _build_varied_section_audio(
-            loop_audio=loop_audio,
-            section_bars=section_bars,
-            bar_duration_ms=bar_duration_ms,
-            section_idx=section_idx,
-            section_type=section_type,
-        )[:section_ms]
+        
+        # ==================================================================== 
+        # BUILD SECTION AUDIO - USE STEMS IF AVAILABLE
+        # ====================================================================
+        
+        section_loop_variant = str(section.get("loop_variant") or "").strip().lower()
+
+        if use_loop_variations and section_loop_variant in (loop_variations or {}):
+            variation_source = (loop_variations or {})[section_loop_variant]
+            section_audio = _repeat_to_duration(variation_source, section_ms)
+            
+            # Apply per-instance randomization to prevent repetitive sound
+            # Each time the same variant is used, apply subtle DSP variations
+            import hashlib
+            instance_seed = int(hashlib.md5(f"{section_name}_{section_idx}_{bar_start}".encode()).hexdigest()[:8], 16)
+            variation_intensity = (instance_seed % 100) / 100.0  # 0.0-1.0
+            
+            # Subtle EQ variation (±2dB on different frequency bands)
+            eq_shift = -2 + (variation_intensity * 4)  # -2dB to +2dB
+            if instance_seed % 3 == 0:
+                section_audio = section_audio.low_pass_filter(8000) + eq_shift
+            elif instance_seed % 3 == 1:
+                section_audio = section_audio.high_pass_filter(120) + eq_shift
+            else:
+                section_audio = section_audio + eq_shift
+            
+            # Apply subtle stereo width variation for non-intro sections
+            if section_type not in {"intro", "outro"}:
+                if instance_seed % 4 == 0:
+                    # Slightly wider
+                    left = section_audio.split_to_mono()[0] + 1
+                    right = section_audio.split_to_mono()[1] + 1
+                    section_audio = AudioSegment.from_mono_audiosegments(left, right)
+                elif instance_seed % 4 == 2:
+                    # Slightly narrower (more mono)
+                    section_audio = section_audio - 1
+            
+            logger.info(
+                "  Section '%s' using loop variant '%s' with instance variation (seed=%d, intensity=%.2f)",
+                section_name,
+                section_loop_variant,
+                instance_seed,
+                variation_intensity,
+            )
+
+        elif use_stems:
+            # STEM MODE: Mix only the stems specified in section instruments list
+            from app.services.stem_loader import map_instruments_to_stems
+            
+            section_instruments = section.get("instruments", [])
+            enabled_stems = map_instruments_to_stems(section_instruments, stems)
+            
+            if not enabled_stems:
+                # No stems match instruments - use all available stems
+                logger.warning(
+                    f"No stems matched instruments {section_instruments}, "
+                    f"using all {list(stems.keys())}"
+                )
+                enabled_stems = stems
+            
+            logger.info(
+                f"  Section '{section_name}' using stems: {list(enabled_stems.keys())} "
+                f"(requested instruments: {section_instruments})"
+            )
+            
+            # Build section by repeating and mixing enabled stems
+            section_audio = _build_section_audio_from_stems(
+                stems=enabled_stems,
+                section_bars=section_bars,
+                bar_duration_ms=bar_duration_ms,
+                section_idx=section_idx,
+            )[:section_ms]
+        
+        else:
+            # STEREO FALLBACK MODE: Use full loop with DSP variation
+            section_audio = _build_varied_section_audio(
+                loop_audio=loop_audio,
+                section_bars=section_bars,
+                bar_duration_ms=bar_duration_ms,
+                section_idx=section_idx,
+                section_type=section_type,
+            )[:section_ms]
         
         logger.info(
             f"Processing section [{section_idx}] {section_name}: type={section_type} (raw={section.get('section_type') or section.get('type')}), bars={section_bars}, energy={section_energy}"
@@ -613,6 +827,7 @@ def _render_producer_arrangement(
         timeline_sections.append({
             "name": section_name,
             "type": section_type,
+            "loop_variant": section_loop_variant or "verse",
             "bars": section_bars,
             "energy": section_energy,
             "start_bar": bar_start,
@@ -710,6 +925,7 @@ def _build_pre_render_plan(
     style_sections: list[dict] | None,
     genre_hint: str | None,
     stem_metadata: dict | None = None,
+    loop_variation_manifest: dict | None = None,
 ) -> dict:
     """Build render_plan_json before rendering begins so all render paths consume the same plan."""
 
@@ -717,14 +933,16 @@ def _build_pre_render_plan(
         """Create a musically structured fallback when no style/producer sections exist."""
         total_bars = max(1, int(total_bars))
         templates = [
-            ("Intro", "intro", 4, 0.35, ["kick", "bass"]),
-            ("Verse", "verse", 8, 0.58, ["kick", "snare", "bass"]),
-            ("Hook", "hook", 8, 0.86, ["kick", "snare", "bass", "melody"]),
-            ("Verse 2", "verse", 8, 0.62, ["kick", "snare", "bass"]),
-            ("Hook 2", "hook", 8, 0.90, ["kick", "snare", "bass", "melody"]),
-            ("Bridge", "bridge", 4, 0.50, ["bass", "melody"]),
-            ("Final Hook", "hook", 8, 0.95, ["kick", "snare", "bass", "melody"]),
-            ("Outro", "outro", 4, 0.42, ["kick", "bass"]),
+            ("Intro", "intro", 4, 0.35, ["melody"]),
+            ("Buildup 1", "buildup", 4, 0.55, ["kick", "snare"]),
+            ("Hook", "hook", 8, 0.90, ["kick", "snare", "bass", "melody"]),
+            ("Verse", "verse", 8, 0.60, ["kick", "snare", "bass"]),
+            ("Buildup 2", "buildup", 4, 0.70, ["kick", "snare", "bass"]),
+            ("Hook 2", "hook", 8, 0.95, ["kick", "snare", "bass", "melody"]),
+            ("Bridge", "bridge", 8, 0.50, ["bass", "melody"]),
+            ("Buildup 3", "buildup", 4, 0.75, ["kick", "snare", "bass"]),
+            ("Final Hook", "hook", 8, 1.0, ["kick", "snare", "bass", "melody"]),
+            ("Outro", "outro", 4, 0.40, ["melody"]),
         ]
 
         sections: list[dict] = []
@@ -832,6 +1050,8 @@ def _build_pre_render_plan(
             for s in sections
         ]
 
+    sections = assign_section_variants(sections, loop_variation_manifest)
+
     render_plan = {
         "arrangement_id": arrangement_id,
         "bpm": bpm,
@@ -843,9 +1063,25 @@ def _build_pre_render_plan(
         "sections_count": len(sections),
         "events_count": len(events),
         "tracks": tracks,
+        "loop_variations": loop_variation_manifest
+        or {
+            "active": False,
+            "count": 0,
+            "names": [],
+            "files": {},
+            "stems_used": False,
+        },
         "render_profile": {
             "genre_profile": genre_hint or "generic",
             "producer_arrangement_used": bool(producer_arrangement),
+            "loop_variations": loop_variation_manifest
+            or {
+                "active": False,
+                "count": 0,
+                "names": [],
+                "files": {},
+                "stems_used": False,
+            },
             "stem_separation": stem_metadata or {
                 "enabled": False,
                 "succeeded": False,
@@ -1132,7 +1368,81 @@ def run_arrangement_job(arrangement_id: int):
                     len(producer_arrangement.get("tracks", [])),
                 )
 
-        # Build render plan BEFORE rendering so all paths consume render_plan_json.
+        # ========================================================================
+        # LOAD STEMS + GENERATE LOOP VARIATIONS (between stem separation and producer decisions)
+        # ========================================================================
+        stem_metadata = _parse_stem_metadata_from_loop(loop)
+        loaded_stems: dict[str, AudioSegment] | None = None
+
+        if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+            logger.info("Attempting to load stem audio files for arrangement %s", arrangement_id)
+            try:
+                from app.services.stem_loader import StemLoadError, load_stems_from_metadata
+
+                loaded_stems = load_stems_from_metadata(stem_metadata, timeout_seconds=60.0)
+
+                logger.info(
+                    "✅ STEMS LOADED: %s - using loop variation engine",
+                    list(loaded_stems.keys()),
+                )
+
+                log_feature_event(
+                    logger,
+                    event="stems_loaded",
+                    correlation_id=correlation_id,
+                    arrangement_id=arrangement_id,
+                    stem_count=len(loaded_stems),
+                    stem_names=list(loaded_stems.keys()),
+                )
+
+            except StemLoadError as stem_error:
+                logger.warning(
+                    "⚠️ Stems could not be loaded for arrangement %s: %s. Falling back to stereo.",
+                    arrangement_id,
+                    stem_error,
+                )
+                loaded_stems = None
+                log_feature_event(
+                    logger,
+                    event="stem_load_failed_fallback_to_stereo",
+                    correlation_id=correlation_id,
+                    arrangement_id=arrangement_id,
+                    reason=str(stem_error),
+                )
+
+            except Exception as unexpected_error:
+                logger.exception(
+                    "❌ Unexpected error loading stems for arrangement %s. Falling back to stereo.",
+                    arrangement_id,
+                )
+                loaded_stems = None
+                log_feature_event(
+                    logger,
+                    event="stem_load_error_fallback_to_stereo",
+                    correlation_id=correlation_id,
+                    arrangement_id=arrangement_id,
+                    error=str(unexpected_error),
+                )
+        else:
+            logger.info(
+                "Stems not available for arrangement %s - using stereo loop with fallback variations",
+                arrangement_id,
+            )
+            log_feature_event(
+                logger,
+                event="stems_not_available_using_stereo",
+                correlation_id=correlation_id,
+                arrangement_id=arrangement_id,
+                reason="stem_metadata missing or disabled",
+            )
+
+        loop_variations, loop_variation_manifest = generate_loop_variations(
+            loop_audio=loop_audio,
+            stems=loaded_stems,
+            bpm=bpm,
+        )
+
+        # Build render plan AFTER variation generation so sections reference loop variants.
         render_plan = _build_pre_render_plan(
             arrangement_id=arrangement_id,
             bpm=bpm,
@@ -1140,7 +1450,8 @@ def run_arrangement_job(arrangement_id: int):
             producer_arrangement=producer_arrangement,
             style_sections=style_sections,
             genre_hint=(arrangement.genre or loop.genre),
-            stem_metadata=_parse_stem_metadata_from_loop(loop),
+            stem_metadata=stem_metadata,
+            loop_variation_manifest=loop_variation_manifest,
         )
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
@@ -1152,7 +1463,10 @@ def run_arrangement_job(arrangement_id: int):
             arrangement_id=arrangement_id,
             sections_count=render_plan.get("sections_count", 0),
             events_count=render_plan.get("events_count", 0),
+            variation_count=(render_plan.get("loop_variations") or {}).get("count", 0),
         )
+
+        _validate_render_plan_quality(render_plan)
 
         try:
             fd, temp_wav_path = tempfile.mkstemp(suffix=".wav")
@@ -1162,6 +1476,8 @@ def run_arrangement_job(arrangement_id: int):
                     render_plan_json=arrangement.render_plan_json,
                     audio_source=loop_audio,
                     output_path=temp_wav_path,
+                    stems=loaded_stems,
+                    loop_variations=loop_variations,
                 )
                 timeline_json = render_result["timeline_json"]
                 postprocess = render_result.get("postprocess") or {}

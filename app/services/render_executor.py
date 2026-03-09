@@ -83,6 +83,8 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
             "bars": bars,
             "energy": float(raw_section.get("energy", 0.6) or 0.6),
             "instruments": raw_section.get("instruments") or [],
+            "loop_variant": raw_section.get("loop_variant"),
+            "loop_variant_file": raw_section.get("loop_variant_file"),
             "variations": [],
         }
         normalized_sections.append(normalized)
@@ -112,11 +114,20 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
                 }
             )
 
+    loop_variants_used = sorted(
+        {
+            str(section.get("loop_variant") or "").strip().lower()
+            for section in normalized_sections
+            if section.get("loop_variant")
+        }
+    )
+
     summary = {
         "sections_count": len(normalized_sections),
         "events_count": len(events),
         "producer_moves": extract_producer_moves(events),
         "layer_counts": section_layer_counts(normalized_sections),
+        "loop_variants_used": loop_variants_used,
     }
 
     producer_arrangement = {
@@ -130,6 +141,7 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         "genre": render_profile.get("genre_profile", "generic"),
         "render_profile": render_profile,
         "stem_separation": render_profile.get("stem_separation") or {},
+        "loop_variations": render_plan.get("loop_variations") or render_profile.get("loop_variations") or {},
     }
 
     return producer_arrangement, summary
@@ -139,8 +151,20 @@ def render_from_plan(
     render_plan_json: str | dict[str, Any],
     audio_source: AudioSegment,
     output_path: str | Path,
+    stems: dict[str, AudioSegment] | None = None,
+    loop_variations: dict[str, AudioSegment] | None = None,
 ) -> dict[str, Any]:
-    """Render audio from render_plan_json and export output to output_path."""
+    """Render audio from render_plan_json and export output to output_path.
+    
+    Args:
+        render_plan_json: Render plan JSON string or dict  
+        audio_source: Full stereo loop audio (fallback when stems unavailable)
+        output_path: Path to write output WAV file
+        stems: Optional dict of stem audio files for real layer-based rendering
+    
+    Returns:
+        Dict with timeline_json, summary, and postprocess info
+    """
     if isinstance(render_plan_json, str):
         try:
             render_plan = json.loads(render_plan_json)
@@ -155,10 +179,12 @@ def render_from_plan(
     )
 
     logger.info(
-        "render_plan loaded: section_count=%s event_count=%s producer_moves=%s",
+        "render_plan loaded: section_count=%s event_count=%s producer_moves=%s stems=%s loop_variants=%s",
         summary["sections_count"],
         summary["events_count"],
         summary["producer_moves"],
+        "ENABLED" if stems else "DISABLED",
+        summary.get("loop_variants_used") or [],
     )
 
     from app.services.arrangement_jobs import _render_producer_arrangement
@@ -167,6 +193,8 @@ def render_from_plan(
         loop_audio=audio_source,
         producer_arrangement=producer_payload,
         bpm=float(producer_payload.get("tempo", 120.0)),
+        stems=stems,
+        loop_variations=loop_variations,
     )
 
     mastering_result = apply_mastering(
