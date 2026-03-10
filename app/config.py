@@ -90,7 +90,7 @@ class Settings(BaseSettings):
                 if normalized_origin and normalized_origin not in origins:
                     origins.append(normalized_origin)
         else:
-            default_origin = "https://web-production-3afc5.up.railway.app"
+            default_origin = "https://frontend-production-f7fc.up.railway.app"
             if default_origin not in origins:
                 origins.append(default_origin)
 
