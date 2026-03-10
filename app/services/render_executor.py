@@ -17,6 +17,17 @@ _RENDER_MOVE_EVENT_TYPES = {
     "stop_time",
     "drum_fill",
     "fill",
+    "enable_stem",
+    "disable_stem",
+    "stem_gain_change",
+    "stem_filter",
+    "silence_drop",
+    "pre_hook_mute",
+    "fill_event",
+    "texture_lift",
+    "hook_expansion",
+    "bridge_strip",
+    "outro_strip",
     "pre_hook_drum_mute",
     "silence_drop_before_hook",
     "hat_density_variation",
@@ -111,6 +122,7 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
                     "intensity": float(event.get("intensity", 0.7) or 0.7),
                     "duration_bars": event.get("duration_bars"),
                     "description": event.get("description", ""),
+                    "params": event.get("params") if isinstance(event.get("params"), dict) else {},
                 }
             )
 

@@ -3,6 +3,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from statistics import mean
+
+
+_HOOK_TYPES = {"hook", "chorus", "drop"}
+_BRIDGE_TYPES = {"bridge", "breakdown", "break"}
+_MEANINGFUL_EVENT_TYPES = {
+    "enable_stem",
+    "disable_stem",
+    "stem_gain_change",
+    "stem_filter",
+    "silence_drop",
+    "pre_hook_mute",
+    "fill_event",
+    "texture_lift",
+    "hook_expansion",
+    "bridge_strip",
+    "outro_strip",
+    "pre_hook_drum_mute",
+    "silence_drop_before_hook",
+    "hat_density_variation",
+    "end_section_fill",
+    "verse_melody_reduction",
+    "bridge_bass_removal",
+    "final_hook_expansion",
+    "call_response_variation",
+}
 
 
 @dataclass
@@ -14,6 +40,7 @@ class MoveEvent:
     section_type: str | None = None
     intensity: float = 0.7
     duration_bars: int | None = None
+    params: dict | None = None
 
     def to_dict(self) -> dict:
         payload = {
@@ -28,7 +55,141 @@ class MoveEvent:
             payload["section_type"] = self.section_type
         if self.duration_bars is not None:
             payload["duration_bars"] = int(self.duration_bars)
+        if self.params:
+            payload["params"] = self.params
         return payload
+
+
+def _norm_section_type(value: str) -> str:
+    section_type = str(value or "verse").strip().lower()
+    if section_type in _HOOK_TYPES:
+        return "hook"
+    if section_type in _BRIDGE_TYPES:
+        return "bridge"
+    return section_type
+
+
+def _safe_layers(section: dict) -> int:
+    instruments = section.get("instruments") or []
+    if isinstance(instruments, list):
+        return len(instruments)
+    return 0
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _compute_scorecard(sections: list[dict], events: list[dict]) -> dict:
+    if not sections:
+        return {
+            "total": 0,
+            "verdict": "reject",
+            "metrics": {},
+            "warnings": ["No sections available for scorecard"],
+        }
+
+    ordered_sections = sorted(sections, key=lambda s: int(s.get("bar_start", 0) or 0))
+    total_bars = max(1, sum(max(1, int(s.get("bars", 1) or 1)) for s in ordered_sections))
+
+    hook_sections = [s for s in ordered_sections if _norm_section_type(s.get("type", "")) == "hook"]
+    verse_sections = [s for s in ordered_sections if _norm_section_type(s.get("type", "")) == "verse"]
+    bridge_sections = [s for s in ordered_sections if _norm_section_type(s.get("type", "")) == "bridge"]
+
+    hook_energy = [float(s.get("energy", 0.8) or 0.8) for s in hook_sections] or [0.0]
+    verse_energy = [float(s.get("energy", 0.55) or 0.55) for s in verse_sections] or [0.0]
+    hook_layers = [_safe_layers(s) for s in hook_sections] or [0]
+    verse_layers = [_safe_layers(s) for s in verse_sections] or [0]
+
+    hook_impact = _clamp01(((mean(hook_energy) - mean(verse_energy)) + 0.18) / 0.35)
+    verse_space = _clamp01((mean(hook_layers) - mean(verse_layers)) / 3.5)
+
+    intensity_curve = [
+        _clamp01((float(s.get("energy", 0.6) or 0.6) * 0.7) + min(0.3, _safe_layers(s) * 0.04))
+        for s in ordered_sections
+    ]
+    if len(intensity_curve) > 1:
+        contrast = mean(abs(intensity_curve[i + 1] - intensity_curve[i]) for i in range(len(intensity_curve) - 1))
+    else:
+        contrast = 0.0
+    section_contrast = _clamp01(contrast / 0.22)
+
+    final_hook_payoff = 0.0
+    if len(hook_energy) >= 2:
+        growth = hook_energy[-1] - hook_energy[0]
+        monotonic_bonus = 0.25 if all(hook_energy[i + 1] >= hook_energy[i] for i in range(len(hook_energy) - 1)) else 0.0
+        final_hook_payoff = _clamp01((growth / 0.16) + monotonic_bonus)
+
+    meaningful_bars = sorted(
+        {
+            int(event.get("bar", 0) or 0)
+            for event in events
+            if str(event.get("type", "")).strip().lower() in _MEANINGFUL_EVENT_TYPES
+        }
+    )
+    if meaningful_bars:
+        gap_points = [0] + meaningful_bars + [total_bars]
+        max_gap = max(gap_points[i + 1] - gap_points[i] for i in range(len(gap_points) - 1))
+        movement_4_8 = 1.0 if max_gap <= 8 else _clamp01(8.0 / max_gap)
+    else:
+        movement_4_8 = 0.0
+
+    unique_event_types = {
+        str(event.get("type", "")).strip().lower()
+        for event in events
+        if event.get("type")
+    }
+    event_diversity = _clamp01(len(unique_event_types) / 10.0)
+    section_variety = _clamp01(len({_norm_section_type(s.get("type", "")) for s in ordered_sections}) / 5.0)
+    hook_growth_signal = 1.0 if len(hook_energy) >= 3 and hook_energy[2] >= hook_energy[1] >= hook_energy[0] else 0.6
+    repetition_avoidance = _clamp01((event_diversity * 0.45) + (section_variety * 0.25) + (hook_growth_signal * 0.30))
+
+    bridge_contrast = 0.0
+    if bridge_sections and hook_sections:
+        bridge_energy = mean(float(s.get("energy", 0.45) or 0.45) for s in bridge_sections)
+        bridge_contrast = _clamp01((mean(hook_energy) - bridge_energy) / 0.25)
+        section_contrast = _clamp01((section_contrast * 0.75) + (bridge_contrast * 0.25))
+
+    weighted_total = (
+        hook_impact * 0.22
+        + verse_space * 0.16
+        + section_contrast * 0.16
+        + final_hook_payoff * 0.16
+        + movement_4_8 * 0.16
+        + repetition_avoidance * 0.14
+    )
+    total_score = int(round(weighted_total * 100))
+
+    if total_score < 55:
+        verdict = "reject"
+    elif total_score < 75:
+        verdict = "warn"
+    else:
+        verdict = "pass"
+
+    warnings: list[str] = []
+    if movement_4_8 < 0.7:
+        warnings.append("4-8 bar movement rule is weak")
+    if final_hook_payoff < 0.65:
+        warnings.append("Final hook payoff is weak")
+    if verse_space < 0.6:
+        warnings.append("Verse vocal space is weak")
+    if repetition_avoidance < 0.65:
+        warnings.append("Repetition avoidance is weak")
+
+    return {
+        "total": total_score,
+        "verdict": verdict,
+        "metrics": {
+            "hook_impact": int(round(hook_impact * 100)),
+            "verse_space": int(round(verse_space * 100)),
+            "section_contrast": int(round(section_contrast * 100)),
+            "final_hook_payoff": int(round(final_hook_payoff * 100)),
+            "movement_4_8": int(round(movement_4_8 * 100)),
+            "repetition_avoidance": int(round(repetition_avoidance * 100)),
+        },
+        "warnings": warnings,
+    }
 
 
 class ProducerMovesEngine:
@@ -45,19 +206,118 @@ class ProducerMovesEngine:
 
         hook_indices = [
             idx for idx, section in enumerate(sections)
-            if str(section.get("type", "")).strip().lower() in {"hook", "chorus", "drop"}
+            if _norm_section_type(section.get("type", "")) == "hook"
         ]
         final_hook_idx = hook_indices[-1] if hook_indices else None
+        type_occurrence: dict[str, int] = {}
 
         for idx, section in enumerate(sections):
             section_name = str(section.get("name") or f"Section {idx + 1}")
-            section_type = str(section.get("type") or "verse").strip().lower()
+            section_type = _norm_section_type(str(section.get("type") or "verse"))
             bar_start = int(section.get("bar_start", 0) or 0)
             bars = max(1, int(section.get("bars", 1) or 1))
             bar_end = bar_start + bars
+            type_occurrence[section_type] = type_occurrence.get(section_type, 0) + 1
+            occurrence = type_occurrence[section_type]
 
-            if section_type in {"hook", "chorus", "drop"}:
+            if section_type == "hook":
+                section["energy"] = max(float(section.get("energy", 0.75) or 0.75), min(1.0, 0.78 + ((occurrence - 1) * 0.08)))
+            elif section_type == "verse":
+                section["energy"] = min(float(section.get("energy", 0.62) or 0.62), 0.66 + ((occurrence - 1) * 0.03))
+            elif section_type == "bridge":
+                section["energy"] = min(float(section.get("energy", 0.45) or 0.45), 0.52)
+            elif section_type == "outro":
+                section["energy"] = min(float(section.get("energy", 0.4) or 0.4), 0.42)
+
+            section["evolution_index"] = occurrence
+
+            if section_type == "hook":
+                section["active_layers_target"] = max(_safe_layers(section), 5 + min(2, occurrence - 1))
+            elif section_type == "verse":
+                section["active_layers_target"] = max(2, _safe_layers(section) - 1)
+            elif section_type == "bridge":
+                section["active_layers_target"] = max(2, _safe_layers(section) - 2)
+            else:
+                section["active_layers_target"] = max(1, _safe_layers(section))
+
+            movement_step = 4 if bars >= 8 else 2
+            for change_bar in range(bar_start + movement_step, bar_end, movement_step):
+                moves.append(
+                    MoveEvent(
+                        type="texture_lift",
+                        bar=change_bar,
+                        description="4-8 bar movement event",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.58,
+                        params={"movement_rule": "4_8"},
+                    ).to_dict()
+                )
+
+            for cr_bar in range(bar_start + 2, bar_end, 4):
+                moves.append(
+                    MoveEvent(
+                        type="call_response_variation",
+                        bar=cr_bar,
+                        description="Call-and-response variation",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.66,
+                    ).to_dict()
+                )
+
+            if section_type == "intro":
+                moves.append(
+                    MoveEvent(
+                        type="enable_stem",
+                        bar=bar_start,
+                        description="Intro tease: melody/pad entry",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.55,
+                        duration_bars=min(4, bars),
+                        params={"stems": ["melody", "pad", "fx"]},
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
+                        type="disable_stem",
+                        bar=bar_start,
+                        description="Intro tease: no full drums",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.82,
+                        duration_bars=min(4, bars),
+                        params={"stems": ["kick", "snare", "bass"]},
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
+                        type="stem_filter",
+                        bar=bar_start,
+                        description="Filtered entry",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.7,
+                        duration_bars=min(4, bars),
+                        params={"filter": "lowpass", "cutoff_hz": 1200},
+                    ).to_dict()
+                )
+
+            if section_type == "hook":
                 if bar_start > 0:
+                    moves.append(
+                        MoveEvent(
+                            type="pre_hook_mute",
+                            bar=max(0, bar_start - 1),
+                            description="Pre-hook kick/bass mute",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.84,
+                            duration_bars=1,
+                            params={"stems": ["kick", "bass"]},
+                        ).to_dict()
+                    )
                     moves.append(
                         MoveEvent(
                             type="pre_hook_drum_mute",
@@ -70,6 +330,17 @@ class ProducerMovesEngine:
                     )
                     moves.append(
                         MoveEvent(
+                            type="silence_drop",
+                            bar=max(0, bar_start - 1),
+                            description="Short silence drop before hook",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.9,
+                            duration_bars=1,
+                        ).to_dict()
+                    )
+                    moves.append(
+                        MoveEvent(
                             type="silence_drop_before_hook",
                             bar=max(0, bar_start - 1),
                             description="Silence drop before hook impact",
@@ -78,6 +349,67 @@ class ProducerMovesEngine:
                             intensity=0.9,
                         ).to_dict()
                     )
+                    moves.append(
+                        MoveEvent(
+                            type="fill_event",
+                            bar=max(0, bar_start - 1),
+                            description="Pre-hook riser/fill",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.8,
+                            duration_bars=1,
+                            params={"fill_type": "riser"},
+                        ).to_dict()
+                    )
+
+                moves.append(
+                    MoveEvent(
+                        type="enable_stem",
+                        bar=bar_start,
+                        description="Hook impact: fuller drums and layers",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=min(1.0, 0.8 + (occurrence * 0.06)),
+                        duration_bars=bars,
+                        params={"stems": ["kick", "snare", "hats", "bass", "melody", "fx"]},
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
+                        type="stem_filter",
+                        bar=bar_start,
+                        description="Hook brightness lift",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.75,
+                        duration_bars=bars,
+                        params={"filter": "highshelf", "gain_db": 3 + occurrence},
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
+                        type="texture_lift",
+                        bar=bar_start,
+                        description="Hook transient energy lift",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=min(1.0, 0.78 + (occurrence * 0.08)),
+                        duration_bars=bars,
+                        params={"target": "transient"},
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
+                        type="hook_expansion",
+                        bar=bar_start,
+                        description=f"Hook evolution level {occurrence}",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=min(1.0, 0.78 + (occurrence * 0.1)),
+                        duration_bars=bars,
+                        params={"hook_index": occurrence, "add": ["density", "width", "fx"]},
+                    ).to_dict()
+                )
 
                 step = 4 if bars >= 8 else 2
                 for hat_bar in range(bar_start, bar_end, step):
@@ -89,18 +421,6 @@ class ProducerMovesEngine:
                             section_name=section_name,
                             section_type=section_type,
                             intensity=0.7,
-                        ).to_dict()
-                    )
-
-                for cr_bar in range(bar_start + 2, bar_end, 4):
-                    moves.append(
-                        MoveEvent(
-                            type="call_response_variation",
-                            bar=cr_bar,
-                            description="Call-and-response variation",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.65,
                         ).to_dict()
                     )
 
@@ -120,6 +440,18 @@ class ProducerMovesEngine:
             if section_type == "verse":
                 moves.append(
                     MoveEvent(
+                        type="stem_gain_change",
+                        bar=bar_start,
+                        description="Verse vocal space gain shaping",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.65,
+                        duration_bars=bars,
+                        params={"target": "melody", "gain_db": -4},
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
                         type="verse_melody_reduction",
                         bar=bar_start,
                         description="Verse melody reduction for vocal space",
@@ -129,8 +461,32 @@ class ProducerMovesEngine:
                         duration_bars=bars,
                     ).to_dict()
                 )
+                for gap_bar in range(bar_start + 4, bar_end, 8):
+                    moves.append(
+                        MoveEvent(
+                            type="silence_drop",
+                            bar=gap_bar,
+                            description="Verse pocket gap",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.58,
+                            duration_bars=1,
+                        ).to_dict()
+                    )
 
-            if section_type in {"bridge", "breakdown", "break"}:
+            if section_type == "bridge":
+                moves.append(
+                    MoveEvent(
+                        type="bridge_strip",
+                        bar=bar_start,
+                        description="Bridge breakdown strip",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.82,
+                        duration_bars=bars,
+                        params={"strip": ["kick", "bass", "hats"]},
+                    ).to_dict()
+                )
                 moves.append(
                     MoveEvent(
                         type="bridge_bass_removal",
@@ -142,8 +498,32 @@ class ProducerMovesEngine:
                         duration_bars=bars,
                     ).to_dict()
                 )
+                moves.append(
+                    MoveEvent(
+                        type="stem_filter",
+                        bar=bar_start,
+                        description="Bridge atmospheric reset filter",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.72,
+                        duration_bars=bars,
+                        params={"filter": "bandpass", "low_hz": 220, "high_hz": 2800},
+                    ).to_dict()
+                )
 
             if section_type == "outro":
+                moves.append(
+                    MoveEvent(
+                        type="outro_strip",
+                        bar=bar_start,
+                        description="Outro progressive strip-down",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.8,
+                        duration_bars=bars,
+                        params={"progressive": True},
+                    ).to_dict()
+                )
                 moves.append(
                     MoveEvent(
                         type="outro_strip_down",
@@ -155,6 +535,33 @@ class ProducerMovesEngine:
                         duration_bars=bars,
                     ).to_dict()
                 )
+                for step_idx, drop_bar in enumerate(range(bar_start, bar_end, 2)):
+                    drop_targets = ["hats", "kick", "bass", "snare"]
+                    moves.append(
+                        MoveEvent(
+                            type="disable_stem",
+                            bar=drop_bar,
+                            description="Outro drum removal step",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=min(1.0, 0.55 + (step_idx * 0.1)),
+                            duration_bars=1,
+                            params={"stems": drop_targets[: min(len(drop_targets), step_idx + 1)]},
+                        ).to_dict()
+                    )
+
+            moves.append(
+                MoveEvent(
+                    type="fill_event",
+                    bar=max(bar_start, bar_end - 1),
+                    description="End-of-section transition fill",
+                    section_name=section_name,
+                    section_type=section_type,
+                    intensity=0.74,
+                    duration_bars=1,
+                    params={"fill_type": "drum_fill" if section_type != "bridge" else "chop_fill"},
+                ).to_dict()
+            )
 
             moves.append(
                 MoveEvent(
@@ -171,6 +578,13 @@ class ProducerMovesEngine:
         merged_events.sort(key=lambda item: int(item.get("bar", 0) or 0))
         render_plan["events"] = merged_events
         render_plan["events_count"] = len(merged_events)
+
+        scorecard = _compute_scorecard(sections=sections, events=merged_events)
+        render_plan["producer_scorecard"] = scorecard
         render_plan.setdefault("render_profile", {})["producer_moves_enabled"] = True
         render_plan["render_profile"]["producer_moves_count"] = len(moves)
+        render_plan["render_profile"]["producer_scorecard_total"] = scorecard.get("total", 0)
+        render_plan["render_profile"]["producer_scorecard_verdict"] = scorecard.get("verdict", "warn")
+        if scorecard.get("warnings"):
+            render_plan["render_profile"]["producer_score_warnings"] = list(scorecard.get("warnings", []))
         return render_plan

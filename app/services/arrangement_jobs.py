@@ -185,6 +185,8 @@ def _validate_render_plan_quality(render_plan: dict) -> None:
     # Check 2: At least 10 meaningful events to avoid "repeated loop" syndrome
     meaningful_event_types = {
         "variation", "beat_switch", "halftime_drop", "stop_time", "drum_fill", "fill",
+        "enable_stem", "disable_stem", "stem_gain_change", "stem_filter", "silence_drop",
+        "pre_hook_mute", "fill_event", "texture_lift", "hook_expansion", "bridge_strip", "outro_strip",
         "pre_hook_drum_mute", "silence_drop_before_hook", "hat_density_variation",
         "end_section_fill", "verse_melody_reduction", "bridge_bass_removal",
         "final_hook_expansion", "outro_strip_down", "call_response_variation",
@@ -215,6 +217,19 @@ def _validate_render_plan_quality(render_plan: dict) -> None:
         f"✅ Render plan quality validation passed: {len(sections)} sections, "
         f"{len(meaningful_events)} events, {len(unique_types)} section types"
     )
+
+    scorecard = render_plan.get("producer_scorecard") or {}
+    verdict = str(scorecard.get("verdict", "pass")).strip().lower()
+    if verdict == "reject":
+        raise ValueError(
+            f"render_plan rejected by live producer scorecard: total={scorecard.get('total', 0)}"
+        )
+    if verdict == "warn":
+        logger.warning(
+            "⚠️ Live producer scorecard warning: total=%s warnings=%s",
+            scorecard.get("total", 0),
+            scorecard.get("warnings", []),
+        )
 
     validate_variation_plan_usage(render_plan)
 
@@ -306,6 +321,17 @@ def _build_varied_section_audio(
 
 
 _PRODUCER_MOVE_TYPES = {
+    "enable_stem",
+    "disable_stem",
+    "stem_gain_change",
+    "stem_filter",
+    "silence_drop",
+    "pre_hook_mute",
+    "fill_event",
+    "texture_lift",
+    "hook_expansion",
+    "bridge_strip",
+    "outro_strip",
     "pre_hook_drum_mute",
     "silence_drop_before_hook",
     "hat_density_variation",
@@ -324,9 +350,86 @@ def _apply_producer_move_effect(
     intensity: float,
     stem_available: bool,
     bar_duration_ms: int,
+    params: dict | None = None,
 ) -> AudioSegment:
     """Apply audible producer move effects using stems when available, DSP fallback otherwise."""
     intensity = max(0.1, min(1.0, float(intensity or 0.7)))
+    params = params or {}
+
+    if move_type == "enable_stem":
+        boosted = segment + (2 + 3 * intensity)
+        if "hats" in str(params.get("stems", "")).lower() or "fx" in str(params.get("stems", "")).lower():
+            boosted = boosted.overlay(segment.high_pass_filter(2500) + 3, gain_during_overlay=-2)
+        return boosted
+
+    if move_type == "disable_stem":
+        reduced = segment - (4 + 4 * intensity)
+        if any(x in str(params.get("stems", "")).lower() for x in ("kick", "bass")):
+            reduced = reduced.high_pass_filter(180)
+        if any(x in str(params.get("stems", "")).lower() for x in ("hats", "snare")):
+            reduced = reduced.low_pass_filter(3500)
+        return reduced
+
+    if move_type == "stem_gain_change":
+        gain_db = float(params.get("gain_db", -3))
+        shaped = segment + gain_db
+        if gain_db < 0:
+            return shaped.low_pass_filter(5000)
+        return shaped.overlay(segment.high_pass_filter(2200), gain_during_overlay=-3)
+
+    if move_type == "stem_filter":
+        filter_type = str(params.get("filter", "")).strip().lower()
+        if filter_type == "lowpass":
+            cutoff = int(params.get("cutoff_hz", 1400) or 1400)
+            return segment.low_pass_filter(cutoff)
+        if filter_type == "highshelf":
+            gain_db = float(params.get("gain_db", 4) or 4)
+            return segment.overlay(segment.high_pass_filter(2200) + gain_db, gain_during_overlay=-3)
+        if filter_type == "bandpass":
+            low_hz = int(params.get("low_hz", 200) or 200)
+            high_hz = int(params.get("high_hz", 3000) or 3000)
+            return segment.high_pass_filter(low_hz).low_pass_filter(high_hz)
+
+    if move_type == "silence_drop":
+        gap_ms = int(min(len(segment), bar_duration_ms * (0.22 + 0.2 * intensity)))
+        return AudioSegment.silent(duration=gap_ms) + segment[gap_ms:]
+
+    if move_type == "pre_hook_mute":
+        mute_ms = int(min(len(segment), bar_duration_ms * (0.40 + 0.25 * intensity)))
+        return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
+
+    if move_type == "fill_event":
+        fill_len = int(min(len(segment), bar_duration_ms * 0.6))
+        fill_start = max(0, len(segment) - fill_len)
+        fill = segment[fill_start:]
+        fill_type = str(params.get("fill_type", "drum_fill")).strip().lower()
+        if fill_type == "chop_fill":
+            chop = AudioSegment.silent(duration=0)
+            grid = max(40, int(fill_len / 8))
+            for pos in range(0, len(fill), grid):
+                chunk = fill[pos: pos + grid]
+                chop += chunk + (4 if (pos // grid) % 2 == 0 else -3)
+            fill = chop
+        else:
+            fill = fill.high_pass_filter(2400) + (4 + 2 * intensity)
+        return segment[:fill_start] + fill
+
+    if move_type == "texture_lift":
+        transient = segment.high_pass_filter(1700) + (2 + 2 * intensity)
+        return segment.overlay(transient, gain_during_overlay=-3)
+
+    if move_type == "hook_expansion":
+        expanded = segment + (3 + 2 * intensity)
+        width = expanded.overlay(expanded.high_pass_filter(2500) + 3, gain_during_overlay=-3)
+        return width
+
+    if move_type == "bridge_strip":
+        stripped = segment.high_pass_filter(180).low_pass_filter(2800) - (3 + 2 * intensity)
+        return stripped
+
+    if move_type == "outro_strip":
+        strip = segment.low_pass_filter(2200) - (3 + 3 * intensity)
+        return strip.fade_out(min(len(strip), int(bar_duration_ms * 0.85)))
 
     if move_type == "pre_hook_drum_mute":
         mute_ms = int(min(len(segment), bar_duration_ms * (0.45 + 0.35 * intensity)))
@@ -765,12 +868,14 @@ def _render_producer_arrangement(
                     # Reverse effect
                     variation_segment = variation_segment.reverse()
                 elif var_type in _PRODUCER_MOVE_TYPES:
+                    var_params = variation.get("params") if isinstance(variation.get("params"), dict) else {}
                     variation_segment = _apply_producer_move_effect(
                         segment=variation_segment,
                         move_type=var_type,
                         intensity=float(var_intensity or 0.7),
                         stem_available=stem_available,
                         bar_duration_ms=bar_duration_ms,
+                        params=var_params,
                     )
                 
                 # Splice back in
