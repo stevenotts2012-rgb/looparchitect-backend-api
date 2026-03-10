@@ -5,14 +5,14 @@ from app.config import settings
 
 
 def add_cors_middleware(app: FastAPI) -> None:
-    # allow_credentials=True is incompatible with allow_origins=["*"] per the CORS
-    # spec; browsers will reject such responses.  Only enable credentials when the
-    # caller has configured explicit (non-wildcard) origins.
-    allow_credentials = "*" not in settings.allowed_origins
+    # Upload and API requests do not rely on browser credentials/cookies.
+    # Keep credentials disabled and allow Railway frontend origins via regex
+    # to avoid brittle per-environment allowlist drift.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
-        allow_credentials=allow_credentials,
+        allow_origin_regex=r"https://.*\.railway\.app",
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
