@@ -1,4 +1,8 @@
-from app.services.arrangement_jobs import _build_pre_render_plan, _validate_render_plan_quality
+from app.services.arrangement_jobs import (
+    _apply_stem_primary_section_states,
+    _build_pre_render_plan,
+    _validate_render_plan_quality,
+)
 
 
 def test_build_pre_render_plan_assigns_loop_variants_to_sections() -> None:
@@ -62,3 +66,64 @@ def test_render_plan_quality_fails_when_all_sections_share_one_variant() -> None
         assert False, "Expected repeated-loop guard to fail"
     except ValueError as exc:
         assert "exact same audio loop" in str(exc)
+
+
+def test_apply_stem_primary_section_states_assigns_role_sets_by_section() -> None:
+    sections = [
+        {"name": "Intro", "type": "intro", "bars": 4},
+        {"name": "Verse 1", "type": "verse", "bars": 8},
+        {"name": "Verse 2", "type": "verse", "bars": 8},
+        {"name": "Hook 1", "type": "hook", "bars": 8},
+        {"name": "Hook 2", "type": "hook", "bars": 8},
+        {"name": "Bridge", "type": "bridge", "bars": 4},
+        {"name": "Outro", "type": "outro", "bars": 4},
+    ]
+    stem_metadata = {
+        "enabled": True,
+        "succeeded": True,
+        "roles_detected": ["drums", "bass", "melody", "harmony", "fx"],
+    }
+
+    updated = _apply_stem_primary_section_states(sections, stem_metadata)
+
+    assert updated[0]["active_stem_roles"] == ["melody", "harmony", "fx"]
+    assert updated[1]["active_stem_roles"] == ["drums", "bass"]
+    assert updated[2]["active_stem_roles"] == ["drums", "bass", "harmony"]
+    assert updated[3]["active_stem_roles"] == ["drums", "bass", "melody", "harmony"]
+    assert updated[4]["active_stem_roles"] == ["drums", "bass", "melody", "harmony", "fx"]
+    assert updated[5]["active_stem_roles"] == ["harmony", "fx", "melody"]
+    assert updated[6]["active_stem_roles"] == ["melody", "harmony", "fx"]
+    assert all(section["stem_primary"] is True for section in updated)
+
+
+def test_build_pre_render_plan_marks_stem_primary_mode() -> None:
+    producer_arrangement = {
+        "total_bars": 16,
+        "key": "C",
+        "tracks": [],
+        "sections": [
+            {"name": "Intro", "type": "intro", "bar_start": 0, "bars": 4, "energy": 0.25, "instruments": ["melody"]},
+            {"name": "Verse", "type": "verse", "bar_start": 4, "bars": 4, "energy": 0.55, "instruments": ["bass"]},
+            {"name": "Hook", "type": "hook", "bar_start": 8, "bars": 4, "energy": 0.85, "instruments": ["melody"]},
+            {"name": "Outro", "type": "outro", "bar_start": 12, "bars": 4, "energy": 0.35, "instruments": ["fx"]},
+        ],
+    }
+
+    render_plan = _build_pre_render_plan(
+        arrangement_id=999,
+        bpm=128.0,
+        target_seconds=32,
+        producer_arrangement=producer_arrangement,
+        style_sections=None,
+        genre_hint="trap",
+        stem_metadata={
+            "enabled": True,
+            "succeeded": True,
+            "roles_detected": ["drums", "bass", "melody", "harmony", "fx"],
+        },
+        loop_variation_manifest=None,
+    )
+
+    assert render_plan["render_profile"]["stem_primary_mode"] is True
+    assert render_plan["sections"][0]["active_stem_roles"] == ["melody", "harmony", "fx"]
+    assert render_plan["sections"][1]["active_stem_roles"] == ["drums", "bass"]

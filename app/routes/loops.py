@@ -17,6 +17,13 @@ from app.services.loop_service import loop_service
 from app.services.loop_analyzer import loop_analyzer
 from app.services.audit_logging import log_feature_event
 from app.services.stem_separation import separate_and_store_stems
+from app.services.stem_pack_service import (
+    StemPackError,
+    StemSourceFile,
+    ingest_stem_files,
+    ingest_stem_zip,
+    persist_role_stems,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -59,6 +66,34 @@ def _build_stem_analysis_json(
     )
     payload["stem_separation"] = stem_result.to_dict()
     return json.dumps(payload)
+
+
+def _build_uploaded_stem_analysis_json(existing_analysis: dict, *, stem_metadata: dict) -> str:
+    payload = dict(existing_analysis or {})
+    payload["stem_separation"] = stem_metadata
+    return json.dumps(payload)
+
+
+def _validate_detected_bar_range(analysis_result: dict) -> None:
+    bars = analysis_result.get("bars")
+    if bars is None:
+        return
+    try:
+        bars_value = int(round(float(bars)))
+    except Exception:
+        return
+    if bars_value < 4 or bars_value > 16:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stem loop must be 4-16 bars. Detected: {bars_value} bars.",
+        )
+
+
+def _extract_detected_roles(stem_metadata: dict | None) -> list[str]:
+    if not isinstance(stem_metadata, dict):
+        return []
+    roles = stem_metadata.get("roles_detected") or stem_metadata.get("stems_generated") or []
+    return [str(role) for role in roles]
 
 
 @router.post("/loops/upload", status_code=201)
@@ -269,7 +304,9 @@ async def create_loop_with_upload(
             '{"name":"My Loop","tempo":140,"key":"C","genre":"Trap"}'
         ),
     ),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    stem_files: List[UploadFile] | None = File(None),
+    stem_zip: UploadFile | None = File(None),
     request: Request = None,
     db: Session = Depends(get_db),
 ):
@@ -306,48 +343,90 @@ async def create_loop_with_upload(
             detail=f"loop_in must be a valid JSON string: {exc}",
         )
     
-    # Read file content
-    content = await file.read()
-    
-    # Sanitize filename
-    safe_filename = loop_service.sanitize_filename(file.filename or "audio.wav")
-    
-    # Validate file
-    is_valid, error_msg = loop_service.validate_audio_file(
-        filename=safe_filename,
-        content_type=file.content_type or "audio/wav",
-        file_size=len(content)
-    )
-    
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=error_msg)
-    
-    try:
-        # Upload using service (returns file_key like "uploads/uuid.wav")
-        file_key, file_url = loop_service.upload_loop_file(
-            file_content=content,
-            filename=safe_filename,
-            content_type=file.content_type or "audio/wav"
+    single_file_mode = file is not None
+    multi_stem_mode = bool(stem_files)
+    stem_zip_mode = stem_zip is not None
+
+    if sum(bool(flag) for flag in (single_file_mode, multi_stem_mode, stem_zip_mode)) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one upload mode: file, stem_files, or stem_zip.",
         )
-        if not isinstance(file_url, str) or not file_url:
-            file_url = f"/uploads/{file_key.split('/')[-1]}"
-    except Exception as e:
-        logger.exception("Failed to upload file")
-        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
-    
-    # Analyze audio from S3
+
     analysis_result = {
         'bpm': None,
         'key': None,
         'duration': None,
         'bars': None
     }
+    uploaded_stem_metadata: dict | None = None
+
+    if single_file_mode:
+        assert file is not None
+        content = await file.read()
+        safe_filename = loop_service.sanitize_filename(file.filename or "audio.wav")
+
+        is_valid, error_msg = loop_service.validate_audio_file(
+            filename=safe_filename,
+            content_type=file.content_type or "audio/wav",
+            file_size=len(content)
+        )
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+
+        try:
+            file_key, file_url = loop_service.upload_loop_file(
+                file_content=content,
+                filename=safe_filename,
+                content_type=file.content_type or "audio/wav"
+            )
+            if not isinstance(file_url, str) or not file_url:
+                file_url = f"/uploads/{file_key.split('/')[-1]}"
+        except Exception as e:
+            logger.exception("Failed to upload file")
+            raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+    else:
+        try:
+            if stem_zip_mode:
+                assert stem_zip is not None
+                zip_bytes = await stem_zip.read()
+                ingest_result = ingest_stem_zip(zip_bytes)
+                safe_filename = loop_service.sanitize_filename(stem_zip.filename or "stem_pack.zip")
+            else:
+                source_files: list[StemSourceFile] = []
+                for stem_file in stem_files or []:
+                    stem_content = await stem_file.read()
+                    sanitized = loop_service.sanitize_filename(stem_file.filename or "stem.wav")
+                    source_files.append(StemSourceFile(filename=sanitized, content=stem_content))
+                ingest_result = ingest_stem_files(source_files)
+                safe_filename = "stem_pack_mixdown.wav"
+
+            mix_buffer = io.BytesIO()
+            ingest_result.mixed_preview.export(mix_buffer, format="wav")
+            content = mix_buffer.getvalue()
+            file_key, file_url = loop_service.upload_loop_file(
+                file_content=content,
+                filename=safe_filename,
+                content_type="audio/wav",
+            )
+            if not isinstance(file_url, str) or not file_url:
+                file_url = f"/uploads/{file_key.split('/')[-1]}"
+
+        except StemPackError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("Failed to ingest stem pack")
+            raise HTTPException(status_code=500, detail=f"Failed to process stem pack: {str(e)}")
     
     try:
         logger.info(f"Starting audio analysis for file_key: {file_key}")
         analysis_result = await loop_analyzer.analyze_from_s3(file_key)
         logger.info(f"Analysis complete: BPM={analysis_result.get('bpm')}, Key={analysis_result.get('key')}, Bars={analysis_result.get('bars')}, Duration={analysis_result.get('duration')}")
+        if not single_file_mode:
+            _validate_detected_bar_range(analysis_result)
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         logger.warning(f"Audio analysis failed (non-fatal): {e}")
         logger.info("Loop will be created with null analysis fields")
 
@@ -378,13 +457,25 @@ async def create_loop_with_upload(
         db.commit()
         db.refresh(loop)
 
-        loop.analysis_json = _build_stem_analysis_json(
-            analysis_result,
-            source_content=content,
-            source_filename=safe_filename,
-            loop_id=loop.id,
-            source_key=file_key,
-        )
+        if single_file_mode:
+            loop.analysis_json = _build_stem_analysis_json(
+                analysis_result,
+                source_content=content,
+                source_filename=safe_filename,
+                loop_id=loop.id,
+                source_key=file_key,
+            )
+        else:
+            stem_keys = persist_role_stems(loop.id, ingest_result.role_stems)
+            uploaded_stem_metadata = ingest_result.to_metadata(
+                loop_id=loop.id,
+                stem_s3_keys=stem_keys,
+                bars=analysis_result.get("bars"),
+            )
+            loop.analysis_json = _build_uploaded_stem_analysis_json(
+                analysis_result,
+                stem_metadata=uploaded_stem_metadata,
+            )
         db.commit()
         db.refresh(loop)
 
@@ -398,6 +489,7 @@ async def create_loop_with_upload(
             bpm=loop.bpm,
             bars=loop.bars,
             key=loop.musical_key,
+            stem_roles=_extract_detected_roles(uploaded_stem_metadata or loop.stem_metadata),
         )
         return loop
     except Exception as e:

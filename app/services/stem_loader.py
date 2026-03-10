@@ -62,7 +62,7 @@ def load_stems_from_metadata(
     if not stem_metadata.get("succeeded"):
         raise StemLoadError("Stem separation did not succeed")
     
-    stems_dict = stem_metadata.get("stems")
+    stems_dict = stem_metadata.get("stem_s3_keys") or stem_metadata.get("stems")
     if not stems_dict or not isinstance(stems_dict, dict):
         raise StemLoadError("No stems dict in metadata")
     
@@ -245,8 +245,17 @@ def map_instruments_to_stems(
         "lead": "melody",
         "synth": "melody",
         "keys": "melody",
-        "pad": "melody",
+        "pad": "harmony",
+        "pads": "harmony",
+        "chord": "harmony",
+        "chords": "harmony",
+        "harmony": "harmony",
+        "strings": "harmony",
         "other": "melody",
+        "fx": "fx",
+        "sfx": "fx",
+        "riser": "fx",
+        "impact": "fx",
         "vocal": "vocal",
         "vocals": "vocal",
         "voice": "vocal",

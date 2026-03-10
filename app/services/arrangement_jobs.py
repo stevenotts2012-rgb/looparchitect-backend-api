@@ -241,6 +241,54 @@ def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
     return (audio * repeats)[:target_ms]
 
 
+def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict | None) -> list[dict]:
+    if not stem_metadata or not stem_metadata.get("enabled") or not stem_metadata.get("succeeded"):
+        return sections
+
+    available_roles = [
+        str(role).strip().lower()
+        for role in (stem_metadata.get("roles_detected") or (stem_metadata.get("stem_s3_keys") or {}).keys())
+        if str(role).strip()
+    ]
+    if not available_roles:
+        return sections
+
+    hook_count = 0
+    verse_count = 0
+    for section in sections:
+        section_type = str(section.get("type") or "verse").strip().lower()
+        active_roles: list[str] = []
+
+        if section_type == "intro":
+            active_roles = [role for role in ("melody", "harmony", "fx") if role in available_roles]
+        elif section_type == "verse":
+            verse_count += 1
+            active_roles = [role for role in ("drums", "bass") if role in available_roles]
+            if verse_count > 1 and "harmony" in available_roles:
+                active_roles.append("harmony")
+        elif section_type in {"hook", "chorus", "drop"}:
+            hook_count += 1
+            if hook_count >= 3:
+                active_roles = list(available_roles)
+            elif hook_count == 2:
+                active_roles = [role for role in ("drums", "bass", "melody", "harmony", "fx") if role in available_roles]
+            else:
+                active_roles = [role for role in ("drums", "bass", "melody", "harmony") if role in available_roles]
+        elif section_type in {"bridge", "breakdown", "break"}:
+            active_roles = [role for role in ("harmony", "fx", "melody") if role in available_roles]
+        elif section_type == "outro":
+            active_roles = [role for role in ("melody", "harmony", "fx") if role in available_roles]
+
+        if not active_roles:
+            active_roles = list(available_roles)
+
+        section["instruments"] = active_roles
+        section["active_stem_roles"] = active_roles
+        section["stem_primary"] = True
+
+    return sections
+
+
 def _build_varied_section_audio(
     loop_audio: AudioSegment,
     section_bars: int,
@@ -627,7 +675,33 @@ def _render_producer_arrangement(
         
         section_loop_variant = str(section.get("loop_variant") or "").strip().lower()
 
-        if use_loop_variations and section_loop_variant in (loop_variations or {}):
+        if use_stems:
+            # STEM MODE: Mix only the stems specified in section instruments list
+            from app.services.stem_loader import map_instruments_to_stems
+
+            section_instruments = section.get("instruments", [])
+            enabled_stems = map_instruments_to_stems(section_instruments, stems)
+
+            if not enabled_stems:
+                logger.warning(
+                    f"No stems matched instruments {section_instruments}, "
+                    f"using all {list(stems.keys())}"
+                )
+                enabled_stems = stems
+
+            logger.info(
+                f"  Section '{section_name}' using stems: {list(enabled_stems.keys())} "
+                f"(requested instruments: {section_instruments})"
+            )
+
+            section_audio = _build_section_audio_from_stems(
+                stems=enabled_stems,
+                section_bars=section_bars,
+                bar_duration_ms=bar_duration_ms,
+                section_idx=section_idx,
+            )[:section_ms]
+
+        elif use_loop_variations and section_loop_variant in (loop_variations or {}):
             variation_source = (loop_variations or {})[section_loop_variant]
             section_audio = _repeat_to_duration(variation_source, section_ms)
             
@@ -664,35 +738,6 @@ def _render_producer_arrangement(
                 instance_seed,
                 variation_intensity,
             )
-
-        elif use_stems:
-            # STEM MODE: Mix only the stems specified in section instruments list
-            from app.services.stem_loader import map_instruments_to_stems
-            
-            section_instruments = section.get("instruments", [])
-            enabled_stems = map_instruments_to_stems(section_instruments, stems)
-            
-            if not enabled_stems:
-                # No stems match instruments - use all available stems
-                logger.warning(
-                    f"No stems matched instruments {section_instruments}, "
-                    f"using all {list(stems.keys())}"
-                )
-                enabled_stems = stems
-            
-            logger.info(
-                f"  Section '{section_name}' using stems: {list(enabled_stems.keys())} "
-                f"(requested instruments: {section_instruments})"
-            )
-            
-            # Build section by repeating and mixing enabled stems
-            section_audio = _build_section_audio_from_stems(
-                stems=enabled_stems,
-                section_bars=section_bars,
-                bar_duration_ms=bar_duration_ms,
-                section_idx=section_idx,
-            )[:section_ms]
-        
         else:
             # STEREO FALLBACK MODE: Use full loop with DSP variation
             section_audio = _build_varied_section_audio(
@@ -1155,6 +1200,7 @@ def _build_pre_render_plan(
             for s in sections
         ]
 
+    sections = _apply_stem_primary_section_states(sections, stem_metadata)
     sections = assign_section_variants(sections, loop_variation_manifest)
 
     render_plan = {
@@ -1192,6 +1238,7 @@ def _build_pre_render_plan(
                 "succeeded": False,
                 "reason": "not_available",
             },
+            "stem_primary_mode": bool(stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded")),
         },
     }
 

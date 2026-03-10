@@ -5,10 +5,11 @@ Tests POST, GET, PUT, PATCH, DELETE operations with S3 mocking.
 
 import io
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydub import AudioSegment
 
 from main import app
 from app.models.loop import Loop
@@ -477,6 +478,160 @@ class TestLoopWithFile:
         response = client.post("/api/v1/loops/with-file", files=files, data=data)
         
         assert response.status_code == 500
+
+    @patch('app.routes.loops.persist_role_stems')
+    @patch('app.routes.loops.ingest_stem_files')
+    @patch('app.routes.loops.loop_analyzer.analyze_from_s3', new_callable=AsyncMock)
+    @patch('app.services.loop_service.loop_service.upload_loop_file')
+    def test_create_loop_with_stem_files(
+        self,
+        mock_upload,
+        mock_analyze,
+        mock_ingest,
+        mock_persist,
+        client,
+    ):
+        """Test creating a loop from uploaded stem files."""
+        mock_upload.return_value = ("uploads/stem-pack.wav", "https://example.com/stem-pack.wav")
+        mock_analyze.return_value = {"bpm": 128, "key": "Am", "duration": 4.0, "bars": 8}
+        mock_persist.return_value = {
+            "drums": "stems/loop_1_drums.wav",
+            "bass": "stems/loop_1_bass.wav",
+            "melody": "stems/loop_1_melody.wav",
+        }
+
+        ingest_result = MagicMock()
+        ingest_result.mixed_preview = AudioSegment.silent(duration=1000)
+        ingest_result.role_stems = {
+            "drums": AudioSegment.silent(duration=1000),
+            "bass": AudioSegment.silent(duration=1000),
+            "melody": AudioSegment.silent(duration=1000),
+        }
+        ingest_result.to_metadata.return_value = {
+            "enabled": True,
+            "backend": "uploaded_pack",
+            "succeeded": True,
+            "roles_detected": ["drums", "bass", "melody"],
+            "stem_s3_keys": mock_persist.return_value,
+            "upload_mode": "stem_pack",
+        }
+        mock_ingest.return_value = ingest_result
+
+        files = [
+            ('stem_files', ('drums.wav', io.BytesIO(b'drums'), 'audio/wav')),
+            ('stem_files', ('bass.wav', io.BytesIO(b'bass'), 'audio/wav')),
+            ('stem_files', ('lead.wav', io.BytesIO(b'lead'), 'audio/wav')),
+        ]
+        data = {
+            'loop_in': json.dumps({"name": "Stem Pack Loop", "genre": "Trap"})
+        }
+
+        response = client.post("/api/v1/loops/with-file", files=files, data=data)
+
+        assert response.status_code == 201
+        result = response.json()
+        assert result["name"] == "Stem Pack Loop"
+        assert result["bars"] == 8
+        assert result["stem_metadata"]["roles_detected"] == ["drums", "bass", "melody"]
+        mock_ingest.assert_called_once()
+        mock_persist.assert_called_once()
+
+    @patch('app.routes.loops.persist_role_stems')
+    @patch('app.routes.loops.ingest_stem_zip')
+    @patch('app.routes.loops.loop_analyzer.analyze_from_s3', new_callable=AsyncMock)
+    @patch('app.services.loop_service.loop_service.upload_loop_file')
+    def test_create_loop_with_stem_zip(
+        self,
+        mock_upload,
+        mock_analyze,
+        mock_ingest_zip,
+        mock_persist,
+        client,
+    ):
+        """Test creating a loop from a ZIP stem pack."""
+        mock_upload.return_value = ("uploads/stem-zip.wav", "https://example.com/stem-zip.wav")
+        mock_analyze.return_value = {"bpm": 140, "key": "F#m", "duration": 8.0, "bars": 16}
+        mock_persist.return_value = {
+            "drums": "stems/loop_1_drums.wav",
+            "harmony": "stems/loop_1_harmony.wav",
+        }
+
+        ingest_result = MagicMock()
+        ingest_result.mixed_preview = AudioSegment.silent(duration=2000)
+        ingest_result.role_stems = {
+            "drums": AudioSegment.silent(duration=2000),
+            "harmony": AudioSegment.silent(duration=2000),
+        }
+        ingest_result.to_metadata.return_value = {
+            "enabled": True,
+            "backend": "uploaded_pack",
+            "succeeded": True,
+            "roles_detected": ["drums", "harmony"],
+            "stem_s3_keys": mock_persist.return_value,
+            "upload_mode": "stem_pack",
+        }
+        mock_ingest_zip.return_value = ingest_result
+
+        files = {
+            'stem_zip': ('pack.zip', io.BytesIO(b'fake zip'), 'application/zip')
+        }
+        data = {
+            'loop_in': json.dumps({"name": "ZIP Stem Pack"})
+        }
+
+        response = client.post("/api/v1/loops/with-file", files=files, data=data)
+
+        assert response.status_code == 201
+        result = response.json()
+        assert result["filename"] == "pack.zip"
+        assert result["stem_metadata"]["roles_detected"] == ["drums", "harmony"]
+        mock_ingest_zip.assert_called_once()
+
+    @patch('app.routes.loops.loop_analyzer.analyze_from_s3', new_callable=AsyncMock)
+    @patch('app.routes.loops.ingest_stem_files')
+    @patch('app.services.loop_service.loop_service.upload_loop_file')
+    def test_create_loop_with_stem_files_rejects_invalid_bar_count(
+        self,
+        mock_upload,
+        mock_ingest,
+        mock_analyze,
+        client,
+    ):
+        """Stem uploads should be rejected when analysis detects out-of-range loop bars."""
+        mock_upload.return_value = ("uploads/stem-pack.wav", "https://example.com/stem-pack.wav")
+        mock_analyze.return_value = {"bpm": 128, "key": "Am", "duration": 12.0, "bars": 24}
+
+        ingest_result = MagicMock()
+        ingest_result.mixed_preview = AudioSegment.silent(duration=1000)
+        mock_ingest.return_value = ingest_result
+
+        files = [
+            ('stem_files', ('drums.wav', io.BytesIO(b'drums'), 'audio/wav')),
+            ('stem_files', ('bass.wav', io.BytesIO(b'bass'), 'audio/wav')),
+        ]
+        data = {
+            'loop_in': json.dumps({"name": "Too Long Stem Loop"})
+        }
+
+        response = client.post("/api/v1/loops/with-file", files=files, data=data)
+
+        assert response.status_code == 400
+        assert "4-16 bars" in response.json()["detail"]
+
+    def test_create_loop_with_multiple_upload_modes_rejected(self, client):
+        """Exactly one upload mode should be accepted."""
+        files = [
+            ('file', ('loop.wav', io.BytesIO(b'loop'), 'audio/wav')),
+            ('stem_files', ('drums.wav', io.BytesIO(b'drums'), 'audio/wav')),
+        ]
+        data = {
+            'loop_in': json.dumps({"name": "Invalid Mixed Upload"})
+        }
+
+        response = client.post("/api/v1/loops/with-file", files=files, data=data)
+
+        assert response.status_code == 400
+        assert "exactly one upload mode" in response.json()["detail"].lower()
 
 
 # ── Test POST /api/v1/loops/upload (Legacy Upload) ────────────────────────────
