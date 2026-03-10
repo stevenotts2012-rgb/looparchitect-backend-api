@@ -10,7 +10,7 @@ import zipfile
 
 from pydub import AudioSegment
 
-from app.services.stem_classifier import STEM_ROLES, classify_stem
+from app.services.stem_role_classifier import STEM_ROLES, classify_stem
 from app.services.storage import storage
 
 

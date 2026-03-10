@@ -1,8 +1,10 @@
 from app.services.arrangement_jobs import (
     _apply_stem_primary_section_states,
     _build_pre_render_plan,
+    _render_producer_arrangement,
     _validate_render_plan_quality,
 )
+from pydub import AudioSegment
 
 
 def test_build_pre_render_plan_assigns_loop_variants_to_sections() -> None:
@@ -127,3 +129,81 @@ def test_build_pre_render_plan_marks_stem_primary_mode() -> None:
     assert render_plan["render_profile"]["stem_primary_mode"] is True
     assert render_plan["sections"][0]["active_stem_roles"] == ["melody", "harmony", "fx"]
     assert render_plan["sections"][1]["active_stem_roles"] == ["drums", "bass"]
+
+
+def test_render_producer_arrangement_prefers_stems_over_loop_variations(monkeypatch) -> None:
+    producer_arrangement = {
+        "sections": [
+            {
+                "name": "Hook",
+                "type": "hook",
+                "bar_start": 0,
+                "bars": 2,
+                "energy": 0.9,
+                "instruments": ["drums", "bass", "melody"],
+                "loop_variant": "hook",
+            }
+        ],
+        "tracks": [],
+        "transitions": [],
+        "energy_curve": [],
+        "total_bars": 2,
+    }
+
+    monkeypatch.setattr(
+        "app.services.arrangement_jobs._build_section_audio_from_stems",
+        lambda **_: AudioSegment.silent(duration=2000),
+    )
+    monkeypatch.setattr(
+        "app.services.arrangement_jobs._repeat_to_duration",
+        lambda *_, **__: (_ for _ in ()).throw(AssertionError("loop variations should not be used when stems are present")),
+    )
+
+    arranged, _timeline = _render_producer_arrangement(
+        loop_audio=AudioSegment.silent(duration=1000),
+        producer_arrangement=producer_arrangement,
+        bpm=120.0,
+        stems={
+            "drums": AudioSegment.silent(duration=1000),
+            "bass": AudioSegment.silent(duration=1000),
+            "melody": AudioSegment.silent(duration=1000),
+        },
+        loop_variations={"hook": AudioSegment.silent(duration=1000)},
+    )
+
+    assert len(arranged) > 0
+
+
+def test_render_producer_arrangement_falls_back_to_loop_variations_without_stems(monkeypatch) -> None:
+    producer_arrangement = {
+        "sections": [
+            {
+                "name": "Verse",
+                "type": "verse",
+                "bar_start": 0,
+                "bars": 2,
+                "energy": 0.6,
+                "instruments": ["drums", "bass"],
+                "loop_variant": "verse",
+            }
+        ],
+        "tracks": [],
+        "transitions": [],
+        "energy_curve": [],
+        "total_bars": 2,
+    }
+
+    monkeypatch.setattr(
+        "app.services.arrangement_jobs._build_varied_section_audio",
+        lambda **_: (_ for _ in ()).throw(AssertionError("stereo fallback should not run when loop variation exists")),
+    )
+
+    arranged, _timeline = _render_producer_arrangement(
+        loop_audio=AudioSegment.silent(duration=1000),
+        producer_arrangement=producer_arrangement,
+        bpm=120.0,
+        stems=None,
+        loop_variations={"verse": AudioSegment.silent(duration=1000)},
+    )
+
+    assert len(arranged) > 0

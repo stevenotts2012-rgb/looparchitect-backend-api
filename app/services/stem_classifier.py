@@ -9,7 +9,7 @@ import re
 from pydub import AudioSegment
 
 
-STEM_ROLES = ("drums", "bass", "melody", "harmony", "fx")
+STEM_ROLES = ("drums", "bass", "melody", "harmony", "fx", "full_mix")
 
 
 @dataclass
@@ -64,5 +64,5 @@ def classify_stem(filename: str, audio: AudioSegment) -> StemClassification:
     if mid_ratio > 0.75 and high_ratio > 0.52:
         return StemClassification(role="melody", confidence=0.62, reason="heuristic:mid_high_focus")
 
-    # Default fallback for transient/full-range material
-    return StemClassification(role="drums", confidence=0.55, reason="heuristic:default_percussive")
+    # Default fallback for full-range/unclassified material
+    return StemClassification(role="full_mix", confidence=0.55, reason="heuristic:full_mix_fallback")
