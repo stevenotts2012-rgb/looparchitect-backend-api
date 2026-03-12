@@ -22,13 +22,34 @@ logger = logging.getLogger(__name__)
 
 
 class StemRole(str, Enum):
-    """Supported stem roles in arrangement."""
-    DRUMS = "drums"
-    BASS = "bass"
-    MELODY = "melody"
-    HARMONY = "harmony"
-    FX = "fx"
-    FULL_MIX = "full_mix"
+    """Supported stem roles in arrangement (expanded taxonomy)."""
+    DRUMS      = "drums"
+    BASS       = "bass"
+    MELODY     = "melody"
+    HARMONY    = "harmony"
+    PADS       = "pads"
+    FX         = "fx"
+    PERCUSSION = "percussion"
+    ACCENT     = "accent"
+    VOCALS     = "vocals"
+    FULL_MIX   = "full_mix"
+
+
+# Arrangement group → set of roles that belong to it
+STEM_GROUPS: dict[str, frozenset["StemRole"]] = {
+    "rhythm":       frozenset({StemRole.DRUMS, StemRole.PERCUSSION}),
+    "low_end":      frozenset({StemRole.BASS}),
+    "lead":         frozenset({StemRole.MELODY, StemRole.VOCALS}),
+    "harmonic":     frozenset({StemRole.HARMONY, StemRole.PADS}),
+    "texture":      frozenset({StemRole.FX}),
+    "transition":   frozenset({StemRole.ACCENT}),
+    "fallback_mix": frozenset({StemRole.FULL_MIX}),
+}
+
+
+def _roles_in_group(group: str, available: "set[StemRole]") -> "set[StemRole]":
+    """Return available roles that belong to *group*."""
+    return available & STEM_GROUPS.get(group, frozenset())
 
 
 class ProducerMove(str, Enum):
@@ -273,61 +294,68 @@ class StemArrangementEngine:
         energy_level: float,
         available_roles: Set[StemRole],
     ) -> Set[StemRole]:
-        """Determine which stems should be active in this section."""
-        active = set()
-        
-        # Base selection by section type
+        """Determine which stems should be active using arrangement groups.
+
+        Group semantics
+        ---------------
+        rhythm      : drums, percussion
+        low_end     : bass
+        lead        : melody, vocals
+        harmonic    : harmony, pads
+        texture     : fx
+        transition  : accent
+        fallback_mix: full_mix
+        """
+        active: Set[StemRole] = set()
+
+        def add_group(group: str) -> None:
+            active.update(_roles_in_group(group, available_roles))
+
         if section_type == "intro":
-            # Intro: typically pad/harmony + maybe melody
-            if StemRole.HARMONY in available_roles:
-                active.add(StemRole.HARMONY)
-            if StemRole.MELODY in available_roles and StemRole.HARMONY in available_roles:
-                active.add(StemRole.MELODY)
-        
+            # INTRO: lead + harmonic + texture — no rhythm or low_end
+            add_group("lead")
+            add_group("harmonic")
+            add_group("texture")
+
         elif section_type == "verse":
-            # Verse: drums + bass, maybe melody
-            if StemRole.DRUMS in available_roles:
-                active.add(StemRole.DRUMS)
-            if StemRole.BASS in available_roles:
-                active.add(StemRole.BASS)
-            if StemRole.MELODY in available_roles and energy_level > 0.5:
-                active.add(StemRole.MELODY)
-        
+            # VERSE: rhythm + low_end + reduced lead
+            add_group("rhythm")
+            add_group("low_end")
+            if energy_level > 0.5:
+                add_group("lead")
+
         elif section_type == "hook":
-            # Hook: Full energy - drums, bass, melody, harmony
-            if StemRole.DRUMS in available_roles:
-                active.add(StemRole.DRUMS)
-            if StemRole.BASS in available_roles:
-                active.add(StemRole.BASS)
-            if StemRole.MELODY in available_roles:
-                active.add(StemRole.MELODY)
-            if StemRole.HARMONY in available_roles and energy_level > 0.75:
-                active.add(StemRole.HARMONY)
-            if StemRole.FX in available_roles and energy_level > 0.85:
-                active.add(StemRole.FX)
-        
+            # HOOK: all main groups; accent/fx at higher energy
+            add_group("rhythm")
+            add_group("low_end")
+            add_group("lead")
+            if energy_level > 0.70:
+                add_group("harmonic")
+            if energy_level > 0.82:
+                add_group("texture")
+            if energy_level > 0.88:
+                add_group("transition")
+
         elif section_type == "bridge":
-            # Bridge: Often stripped down or different texture
-            if StemRole.HARMONY in available_roles:
-                active.add(StemRole.HARMONY)
-            if StemRole.FX in available_roles:
-                active.add(StemRole.FX)
-            # May or may not have drums/bass depending on style
-            if energy_level > 0.65:
-                if StemRole.DRUMS in available_roles:
-                    active.add(StemRole.DRUMS)
-        
+            # BRIDGE: harmonic + texture; rhythm reduced; no low_end
+            add_group("harmonic")
+            add_group("texture")
+            if energy_level > 0.60:
+                add_group("rhythm")
+
         elif section_type == "outro":
-            # Outro: Wind down, typically just melody + harmony
-            if StemRole.MELODY in available_roles:
-                active.add(StemRole.MELODY)
-            if StemRole.HARMONY in available_roles:
-                active.add(StemRole.HARMONY)
-        
-        # Fallback: if nothing selected, use available stems
+            # OUTRO: harmonic + lead fade; rhythm stripped
+            add_group("lead")
+            add_group("harmonic")
+
+        # full_mix stems: always include as fallback if no other stems active
+        if not active:
+            add_group("fallback_mix")
+
+        # Last resort — if still nothing, activate everything available
         if not active:
             active = available_roles.copy()
-        
+
         return active
     
     def _generate_producer_moves(
@@ -369,33 +397,29 @@ class StemArrangementEngine:
     def _create_stem_states(self, active_stems: Set[StemRole]) -> Dict[StemRole, StemState]:
         """Create detailed stem state configuration for active stems."""
         states: Dict[StemRole, StemState] = {}
-        
+
+        # Panning and gain defaults per role (musical convention)
+        _role_defaults: Dict[StemRole, tuple[float, float]] = {
+            StemRole.DRUMS:       (0.0,   0.0),
+            StemRole.PERCUSSION:  (0.1,   0.0),
+            StemRole.BASS:        (0.0,   0.0),
+            StemRole.MELODY:      (0.12,  0.0),
+            StemRole.VOCALS:      (0.0,   0.0),
+            StemRole.HARMONY:     (-0.12, 0.0),
+            StemRole.PADS:        (-0.08, -1.5),  # slightly quieter
+            StemRole.FX:          (0.0,   0.0),
+            StemRole.ACCENT:      (0.0,   0.0),
+            StemRole.FULL_MIX:    (0.0,   0.0),
+        }
+
         for role in self.available_roles:
-            is_active = role in active_stems
-            
-            # Default configuration
-            gain_db = 0.0
-            pan = 0.0
-            filter_cutoff = None
-            
-            # Fine-tuning per role
-            if role == StemRole.DRUMS:
-                pan = 0.0  # Center
-            elif role == StemRole.BASS:
-                pan = 0.0  # Center
-            elif role == StemRole.MELODY:
-                pan = 0.1  # Slightly right
-            elif role == StemRole.HARMONY:
-                pan = -0.1  # Slightly left
-            elif role == StemRole.FX:
-                pan = 0.0  # Can be anywhere
-            
+            pan, gain_db = _role_defaults.get(role, (0.0, 0.0))
             states[role] = StemState(
                 role=role,
-                active=is_active,
+                active=role in active_stems,
                 gain_db=gain_db,
                 pan=pan,
-                filter_cutoff=filter_cutoff,
+                filter_cutoff=None,
             )
-        
+
         return states

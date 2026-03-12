@@ -22,6 +22,13 @@ def _wav_bytes_with_lead_silence(*, frequency: int, duration_ms: int, lead_ms: i
     return buffer.getvalue()
 
 
+def _silent_wav_bytes(*, duration_ms: int, frame_rate: int = 44100) -> bytes:
+    segment = AudioSegment.silent(duration=duration_ms).set_frame_rate(frame_rate)
+    buffer = io.BytesIO()
+    segment.export(buffer, format="wav")
+    return buffer.getvalue()
+
+
 def test_ingest_stem_files_detects_roles_from_filenames() -> None:
     result = ingest_stem_files(
         [
@@ -33,7 +40,7 @@ def test_ingest_stem_files_detects_roles_from_filenames() -> None:
         ]
     )
 
-    assert result.roles_detected == ["bass", "drums", "fx", "harmony", "melody"]
+    assert result.roles_detected == ["bass", "drums", "fx", "melody", "pads"]
     assert result.sample_rate == 44100
     assert result.duration_ms == 1000
     assert result.role_sources["drums"] == ["kick.wav"]
@@ -42,13 +49,16 @@ def test_ingest_stem_files_detects_roles_from_filenames() -> None:
 
 
 def test_ingest_stem_files_rejects_misaligned_lengths() -> None:
-    with pytest.raises(StemPackError, match="same length"):
-        ingest_stem_files(
-            [
-                StemSourceFile(filename="kick.wav", content=_wav_bytes(frequency=80, duration_ms=1000)),
-                StemSourceFile(filename="bass.wav", content=_wav_bytes(frequency=55, duration_ms=1300)),
-            ]
-        )
+    result = ingest_stem_files(
+        [
+            StemSourceFile(filename="kick.wav", content=_wav_bytes(frequency=80, duration_ms=1000)),
+            StemSourceFile(filename="bass.wav", content=_wav_bytes(frequency=55, duration_ms=1300)),
+        ]
+    )
+
+    assert result.duration_ms == 1300
+    assert result.fallback_to_loop is False
+    assert any("normalized end lengths" in warning for warning in result.validation_warnings)
 
 
 def test_ingest_stem_files_normalizes_sample_rate() -> None:
@@ -64,17 +74,61 @@ def test_ingest_stem_files_normalizes_sample_rate() -> None:
     assert result.roles_detected == ["bass", "drums"]
 
 
-def test_ingest_stem_files_rejects_start_offset_misalignment() -> None:
-    with pytest.raises(StemPackError, match="misaligned"):
+def test_ingest_stem_files_auto_aligns_start_offset_misalignment() -> None:
+    result = ingest_stem_files(
+        [
+            StemSourceFile(
+                filename="kick.wav",
+                content=_wav_bytes_with_lead_silence(frequency=80, duration_ms=1000, lead_ms=0),
+            ),
+            StemSourceFile(
+                filename="bass.wav",
+                content=_wav_bytes_with_lead_silence(frequency=55, duration_ms=1000, lead_ms=120),
+            ),
+        ]
+    )
+
+    assert result.fallback_to_loop is False
+    assert result.alignment.get("auto_aligned") is True
+    bass_adjustment = result.alignment.get("adjustments_ms", {}).get("bass.wav", {})
+    kick_adjustment = result.alignment.get("adjustments_ms", {}).get("kick.wav", {})
+    assert (
+        (bass_adjustment.get("trim_ms", 0) > 0)
+        or (bass_adjustment.get("pad_ms", 0) > 0)
+        or (kick_adjustment.get("trim_ms", 0) > 0)
+        or (kick_adjustment.get("pad_ms", 0) > 0)
+    )
+    assert any("auto-aligned" in warning for warning in result.validation_warnings)
+
+
+def test_ingest_stem_files_sets_fallback_when_alignment_confidence_low() -> None:
+    result = ingest_stem_files(
+        [
+            StemSourceFile(
+                filename="kick.wav",
+                content=_wav_bytes_with_lead_silence(frequency=80, duration_ms=900, lead_ms=0),
+            ),
+            StemSourceFile(
+                filename="bass.wav",
+                content=_wav_bytes_with_lead_silence(frequency=55, duration_ms=900, lead_ms=2800),
+            ),
+            StemSourceFile(
+                filename="fx_ambience.wav",
+                content=_silent_wav_bytes(duration_ms=3600),
+            ),
+        ]
+    )
+
+    assert result.fallback_to_loop is True
+    assert result.alignment.get("low_confidence") is True
+    assert any("stereo fallback" in warning for warning in result.validation_warnings)
+
+
+def test_ingest_stem_files_rejects_unusable_stems() -> None:
+    with pytest.raises(StemPackError, match="too short|corrupted|empty"):
         ingest_stem_files(
             [
-                StemSourceFile(
-                    filename="kick.wav",
-                    content=_wav_bytes_with_lead_silence(frequency=80, duration_ms=1000, lead_ms=0),
-                ),
-                StemSourceFile(
-                    filename="bass.wav",
-                    content=_wav_bytes_with_lead_silence(frequency=55, duration_ms=1000, lead_ms=120),
-                ),
+                StemSourceFile(filename="kick.wav", content=_wav_bytes(frequency=80, duration_ms=200)),
+                StemSourceFile(filename="bass.wav", content=_wav_bytes(frequency=55, duration_ms=200)),
             ]
         )

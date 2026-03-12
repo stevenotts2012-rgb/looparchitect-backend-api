@@ -83,9 +83,9 @@ class TestStemClassification:
         assert result.role == "melody"
         assert result.confidence > 0.9
         
-        # Harmony/Pads
+        # Harmony/Pads — both "pad" and "harmony" are harmonic group
         result = classify_stem("pad_harmony.wav", sample_audio)
-        assert result.role == "harmony"
+        assert result.role in ("pads", "harmony"), f"Expected pads or harmony, got {result.role!r}"
         assert result.confidence > 0.9
         
         # FX
@@ -94,14 +94,25 @@ class TestStemClassification:
         assert result.confidence > 0.9
     
     def test_all_stem_roles_have_hints(self):
-        """Verify all stem roles have detection hints."""
-        from app.services.stem_classifier import _FILENAME_HINTS
-        
-        assert "drums" in _FILENAME_HINTS
-        assert "bass" in _FILENAME_HINTS
-        assert "melody" in _FILENAME_HINTS
-        assert "harmony" in _FILENAME_HINTS
-        assert "fx" in _FILENAME_HINTS
+        """Verify that key roles are reachable via classifier keyword table."""
+        from app.services.stem_classifier import ARRANGEMENT_GROUPS, classify_stem
+        # Each key role must be detectable from a canonical filename
+        test_cases = {
+            "drums": "kick_drum.wav",
+            "bass": "bass_loop.wav",
+            "melody": "lead_melody.wav",
+            "harmony": "harmony_strings.wav",
+            "fx": "riser_fx.wav",
+        }
+        dummy_audio = AudioSegment.silent(duration=1000)
+        for expected_role, fname in test_cases.items():
+            result = classify_stem(fname, dummy_audio)
+            assert result.role == expected_role, (
+                f"{fname!r}: expected {expected_role!r}, got {result.role!r}"
+            )
+        # Verify all roles have a group
+        for role in ["drums", "bass", "melody", "harmony", "fx"]:
+            assert role in ARRANGEMENT_GROUPS
 
 
 # PHASE 4: PRODUCER ARRANGEMENT ENGINE
