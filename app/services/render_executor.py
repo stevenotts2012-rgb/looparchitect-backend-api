@@ -44,6 +44,8 @@ _RENDER_MOVE_EVENT_TYPES = {
     "final_hook_expansion",
     "outro_strip_down",
     "call_response_variation",
+    "pre_hook_silence_drop",
+    "snare_pickup",
 }
 
 
@@ -104,6 +106,7 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
             "loop_variant": raw_section.get("loop_variant"),
             "loop_variant_file": raw_section.get("loop_variant_file"),
             "variations": [],
+            "boundary_events": list(raw_section.get("boundary_events") or []),
         }
         normalized_sections.append(normalized)
 
@@ -132,6 +135,17 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
                     "params": event.get("params") if isinstance(event.get("params"), dict) else {},
                 }
             )
+            if event_type in {"pre_hook_silence_drop", "drum_fill", "snare_pickup", "riser_fx", "reverse_cymbal", "crash_hit", "bridge_strip", "outro_strip"}:
+                target.setdefault("boundary_events", []).append(
+                    {
+                        "type": event_type,
+                        "bar": event_bar,
+                        "placement": event.get("placement"),
+                        "boundary": event.get("boundary"),
+                        "intensity": float(event.get("intensity", 0.7) or 0.7),
+                        "params": event.get("params") if isinstance(event.get("params"), dict) else {},
+                    }
+                )
 
     loop_variants_used = sorted(
         {
@@ -156,6 +170,7 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         "sections": normalized_sections,
         "tracks": render_plan.get("tracks") or [],
         "transitions": render_plan.get("transitions") or [],
+        "section_boundaries": render_plan.get("section_boundaries") or [],
         "energy_curve": render_plan.get("energy_curve") or [],
         "genre": render_profile.get("genre_profile", "generic"),
         "render_profile": render_profile,

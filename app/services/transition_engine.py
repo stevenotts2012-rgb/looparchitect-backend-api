@@ -11,7 +11,7 @@ Transition types:
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Any
 import numpy as np
 from pydub import AudioSegment
 from pydub.generators import Sine
@@ -19,6 +19,203 @@ from pydub.generators import Sine
 from app.services.producer_models import Transition, TransitionType
 
 logger = logging.getLogger(__name__)
+
+
+SUPPORTED_BOUNDARY_EVENTS = {
+    "pre_hook_silence_drop",
+    "drum_fill",
+    "snare_pickup",
+    "riser_fx",
+    "reverse_cymbal",
+    "crash_hit",
+    "bridge_strip",
+    "outro_strip",
+}
+
+
+def _normalize_section_type(section: dict[str, Any] | None) -> str:
+    raw = str((section or {}).get("section_type") or (section or {}).get("type") or (section or {}).get("name") or "verse")
+    value = raw.strip().lower()
+    if "chorus" in value or "drop" in value:
+        return "hook"
+    if "build" in value:
+        return "buildup"
+    if "break" in value:
+        return "bridge"
+    return value
+
+
+def _section_energy(section: dict[str, Any] | None) -> float:
+    return float((section or {}).get("energy_level", (section or {}).get("energy", 0.6)) or 0.6)
+
+
+def _bar_start(section: dict[str, Any]) -> int:
+    return int(section.get("bar_start", section.get("start_bar", 0)) or 0)
+
+
+def _bar_end(section: dict[str, Any]) -> int:
+    start = _bar_start(section)
+    bars = int(section.get("bars", 1) or 1)
+    return start + max(1, bars)
+
+
+def _detected_roles(stem_metadata: dict[str, Any] | None, sections: list[dict[str, Any]]) -> set[str]:
+    roles: set[str] = set()
+    if isinstance(stem_metadata, dict):
+        for key in ("roles_detected", "stems_generated", "available_roles"):
+            value = stem_metadata.get(key)
+            if isinstance(value, list):
+                roles.update(str(item).strip().lower() for item in value if item)
+    for section in sections:
+        for item in section.get("active_stem_roles") or []:
+            roles.add(str(item).strip().lower())
+    return roles
+
+
+def build_transition_plan(
+    sections: list[dict[str, Any]],
+    energy_curve: list[dict[str, Any]] | None = None,
+    stem_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Generate section-boundary transitions and flattened runtime events."""
+    if not sections or len(sections) < 2:
+        return {"boundaries": [], "events": []}
+
+    roles = _detected_roles(stem_metadata, sections)
+    stems_exist = bool(stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"))
+    has_fx = "fx" in roles
+    has_drums = "drums" in roles
+
+    hook_indices = [idx for idx, section in enumerate(sections) if _normalize_section_type(section) == "hook"]
+    final_hook_index = hook_indices[-1] if hook_indices else -1
+
+    boundaries: list[dict[str, Any]] = []
+    flattened_events: list[dict[str, Any]] = []
+
+    for idx in range(len(sections) - 1):
+        current = sections[idx]
+        nxt = sections[idx + 1]
+        current_type = _normalize_section_type(current)
+        next_type = _normalize_section_type(nxt)
+        current_energy = _section_energy(current)
+        next_energy = _section_energy(nxt)
+        energy_lift = max(0.0, next_energy - current_energy)
+        current_end_bar = _bar_end(current)
+        next_start_bar = _bar_start(nxt)
+        is_final_hook = idx + 1 == final_hook_index and next_type == "hook"
+
+        before_section: list[str] = []
+        on_downbeat: list[str] = []
+        end_of_section: list[str] = []
+
+        if next_type == "hook":
+            if current_type != "intro" or energy_lift >= 0.1:
+                end_of_section.append("pre_hook_silence_drop")
+            if has_fx:
+                end_of_section.append("riser_fx" if is_final_hook or energy_lift >= 0.2 else "reverse_cymbal")
+            on_downbeat.append("crash_hit")
+
+            if current_type == "verse":
+                end_of_section.append("drum_fill" if has_drums else "snare_pickup")
+                end_of_section.append("bridge_strip")
+
+            if is_final_hook:
+                if "riser_fx" not in end_of_section:
+                    end_of_section.append("riser_fx")
+                if has_fx and "reverse_cymbal" not in end_of_section:
+                    end_of_section.append("reverse_cymbal")
+                if "drum_fill" not in end_of_section and "snare_pickup" not in end_of_section:
+                    end_of_section.append("drum_fill" if has_drums else "snare_pickup")
+                if has_drums and "snare_pickup" not in end_of_section:
+                    end_of_section.append("snare_pickup")
+
+        if next_type == "bridge":
+            end_of_section.append("bridge_strip")
+
+        if next_type == "outro":
+            on_downbeat.append("outro_strip")
+            if current_type == "hook":
+                end_of_section.append("outro_strip")
+
+        if not before_section and not on_downbeat and not end_of_section:
+            continue
+
+        boundary_name = f"{current_type}_to_{next_type}"
+        boundaries.append(
+            {
+                "boundary": boundary_name,
+                "from_section": idx,
+                "to_section": idx + 1,
+                "from_bar": current_end_bar,
+                "to_bar": next_start_bar,
+                "energy_curve": {
+                    "from": round(current_energy, 3),
+                    "to": round(next_energy, 3),
+                    "delta": round(next_energy - current_energy, 3),
+                },
+                "stem_primary": stems_exist,
+                "before_section": before_section,
+                "on_downbeat": on_downbeat,
+                "end_of_section": end_of_section,
+                "events": [*before_section, *on_downbeat, *end_of_section],
+            }
+        )
+
+        for placement, names, event_bar in (
+            ("before_section", before_section, max(current_end_bar - 1, _bar_start(current))),
+            ("end_of_section", end_of_section, max(current_end_bar - 1, _bar_start(current))),
+            ("on_downbeat", on_downbeat, next_start_bar),
+        ):
+            for event_name in names:
+                if event_name not in SUPPORTED_BOUNDARY_EVENTS:
+                    continue
+                params: dict[str, Any] = {
+                    "placement": placement,
+                    "boundary": boundary_name,
+                    "target_section_type": next_type if placement == "on_downbeat" else current_type,
+                    "stems_exist": stems_exist,
+                    "has_fx_stem": has_fx,
+                    "has_drum_stem": has_drums,
+                }
+                if event_name in {"bridge_strip", "outro_strip"}:
+                    params["stems"] = ["bass", "drums"]
+                elif event_name == "riser_fx":
+                    params["stems"] = ["fx"] if has_fx else []
+                elif event_name in {"drum_fill", "snare_pickup"}:
+                    params["stems"] = ["drums"] if has_drums else []
+
+                intensity = round(min(1.0, 0.7 + (0.2 if is_final_hook else 0.0) + min(0.15, energy_lift * 0.25)), 3)
+                flattened_events.append(
+                    {
+                        "type": event_name,
+                        "bar": int(event_bar),
+                        "placement": placement,
+                        "boundary": boundary_name,
+                        "description": f"{event_name} at {boundary_name}",
+                        "intensity": intensity,
+                        "duration_bars": 1,
+                        "params": params,
+                    }
+                )
+
+        if next_type == "outro":
+            flattened_events.append(
+                {
+                    "type": "outro_strip",
+                    "bar": int(next_start_bar + max(1, int(nxt.get("bars", 1) or 1) // 2)),
+                    "placement": "mid_section",
+                    "boundary": boundary_name,
+                    "description": f"outro_strip during {boundary_name}",
+                    "intensity": 0.85,
+                    "duration_bars": 1,
+                    "params": {
+                        "stems_exist": stems_exist,
+                        "stems": ["drums", "bass"],
+                    },
+                }
+            )
+
+    return {"boundaries": boundaries, "events": flattened_events}
 
 
 class TransitionEngine:

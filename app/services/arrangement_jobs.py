@@ -32,6 +32,7 @@ from app.services.loop_variation_engine import (
 from app.services.producer_moves_engine import ProducerMovesEngine
 from app.services.render_executor import render_from_plan
 from app.services.storage import storage
+from app.services.transition_engine import build_transition_plan
 
 logger = logging.getLogger(__name__)
 
@@ -417,6 +418,8 @@ _PRODUCER_MOVE_TYPES = {
     "final_hook_expansion",
     "outro_strip_down",
     "call_response_variation",
+    "pre_hook_silence_drop",
+    "snare_pickup",
 }
 
 
@@ -444,6 +447,17 @@ def _apply_producer_move_effect(
         fill = segment[fill_start:].high_pass_filter(2300) + (4 + 3 * intensity)
         return segment[:fill_start] + fill
 
+    if move_type == "snare_pickup":
+        pickup_len = int(min(len(segment), bar_duration_ms * 0.4))
+        pickup_start = max(0, len(segment) - pickup_len)
+        pickup = segment[pickup_start:].high_pass_filter(1800)
+        grid = max(20, pickup_len // 10)
+        rebuilt = AudioSegment.silent(duration=0)
+        for ms in range(0, len(pickup), grid):
+            chunk = pickup[ms: min(len(pickup), ms + grid)]
+            rebuilt += chunk + (5 if (ms // grid) % 2 == 0 else 1)
+        return segment[:pickup_start] + rebuilt
+
     if move_type == "snare_roll":
         roll_len = int(min(len(segment), bar_duration_ms * 0.5))
         roll = segment[max(0, len(segment) - roll_len):].high_pass_filter(1800)
@@ -458,11 +472,22 @@ def _apply_producer_move_effect(
         mute_ms = int(min(len(segment), bar_duration_ms * (0.45 + 0.3 * intensity)))
         return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
 
+    if move_type == "pre_hook_silence_drop":
+        gap_ms = int(min(len(segment), bar_duration_ms * (1.0 if stem_available else 0.5)))
+        gap_ms = max(1, gap_ms)
+        lead = segment[:-gap_ms] if gap_ms < len(segment) else AudioSegment.silent(duration=0)
+        source_tail = segment[-gap_ms:] if gap_ms < len(segment) else segment
+        if stem_available:
+            tail = source_tail.high_pass_filter(240) - 10
+        else:
+            tail = source_tail.reverse().fade_in(max(1, gap_ms // 4)).low_pass_filter(1800) - 8
+        return lead + AudioSegment.silent(duration=gap_ms // 2) + tail[: max(0, gap_ms - (gap_ms // 2))]
+
     if move_type == "riser_fx":
         tail_len = int(min(len(segment), bar_duration_ms * 0.75))
         start = max(0, len(segment) - tail_len)
         tail = segment[start:].high_pass_filter(250)
-        tail = tail.fade_in(max(1, tail_len // 3)) + (2 + 3 * intensity)
+        tail = tail.fade_in(max(1, tail_len // 3)) + (4 + 3 * intensity if stem_available else 2 + 3 * intensity)
         return segment[:start] + tail
 
     if move_type == "crash_hit":
@@ -475,7 +500,7 @@ def _apply_producer_move_effect(
     if move_type == "reverse_cymbal":
         rev_len = int(min(len(segment), bar_duration_ms * 0.75))
         start = max(0, len(segment) - rev_len)
-        rev = segment[start:].reverse().high_pass_filter(1600)
+        rev = segment[start:].reverse().high_pass_filter(1600) + (3 if stem_available else 1)
         return segment[:start] + rev
 
     if move_type == "drop_kick":
@@ -549,11 +574,11 @@ def _apply_producer_move_effect(
         return width
 
     if move_type == "bridge_strip":
-        stripped = segment.high_pass_filter(180).low_pass_filter(2800) - (3 + 2 * intensity)
+        stripped = segment.high_pass_filter(220 if stem_available else 180).low_pass_filter(2400 if stem_available else 2800) - (4 + 2 * intensity)
         return stripped
 
     if move_type == "outro_strip":
-        strip = segment.low_pass_filter(2200) - (3 + 3 * intensity)
+        strip = segment.low_pass_filter(1800 if stem_available else 2200) - (4 + 3 * intensity)
         return strip.fade_out(min(len(strip), int(bar_duration_ms * 0.85)))
 
     if move_type == "pre_hook_drum_mute":
@@ -1013,6 +1038,39 @@ def _render_producer_arrangement(
                 
                 # Splice back in
                 section_audio = section_audio[:var_start_ms] + variation_segment + section_audio[var_end_ms:]
+
+        section_boundary_events = section.get("boundary_events") if isinstance(section.get("boundary_events"), list) else []
+        for boundary_event in section_boundary_events:
+            event_type = str(boundary_event.get("type") or "").strip().lower()
+            event_bar = int(boundary_event.get("bar", bar_start) or bar_start)
+            relative_bar = max(0, min(section_bars - 1, event_bar - bar_start))
+            placement = str(boundary_event.get("placement") or "end_of_section").strip().lower()
+            intensity = float(boundary_event.get("intensity", 0.7) or 0.7)
+            params = boundary_event.get("params") if isinstance(boundary_event.get("params"), dict) else {}
+
+            if placement == "on_downbeat":
+                event_start_ms = 0
+                event_end_ms = min(len(section_audio), bar_duration_ms)
+            elif placement == "mid_section":
+                event_start_ms = max(0, relative_bar * bar_duration_ms)
+                event_end_ms = min(len(section_audio), event_start_ms + bar_duration_ms)
+            else:
+                event_end_ms = len(section_audio)
+                event_start_ms = max(0, event_end_ms - bar_duration_ms)
+
+            if event_end_ms <= event_start_ms:
+                continue
+
+            boundary_segment = section_audio[event_start_ms:event_end_ms]
+            boundary_segment = _apply_producer_move_effect(
+                segment=boundary_segment,
+                move_type=event_type,
+                intensity=intensity,
+                stem_available=stem_available,
+                bar_duration_ms=bar_duration_ms,
+                params=params,
+            )
+            section_audio = section_audio[:event_start_ms] + boundary_segment + section_audio[event_end_ms:]
         
         # ====================================================================
         # APPLY TRANSITIONS BETWEEN SECTIONS
@@ -1072,6 +1130,14 @@ def _render_producer_arrangement(
             "transition_out": section.get("transition_out") or (
                 (transition_info.get("transition_type") or transition_info.get("type")) if transition_info else "none"
             ),
+            "boundary_events": [
+                {
+                    "type": str(event.get("type") or ""),
+                    "placement": event.get("placement"),
+                    "boundary": event.get("boundary"),
+                }
+                for event in (section.get("boundary_events") or [])
+            ],
             "hook_evolution": section.get("hook_evolution"),
             "start_bar": bar_start,
             "end_bar": bar_end,
@@ -1099,6 +1165,7 @@ def _render_producer_arrangement(
         },
         "sections": timeline_sections,
         "events": timeline_events,
+        "section_boundaries": producer_arrangement.get("section_boundaries") or [],
         "metadata": {
             "total_bars": total_bars,
             "key": producer_arrangement.get("key", "C"),
@@ -1295,6 +1362,14 @@ def _build_pre_render_plan(
 
     sections = _apply_stem_primary_section_states(sections, stem_metadata)
     sections = assign_section_variants(sections, loop_variation_manifest)
+    transition_payload = build_transition_plan(
+        sections=sections,
+        energy_curve=producer_arrangement.get("energy_curve") if producer_arrangement else None,
+        stem_metadata=stem_metadata,
+    )
+    transition_boundaries = transition_payload.get("boundaries") or []
+    transition_events = transition_payload.get("events") or []
+    events.extend(transition_events)
 
     render_plan = {
         "arrangement_id": arrangement_id,
@@ -1304,6 +1379,8 @@ def _build_pre_render_plan(
         "total_bars": total_bars,
         "sections": sections,
         "events": events,
+        "section_boundaries": transition_boundaries,
+        "transitions": transition_boundaries,
         "sections_count": len(sections),
         "events_count": len(events),
         "tracks": tracks,
