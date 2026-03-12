@@ -5,12 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 import io
 from pathlib import Path
-from typing import Iterable
-import zipfile
 
 from pydub import AudioSegment
 
 from app.services.stem_role_classifier import STEM_ROLES, classify_stem
+from app.services.stem_pack_extractor import (
+    StemPackExtractionError,
+    extract_stem_files_from_zip,
+)
+from app.services.stem_validation import (
+    StemValidationError,
+    validate_and_normalize_stems,
+)
 from app.services.storage import storage
 
 
@@ -59,6 +65,8 @@ class StemPackIngestResult:
                 "aligned": True,
                 "same_length": True,
                 "same_sample_rate": True,
+                "normalized": True,
+                "bars_range": "4-16",
             },
         }
 
@@ -73,27 +81,11 @@ def _decode_audio(content: bytes, filename: str) -> AudioSegment:
         raise StemPackError(f"Could not decode stem '{filename}': {exc}") from exc
 
 
-def _iter_zip_audio_files(stem_zip: bytes) -> Iterable[StemSourceFile]:
-    try:
-        with zipfile.ZipFile(io.BytesIO(stem_zip)) as archive:
-            for name in archive.namelist():
-                if name.endswith("/"):
-                    continue
-                ext = Path(name).suffix.lower()
-                if ext not in ALLOWED_AUDIO_EXTENSIONS:
-                    continue
-                yield StemSourceFile(filename=Path(name).name, content=archive.read(name))
-    except zipfile.BadZipFile as exc:
-        raise StemPackError("Invalid ZIP stem pack") from exc
-
-
 def ingest_stem_files(files: list[StemSourceFile]) -> StemPackIngestResult:
     if len(files) < 2:
         raise StemPackError("At least two stem files are required")
 
     decoded: list[tuple[str, AudioSegment]] = []
-    sample_rates: set[int] = set()
-    durations: list[int] = []
 
     for file in files:
         ext = Path(file.filename).suffix.lower()
@@ -101,30 +93,25 @@ def ingest_stem_files(files: list[StemSourceFile]) -> StemPackIngestResult:
             raise StemPackError(f"Unsupported stem file type: {file.filename}")
         audio = _decode_audio(file.content, file.filename)
         decoded.append((file.filename, audio))
-        sample_rates.add(int(audio.frame_rate))
-        durations.append(len(audio))
 
-    if len(sample_rates) != 1:
-        raise StemPackError("All stems must have the same sample rate")
-
-    min_duration = min(durations)
-    max_duration = max(durations)
-    if max_duration - min_duration > 120:
-        raise StemPackError("All stems must be aligned and the same length")
+    try:
+        validated = validate_and_normalize_stems(decoded)
+    except StemValidationError as exc:
+        raise StemPackError(str(exc)) from exc
 
     role_stems: dict[str, AudioSegment] = {}
     role_sources: dict[str, list[str]] = {}
-    for filename, audio in decoded:
+    for filename, audio in validated.stems:
         classification = classify_stem(filename, audio)
         role = classification.role if classification.role in STEM_ROLES else "melody"
-        trimmed = audio[:min_duration]
+        trimmed = audio[:validated.duration_ms]
         if role in role_stems:
             role_stems[role] = role_stems[role].overlay(trimmed)
         else:
             role_stems[role] = trimmed
         role_sources.setdefault(role, []).append(filename)
 
-    mixed = AudioSegment.silent(duration=min_duration)
+    mixed = AudioSegment.silent(duration=validated.duration_ms)
     for audio in role_stems.values():
         mixed = mixed.overlay(audio)
 
@@ -132,16 +119,18 @@ def ingest_stem_files(files: list[StemSourceFile]) -> StemPackIngestResult:
         mixed_preview=mixed,
         role_stems=role_stems,
         role_sources=role_sources,
-        sample_rate=next(iter(sample_rates)),
-        duration_ms=min_duration,
+        sample_rate=validated.sample_rate,
+        duration_ms=validated.duration_ms,
         source_files=[name for name, _ in decoded],
     )
 
 
 def ingest_stem_zip(content: bytes) -> StemPackIngestResult:
-    files = list(_iter_zip_audio_files(content))
-    if not files:
-        raise StemPackError("ZIP does not contain supported audio stem files")
+    try:
+        extracted = extract_stem_files_from_zip(content)
+    except StemPackExtractionError as exc:
+        raise StemPackError(str(exc)) from exc
+    files = [StemSourceFile(filename=item.filename, content=item.content) for item in extracted]
     return ingest_stem_files(files)
 
 

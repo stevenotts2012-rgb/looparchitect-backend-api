@@ -13,6 +13,14 @@ _MEANINGFUL_EVENT_TYPES = {
     "disable_stem",
     "stem_gain_change",
     "stem_filter",
+    "drum_fill",
+    "snare_roll",
+    "pre_hook_silence",
+    "riser_fx",
+    "crash_hit",
+    "reverse_cymbal",
+    "drop_kick",
+    "bass_pause",
     "silence_drop",
     "pre_hook_mute",
     "fill_event",
@@ -308,6 +316,17 @@ class ProducerMovesEngine:
                 if bar_start > 0:
                     moves.append(
                         MoveEvent(
+                            type="pre_hook_silence",
+                            bar=max(0, bar_start - 1),
+                            description="Pre-hook silence for impact",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.9,
+                            duration_bars=1,
+                        ).to_dict()
+                    )
+                    moves.append(
+                        MoveEvent(
                             type="pre_hook_mute",
                             bar=max(0, bar_start - 1),
                             description="Pre-hook kick/bass mute",
@@ -326,6 +345,39 @@ class ProducerMovesEngine:
                             section_name=section_name,
                             section_type=section_type,
                             intensity=0.8,
+                        ).to_dict()
+                    )
+                    moves.append(
+                        MoveEvent(
+                            type="snare_roll",
+                            bar=max(0, bar_start - 1),
+                            description="Pre-hook snare roll",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.85,
+                            duration_bars=1,
+                        ).to_dict()
+                    )
+                    moves.append(
+                        MoveEvent(
+                            type="riser_fx",
+                            bar=max(0, bar_start - 1),
+                            description="Pre-hook riser FX",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.82,
+                            duration_bars=1,
+                        ).to_dict()
+                    )
+                    moves.append(
+                        MoveEvent(
+                            type="reverse_cymbal",
+                            bar=max(0, bar_start - 1),
+                            description="Reverse cymbal into hook",
+                            section_name=section_name,
+                            section_type=section_type,
+                            intensity=0.78,
+                            duration_bars=1,
                         ).to_dict()
                     )
                     moves.append(
@@ -362,6 +414,17 @@ class ProducerMovesEngine:
                         ).to_dict()
                     )
 
+                moves.append(
+                    MoveEvent(
+                        type="crash_hit",
+                        bar=bar_start,
+                        description="Hook crash hit",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=min(1.0, 0.84 + (occurrence * 0.05)),
+                        duration_bars=1,
+                    ).to_dict()
+                )
                 moves.append(
                     MoveEvent(
                         type="enable_stem",
@@ -459,6 +522,28 @@ class ProducerMovesEngine:
                         section_type=section_type,
                         intensity=0.7,
                         duration_bars=bars,
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
+                        type="drop_kick",
+                        bar=bar_start,
+                        description="Verse drop-kick pulse",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.62,
+                        duration_bars=1,
+                    ).to_dict()
+                )
+                moves.append(
+                    MoveEvent(
+                        type="bass_pause",
+                        bar=min(bar_end - 1, bar_start + 2),
+                        description="Verse bass pause pocket",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.66,
+                        duration_bars=1,
                     ).to_dict()
                 )
                 for gap_bar in range(bar_start + 4, bar_end, 8):
@@ -560,6 +645,18 @@ class ProducerMovesEngine:
                     intensity=0.74,
                     duration_bars=1,
                     params={"fill_type": "drum_fill" if section_type != "bridge" else "chop_fill"},
+                ).to_dict()
+            )
+
+            moves.append(
+                MoveEvent(
+                    type="drum_fill",
+                    bar=max(bar_start, bar_end - 1),
+                    description="End-of-section drum fill",
+                    section_name=section_name,
+                    section_type=section_type,
+                    intensity=0.76,
+                    duration_bars=1,
                 ).to_dict()
             )
 

@@ -32,9 +32,16 @@ class Loop(Base):
     status = Column(String, default="pending", nullable=True)  # pending | processing | complete | failed
     processed_file_url = Column(String, nullable=True)  # URL to generated/processed audio
     analysis_json = Column(Text, nullable=True)  # JSON string with analysis results
+    
+    # STEM-DRIVEN ENGINE fields (NEW)
+    is_stem_pack = Column(String, default="false", nullable=True)  # "true" if this is multi-stem, "false" if single loop
+    stem_roles_json = Column(Text, nullable=True)  # JSON: {role: file_key, ...}
+    stem_files_json = Column(Text, nullable=True)  # JSON: {role: {filename, url, duration}, ...}
+    stem_validation_json = Column(Text, nullable=True)  # Validation status: {status, errors, ...}
 
     @property
     def stem_metadata(self):
+        """Get stem separation metadata from analysis."""
         if not self.analysis_json:
             return None
         try:
@@ -44,3 +51,23 @@ class Loop(Base):
         except Exception:
             return None
         return None
+    
+    @property
+    def stems_dict(self) -> dict:
+        """Get parsed stem files as dict."""
+        if not self.stem_files_json:
+            return {}
+        try:
+            return json.loads(self.stem_files_json)
+        except Exception:
+            return {}
+    
+    @property
+    def stem_roles(self) -> dict:
+        """Get stem role mapping."""
+        if not self.stem_roles_json:
+            return {}
+        try:
+            return json.loads(self.stem_roles_json)
+        except Exception:
+            return {}

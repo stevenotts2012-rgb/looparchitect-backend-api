@@ -9,6 +9,14 @@ from app.services.render_executor import render_from_plan
 
 
 REQUIRED_MOVE_TYPES = {
+    "drum_fill",
+    "snare_roll",
+    "pre_hook_silence",
+    "riser_fx",
+    "crash_hit",
+    "reverse_cymbal",
+    "drop_kick",
+    "bass_pause",
     "pre_hook_drum_mute",
     "silence_drop_before_hook",
     "hat_density_variation",

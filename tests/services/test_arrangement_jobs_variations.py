@@ -131,6 +131,27 @@ def test_build_pre_render_plan_marks_stem_primary_mode() -> None:
     assert render_plan["sections"][1]["active_stem_roles"] == ["drums", "bass"]
 
 
+def test_apply_stem_primary_section_states_marks_hook_evolution_stages() -> None:
+    sections = [
+        {"name": "Hook 1", "type": "hook", "bars": 8},
+        {"name": "Hook 2", "type": "hook", "bars": 8},
+        {"name": "Hook 3", "type": "hook", "bars": 8},
+    ]
+    stem_metadata = {
+        "enabled": True,
+        "succeeded": True,
+        "roles_detected": ["drums", "bass", "melody", "harmony", "fx"],
+    }
+
+    updated = _apply_stem_primary_section_states(sections, stem_metadata)
+
+    assert updated[0]["hook_evolution"]["stage"] == "hook1"
+    assert updated[1]["hook_evolution"]["stage"] == "hook2"
+    assert updated[2]["hook_evolution"]["stage"] == "hook3"
+    assert updated[0]["hook_evolution"]["density"] < updated[1]["hook_evolution"]["density"]
+    assert updated[1]["hook_evolution"]["density"] <= updated[2]["hook_evolution"]["density"]
+
+
 def test_render_producer_arrangement_prefers_stems_over_loop_variations(monkeypatch) -> None:
     producer_arrangement = {
         "sections": [

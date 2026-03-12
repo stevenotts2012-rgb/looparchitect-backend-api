@@ -35,6 +35,12 @@ class Arrangement(Base):
     ai_parsing_used = Column(Boolean, nullable=True, default=False)  # V2: Whether LLM parsing was used
     producer_arrangement_json = Column(Text, nullable=True)  # Producer-style arrangement structure
     render_plan_json = Column(Text, nullable=True)  # Detailed render plan with events
+    
+    # STEM-DRIVEN ENGINE fields (NEW)
+    stem_arrangement_json = Column(Text, nullable=True)  # Stem arrangement structure with sections/stems
+    stem_render_path = Column(String, nullable=True)  # "stem" or "loop" - which path was used
+    rendered_from_stems = Column(Boolean, default=False)  # True if rendered via stem engine
+    
     error_message = Column(Text, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,26 +1,40 @@
-# STEM Render Pipeline
+# Stem Render Pipeline
 
-## End-to-End Flow
-1. Upload stems (`stem_files` or `stem_zip`) through existing loops upload endpoint
-2. Ingest and classify stems by role (`drums`, `bass`, `melody`, `harmony/pads`, `fx`, `full_mix` fallback)
-3. Persist per-role stem WAVs to object storage (`stems/loop_<id>_<role>.wav`)
-4. Build arrangement render plan with per-section `active_stem_roles`
-5. Render executor loads stems and mixes enabled roles per section
-6. Concatenate section audio and apply transitions/post-processing
+## Render Decision Path
+1. `run_arrangement_job` loads loop audio.
+2. Stem metadata is parsed from loop analysis payload.
+3. If stem metadata indicates success, role stems are loaded.
+4. Loop variations are generated.
+5. Render plan is built and producer moves are injected.
+6. `render_from_plan(...)` renders from plan.
 
-## Renderer Source Selection
-Inside producer render:
-- Prefer stems when present (`use_stems=true`)
-- Else use loop variations if present
-- Else use stereo DSP fallback
+## Stem-Driven Rendering
+When stems are available:
+- `_render_producer_arrangement(...)` enables stem mode.
+- per section, only selected stems are mixed.
+- section variations and producer moves are applied.
+- section transitions are applied.
+- section audio is appended in timeline order.
 
-This preserves compatibility while prioritizing stem-driven arrangements.
+## Fallback Rendering
+When stems are unavailable:
+- loop variations are used when available.
+- otherwise stereo loop DSP fallback path is used.
 
-## Audible Variation Guarantee
-Sections produce real differences because each section can enable a different stem subset and apply section-specific processing. Example:
-- Intro: melody/pads
-- Verse: drums/bass
-- Hook: full or near-full stems
+## Producer Move Events
+Supported events include:
+- `drum_fill`
+- `snare_roll`
+- `pre_hook_silence`
+- `riser_fx`
+- `crash_hit`
+- `reverse_cymbal`
+- `drop_kick`
+- `bass_pause`
 
-## DAW Export Compatibility
-The render path remains compatible with existing DAW export artifacts (audio + stems metadata), since stem keys are persisted in loop metadata and consumed through the same arrangement job pipeline.
+Legacy events are still supported for compatibility.
+
+## Output Artifacts
+- final WAV uploaded to storage
+- timeline JSON with section details and event metadata
+- render plan JSON persisted for debug and replayability

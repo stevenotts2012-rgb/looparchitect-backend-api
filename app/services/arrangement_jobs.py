@@ -185,6 +185,7 @@ def _validate_render_plan_quality(render_plan: dict) -> None:
     # Check 2: At least 10 meaningful events to avoid "repeated loop" syndrome
     meaningful_event_types = {
         "variation", "beat_switch", "halftime_drop", "stop_time", "drum_fill", "fill",
+        "snare_roll", "pre_hook_silence", "riser_fx", "crash_hit", "reverse_cymbal", "drop_kick", "bass_pause",
         "enable_stem", "disable_stem", "stem_gain_change", "stem_filter", "silence_drop",
         "pre_hook_mute", "fill_event", "texture_lift", "hook_expansion", "bridge_strip", "outro_strip",
         "pre_hook_drum_mute", "silence_drop_before_hook", "hat_density_variation",
@@ -258,14 +259,17 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
     for section in sections:
         section_type = str(section.get("type") or "verse").strip().lower()
         active_roles: list[str] = []
+        transition_out = "cut"
 
         if section_type == "intro":
             active_roles = [role for role in ("melody", "harmony", "fx") if role in available_roles]
+            transition_out = "filter_open"
         elif section_type == "verse":
             verse_count += 1
             active_roles = [role for role in ("drums", "bass") if role in available_roles]
             if verse_count > 1 and "harmony" in available_roles:
                 active_roles.append("harmony")
+            transition_out = "lift"
         elif section_type in {"hook", "chorus", "drop"}:
             hook_count += 1
             if hook_count >= 3:
@@ -274,10 +278,13 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
                 active_roles = [role for role in ("drums", "bass", "melody", "harmony", "fx") if role in available_roles]
             else:
                 active_roles = [role for role in ("drums", "bass", "melody", "harmony") if role in available_roles]
+            transition_out = "impact"
         elif section_type in {"bridge", "breakdown", "break"}:
             active_roles = [role for role in ("harmony", "fx", "melody") if role in available_roles]
+            transition_out = "riser"
         elif section_type == "outro":
             active_roles = [role for role in ("melody", "harmony", "fx") if role in available_roles]
+            transition_out = "fade"
 
         if not active_roles:
             active_roles = list(available_roles)
@@ -285,6 +292,19 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
         section["instruments"] = active_roles
         section["active_stem_roles"] = active_roles
         section["stem_primary"] = True
+        section["transition_out"] = transition_out
+
+        if section_type in {"hook", "chorus", "drop"}:
+            stage = "hook1"
+            if hook_count == 2:
+                stage = "hook2"
+            elif hook_count >= 3:
+                stage = "hook3"
+            section["hook_evolution"] = {
+                "stage": stage,
+                "density": 0.75 + min(0.2, (hook_count - 1) * 0.1),
+                "stereo_width": 1.0 + min(0.16, (hook_count - 1) * 0.08),
+            }
 
     return sections
 
@@ -373,6 +393,14 @@ _PRODUCER_MOVE_TYPES = {
     "disable_stem",
     "stem_gain_change",
     "stem_filter",
+    "drum_fill",
+    "snare_roll",
+    "pre_hook_silence",
+    "riser_fx",
+    "crash_hit",
+    "reverse_cymbal",
+    "drop_kick",
+    "bass_pause",
     "silence_drop",
     "pre_hook_mute",
     "fill_event",
@@ -409,6 +437,55 @@ def _apply_producer_move_effect(
         if "hats" in str(params.get("stems", "")).lower() or "fx" in str(params.get("stems", "")).lower():
             boosted = boosted.overlay(segment.high_pass_filter(2500) + 3, gain_during_overlay=-2)
         return boosted
+
+    if move_type == "drum_fill":
+        fill_len = int(min(len(segment), bar_duration_ms * 0.55))
+        fill_start = max(0, len(segment) - fill_len)
+        fill = segment[fill_start:].high_pass_filter(2300) + (4 + 3 * intensity)
+        return segment[:fill_start] + fill
+
+    if move_type == "snare_roll":
+        roll_len = int(min(len(segment), bar_duration_ms * 0.5))
+        roll = segment[max(0, len(segment) - roll_len):].high_pass_filter(1800)
+        grid = max(20, int(bar_duration_ms / (24 + int(10 * intensity))))
+        stutter = AudioSegment.silent(duration=0)
+        for ms in range(0, len(roll), grid):
+            chunk = roll[ms: min(len(roll), ms + grid)]
+            stutter += chunk + (4 if (ms // grid) % 2 == 0 else -2)
+        return segment[:max(0, len(segment) - roll_len)] + stutter
+
+    if move_type == "pre_hook_silence":
+        mute_ms = int(min(len(segment), bar_duration_ms * (0.45 + 0.3 * intensity)))
+        return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
+
+    if move_type == "riser_fx":
+        tail_len = int(min(len(segment), bar_duration_ms * 0.75))
+        start = max(0, len(segment) - tail_len)
+        tail = segment[start:].high_pass_filter(250)
+        tail = tail.fade_in(max(1, tail_len // 3)) + (2 + 3 * intensity)
+        return segment[:start] + tail
+
+    if move_type == "crash_hit":
+        hit = segment.high_pass_filter(2200) + (5 + 2 * intensity)
+        hit_window = min(len(hit), int(bar_duration_ms * 0.2))
+        if hit_window <= 0:
+            return segment
+        return hit[:hit_window].overlay(segment[:hit_window], gain_during_overlay=-4) + segment[hit_window:]
+
+    if move_type == "reverse_cymbal":
+        rev_len = int(min(len(segment), bar_duration_ms * 0.75))
+        start = max(0, len(segment) - rev_len)
+        rev = segment[start:].reverse().high_pass_filter(1600)
+        return segment[:start] + rev
+
+    if move_type == "drop_kick":
+        drop_len = int(min(len(segment), bar_duration_ms * 0.35))
+        return AudioSegment.silent(duration=drop_len) + segment[drop_len:]
+
+    if move_type == "bass_pause":
+        pause_len = int(min(len(segment), bar_duration_ms * 0.5))
+        head = segment[:pause_len].high_pass_filter(220)
+        return head + segment[pause_len:]
 
     if move_type == "disable_stem":
         reduced = segment - (4 + 4 * intensity)
@@ -802,6 +879,8 @@ def _render_producer_arrangement(
         elif section_type in {"drop", "hook", "chorus"}:
             # DROP/HOOK: MAXIMUM IMPACT - full volume, no filtering, hard hit
             logger.info(f"Processing DROP section: {section_name}")
+            hook_evolution = section.get("hook_evolution") if isinstance(section.get("hook_evolution"), dict) else {}
+            hook_stage = str(hook_evolution.get("stage") or "hook1").strip().lower()
             
             # Add dramatic silence before hook for impact (unless it's the very first section)
             if bar_start > 0 and section_idx > 0:
@@ -823,6 +902,15 @@ def _render_producer_arrangement(
                 # Overlay a bright signal for extra punch
                 bright = section_audio.high_pass_filter(100) + 2
                 section_audio = section_audio.overlay(bright, gain_during_overlay=-2)
+
+            if hook_stage == "hook2":
+                section_audio = section_audio + 1
+                section_audio = section_audio.overlay(section_audio.high_pass_filter(2200) + 2, gain_during_overlay=-3)
+            elif hook_stage == "hook3":
+                section_audio = section_audio + 2
+                bright_wide = section_audio.high_pass_filter(1800) + 3
+                body = section_audio.low_pass_filter(250) + 1
+                section_audio = section_audio.overlay(bright_wide, gain_during_overlay=-3).overlay(body, gain_during_overlay=-4)
             
         elif section_type in {"breakdown", "bridge", "break"}:
             # BREAKDOWN: Very quiet, sparse, ambient
@@ -980,6 +1068,11 @@ def _render_producer_arrangement(
             "loop_variant": section_loop_variant or "verse",
             "bars": section_bars,
             "energy": section_energy,
+            "active_stem_roles": section.get("active_stem_roles") or section.get("instruments") or [],
+            "transition_out": section.get("transition_out") or (
+                (transition_info.get("transition_type") or transition_info.get("type")) if transition_info else "none"
+            ),
+            "hook_evolution": section.get("hook_evolution"),
             "start_bar": bar_start,
             "end_bar": bar_end,
             "start_seconds": round(start_seconds, 3),
