@@ -8,6 +8,9 @@ from app.services.arrangement_jobs import _parse_style_profile
 from app.schemas.style_profile import StyleProfile, StyleIntent, StyleOverrides
 
 
+pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")
+
+
 class TestStyleProfileSerialization:
     """Test StyleProfile JSON serialization/deserialization."""
 

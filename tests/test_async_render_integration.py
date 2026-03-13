@@ -16,6 +16,9 @@ from app.models.job import RenderJob
 from app.schemas.job import RenderJobRequest
 
 
+pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")
+
+
 @pytest.fixture
 def mock_db():
     """Mock database session."""

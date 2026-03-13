@@ -132,3 +132,16 @@ def test_ingest_stem_files_rejects_unusable_stems() -> None:
                 StemSourceFile(filename="bass.wav", content=_wav_bytes(frequency=55, duration_ms=200)),
             ]
         )
+
+
+def test_ingest_stem_files_downgrades_severe_duration_mismatch_to_warning() -> None:
+    result = ingest_stem_files(
+        [
+            StemSourceFile(filename="kick.wav", content=_wav_bytes(frequency=80, duration_ms=1000)),
+            StemSourceFile(filename="bass.wav", content=_wav_bytes(frequency=55, duration_ms=19000)),
+        ]
+    )
+
+    assert result.duration_ms == 19000
+    assert result.fallback_to_loop is True
+    assert any("Severe stem duration mismatch" in warning for warning in result.validation_warnings)

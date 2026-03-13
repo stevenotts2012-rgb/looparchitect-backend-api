@@ -472,6 +472,33 @@ async def create_loop_with_upload(
                 stem_s3_keys=stem_keys,
                 bars=analysis_result.get("bars"),
             )
+            can_use_stem_path = bool(
+                uploaded_stem_metadata.get("enabled")
+                and uploaded_stem_metadata.get("succeeded")
+                and not uploaded_stem_metadata.get("fallback_to_loop", False)
+            )
+            loop.is_stem_pack = "true" if can_use_stem_path else "false"
+            loop.stem_roles_json = json.dumps(stem_keys)
+            loop.stem_files_json = json.dumps(
+                {
+                    role: {
+                        "file_key": key,
+                        "s3_key": key,
+                        "duration_ms": ingest_result.duration_ms,
+                        "source_files": ingest_result.role_sources.get(role, []),
+                    }
+                    for role, key in stem_keys.items()
+                }
+            )
+            loop.stem_validation_json = json.dumps(
+                {
+                    "is_valid": can_use_stem_path,
+                    "auto_aligned": bool((uploaded_stem_metadata.get("alignment") or {}).get("auto_aligned", False)),
+                    "confidence": (uploaded_stem_metadata.get("alignment") or {}).get("confidence"),
+                    "fallback_to_loop": bool(uploaded_stem_metadata.get("fallback_to_loop", False)),
+                    "warnings": list(uploaded_stem_metadata.get("warnings") or []),
+                }
+            )
             loop.analysis_json = _build_uploaded_stem_analysis_json(
                 analysis_result,
                 stem_metadata=uploaded_stem_metadata,

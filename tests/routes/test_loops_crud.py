@@ -502,6 +502,12 @@ class TestLoopWithFile:
 
         ingest_result = MagicMock()
         ingest_result.mixed_preview = AudioSegment.silent(duration=1000)
+        ingest_result.duration_ms = 1000
+        ingest_result.role_sources = {
+            "drums": ["drums.wav"],
+            "bass": ["bass.wav"],
+            "melody": ["lead.wav"],
+        }
         ingest_result.role_stems = {
             "drums": AudioSegment.silent(duration=1000),
             "bass": AudioSegment.silent(duration=1000),
@@ -558,6 +564,11 @@ class TestLoopWithFile:
 
         ingest_result = MagicMock()
         ingest_result.mixed_preview = AudioSegment.silent(duration=2000)
+        ingest_result.duration_ms = 2000
+        ingest_result.role_sources = {
+            "drums": ["drums.wav"],
+            "harmony": ["pad.wav"],
+        }
         ingest_result.role_stems = {
             "drums": AudioSegment.silent(duration=2000),
             "harmony": AudioSegment.silent(duration=2000),

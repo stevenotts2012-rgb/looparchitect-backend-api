@@ -7,16 +7,20 @@ import json
 import wave
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from pydub import AudioSegment
 
 from app.main import app
-from app.db import SessionLocal
+import app.db as db_module
 from app.models.arrangement import Arrangement
 from app.services.arrangement_jobs import run_arrangement_job
 from app.services.arrangement_engine import render_phase_b_arrangement
 from app.services.storage import storage
 from app.config import settings
+
+
+pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")
 
 
 def _make_wav_bytes(duration_ms: int = 4000) -> bytes:
@@ -74,7 +78,7 @@ def test_api_create_loop_arrange_render_job_completes_and_plan_has_events():
     # Run worker directly for deterministic completion assertion.
     run_arrangement_job(arrangement_id)
 
-    db = SessionLocal()
+    db = db_module.SessionLocal()
     try:
         arrangement = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
         assert arrangement is not None

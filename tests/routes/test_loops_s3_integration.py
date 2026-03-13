@@ -18,6 +18,9 @@ from app.models.base import Base
 from app.services.storage import storage
 
 
+pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
