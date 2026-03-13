@@ -291,7 +291,11 @@ async def lifespan(app: FastAPI):
     create_tables_if_missing()
 
     # Run Alembic migrations to apply any pending schema changes (idempotent)
-    run_migrations()
+    # Non-fatal: log errors but don't prevent the app from starting
+    try:
+        run_migrations()
+    except Exception as _mig_err:
+        logger.error("⚠️  Startup migration error (non-fatal): %s", _mig_err)
 
     logger.info("✅ Application startup complete")
     
