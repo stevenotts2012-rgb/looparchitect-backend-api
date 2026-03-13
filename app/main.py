@@ -170,21 +170,26 @@ def create_tables_if_missing():
             # Ensure newer arrangement columns exist for deployments that skipped migrations
             if "arrangements" in inspector.get_table_names():
                 existing_columns = {col["name"] for col in inspector.get_columns("arrangements")}
-                required_columns = {
-                    "style_profile_json": "TEXT",
-                    "ai_parsing_used": "BOOLEAN DEFAULT false",
-                    "producer_arrangement_json": "TEXT",
-                    "render_plan_json": "TEXT",
-                    "progress": "FLOAT DEFAULT 0.0",
-                    "progress_message": "VARCHAR(256)",
-                    "output_s3_key": "VARCHAR",
-                    "output_url": "VARCHAR",
+                required_loop_columns = {
+                    "name": "VARCHAR",
+                    "tempo": "FLOAT",
+                    "key": "VARCHAR",
+                    "filename": "VARCHAR",
+                    "file_url": "VARCHAR",
+                    "file_key": "VARCHAR",
+                    "bpm": "INTEGER",
+                    "bars": "INTEGER",
+                    "musical_key": "VARCHAR",
+                    "genre": "VARCHAR",
+                    "processed_file_url": "VARCHAR",
+                    "analysis_json": "TEXT",
+                    "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                    # stem-pack columns (added 2026-03-13)
+                    "is_stem_pack": "VARCHAR DEFAULT 'false'",
+                    "stem_roles_json": "TEXT",
+                    "stem_files_json": "TEXT",
+                    "stem_validation_json": "TEXT",
                 }
-
-                for column_name, column_type in required_columns.items():
-                    if column_name not in existing_columns:
-                        connection.execute(
-                            text(
                                 f"ALTER TABLE arrangements ADD COLUMN {column_name} {column_type}"
                             )
                         )
