@@ -185,7 +185,7 @@ def create_tables_if_missing():
                     "analysis_json": "TEXT",
                     "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
                     # stem-pack columns (added 2026-03-13)
-                    "is_stem_pack": "VARCHAR DEFAULT 'false'",
+                    "is_stem_pack": "VARCHAR",
                     "stem_roles_json": "TEXT",
                     "stem_files_json": "TEXT",
                     "stem_validation_json": "TEXT",
@@ -291,9 +291,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Storage backend: local")
     
+
+
     # Create tables if they don't exist (application-level fallback)
-    # This is safer than Alembic migrations when tables already exist
-    create_tables_if_missing()
+    # Non-fatal: log errors but don't prevent the app from starting
+    try:
+        create_tables_if_missing()
+    except Exception as _tbl_err:
+        logger.error("⚠️  Startup table-init error (non-fatal): %s", _tbl_err)
 
     # Run Alembic migrations to apply any pending schema changes (idempotent)
     # Non-fatal: log errors but don't prevent the app from starting
@@ -301,9 +306,8 @@ async def lifespan(app: FastAPI):
         run_migrations()
     except Exception as _mig_err:
         logger.error("⚠️  Startup migration error (non-fatal): %s", _mig_err)
-
-    logger.info("✅ Application startup complete")
     
+    logger.info("✅ Application startup complete")
     yield
     
     # Shutdown
