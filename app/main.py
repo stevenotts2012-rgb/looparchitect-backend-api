@@ -289,7 +289,10 @@ async def lifespan(app: FastAPI):
     # Create tables if they don't exist (application-level fallback)
     # This is safer than Alembic migrations when tables already exist
     create_tables_if_missing()
-    
+
+    # Run Alembic migrations to apply any pending schema changes (idempotent)
+    run_migrations()
+
     logger.info("✅ Application startup complete")
     
     yield
