@@ -3,6 +3,7 @@ Tests for health check endpoints with FFmpeg validation.
 """
 
 import pytest
+from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 from main import app
 
@@ -88,3 +89,40 @@ def test_health_legacy_endpoint(client):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
+
+
+def test_health_queue_debug_with_redis(client):
+    """Queue debug endpoint should report queue depth when Redis is available."""
+    mock_conn = MagicMock()
+    mock_conn.ping.return_value = True
+
+    mock_queue = MagicMock()
+    mock_queue.count = 3
+    mock_queue.failed_job_registry = [object()]
+
+    with patch("app.queue.get_redis_conn", return_value=mock_conn), patch(
+        "app.queue.get_queue", return_value=mock_queue
+    ):
+        response = client.get("/api/v1/health/queue")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["redis_ok"] is True
+    assert data["queue_depth"] == 3
+    assert data["failed_queue_jobs"] == 1
+    assert "failed_db_jobs" in data
+    assert "queued_db_jobs" in data
+    assert "processing_db_jobs" in data
+
+
+def test_health_queue_debug_without_redis(client):
+    """Queue debug endpoint should return diagnostics even if Redis is unavailable."""
+    with patch("app.queue.get_redis_conn", side_effect=RuntimeError("redis down")):
+        response = client.get("/api/v1/health/queue")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["redis_ok"] is False
+    assert data["queue_depth"] is None
+    assert data["failed_queue_jobs"] is None
+    assert "redis down" in (data["error"] or "")

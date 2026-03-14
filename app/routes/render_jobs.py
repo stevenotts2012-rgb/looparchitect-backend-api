@@ -62,6 +62,8 @@ async def render_arrangement_async(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.get("/jobs/{job_id}", response_model=RenderJobStatusResponse)

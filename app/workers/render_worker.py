@@ -168,6 +168,14 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     try:
         arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
 
+        logger.info(
+            "[%s] render_loop_worker START loop_id=%s arrangement_id=%s params=%s",
+            job_id,
+            loop_id,
+            arrangement_id,
+            params,
+        )
+
         if arrangement_id is not None:
             logger.info(
                 "[%s] Arrangement-mode render job detected: arrangement_id=%s loop_id=%s",
@@ -184,7 +192,17 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
             from app.services.arrangement_jobs import run_arrangement_job
 
+            logger.info(
+                "[%s] Arrangement-mode BEFORE run_arrangement_job(arrangement_id=%s)",
+                job_id,
+                arrangement_id,
+            )
             run_arrangement_job(int(arrangement_id))
+            logger.info(
+                "[%s] Arrangement-mode AFTER run_arrangement_job(arrangement_id=%s)",
+                job_id,
+                arrangement_id,
+            )
 
             update_job_status(
                 db,
@@ -195,6 +213,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
             logger.info("[%s] Arrangement-mode render job completed", job_id)
             return
+
+        logger.info("[%s] Legacy render-mode job detected for loop_id=%s", job_id, loop_id)
 
         # Load job and loop
         job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
@@ -342,7 +362,14 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             logger.info(f"[{job_id}] Render completed successfully")
     
     except Exception as e:
-        logger.error(f"[{job_id}] Worker failed: {e}\n{traceback.format_exc()}")
+        logger.exception(
+            "[%s] Worker failed loop_id=%s arrangement_id=%s params=%s error=%s",
+            job_id,
+            loop_id,
+            arrangement_id if 'arrangement_id' in locals() else None,
+            params,
+            e,
+        )
         try:
             job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
             if job:

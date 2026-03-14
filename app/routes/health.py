@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
+from app.models.job import RenderJob
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -122,3 +123,54 @@ async def health_check_legacy():
 async def readiness_check_legacy(db: Session = Depends(get_db)):
     """Backward-compatible readiness endpoint."""
     return await health_ready(db)
+
+
+@router.get("/health/queue")
+async def health_queue_debug(db: Session = Depends(get_db)):
+    """Queue debug endpoint: queue depth and failed job counts."""
+    def _count_jobs_by_status(status_value: str):
+        try:
+            value = db.execute(
+                text("SELECT COUNT(*) FROM render_jobs WHERE status = :status"),
+                {"status": status_value},
+            ).scalar()
+            return int(value or 0)
+        except Exception as exc:
+            logger.warning("Queue debug DB count failed for status=%s: %s", status_value, exc)
+            return None
+
+    failed_db_jobs = _count_jobs_by_status("failed")
+    queued_db_jobs = _count_jobs_by_status("queued")
+    processing_db_jobs = _count_jobs_by_status("processing")
+
+    queue_name = "render"
+    redis_ok = False
+    queue_depth = None
+    failed_queue_jobs = None
+    queue_error = None
+
+    try:
+        from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_redis_conn, get_queue
+
+        queue_name = DEFAULT_RENDER_QUEUE_NAME
+        redis_conn = get_redis_conn()
+        redis_ok = bool(redis_conn.ping())
+
+        queue = get_queue(redis_conn, name=queue_name)
+        queue_depth = int(queue.count)
+        failed_queue_jobs = int(len(queue.failed_job_registry))
+    except Exception as exc:
+        queue_error = str(exc)
+        logger.warning("Queue debug check failed: %s", exc)
+
+    return {
+        "ok": bool(redis_ok),
+        "queue_name": queue_name,
+        "redis_ok": redis_ok,
+        "queue_depth": queue_depth,
+        "failed_queue_jobs": failed_queue_jobs,
+        "failed_db_jobs": int(failed_db_jobs) if failed_db_jobs is not None else None,
+        "queued_db_jobs": int(queued_db_jobs) if queued_db_jobs is not None else None,
+        "processing_db_jobs": int(processing_db_jobs) if processing_db_jobs is not None else None,
+        "error": queue_error,
+    }

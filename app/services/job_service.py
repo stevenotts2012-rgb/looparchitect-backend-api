@@ -92,20 +92,35 @@ def create_render_job(
     db.add(job)
     db.commit()
     db.refresh(job)
-    
-    logger.info(f"Created render job: job_id={job_id}, loop_id={loop_id}")
-    
-    # Enqueue to Redis
-    queue = get_queue(name=DEFAULT_RENDER_QUEUE_NAME)
-    from app.workers.render_worker import render_loop_worker
 
-    queue.enqueue(render_loop_worker, job_id, loop_id, params)
-    logger.info(
-        "Enqueued render job: job_id=%s queue_name=%s function_name=%s",
-        job_id,
-        queue.name,
-        render_loop_worker.__name__,
-    )
+    logger.info(f"Created render job: job_id={job_id}, loop_id={loop_id}")
+
+    # Enqueue to Redis (never leave silent orphaned queued jobs on enqueue failure)
+    try:
+        queue = get_queue(name=DEFAULT_RENDER_QUEUE_NAME)
+        from app.workers.render_worker import render_loop_worker
+
+        queue.enqueue(render_loop_worker, job_id, loop_id, params)
+        logger.info(
+            "Enqueued render job: job_id=%s queue_name=%s function_name=%s",
+            job_id,
+            queue.name,
+            render_loop_worker.__name__,
+        )
+    except Exception as enqueue_error:
+        logger.exception(
+            "Failed to enqueue render job: job_id=%s loop_id=%s",
+            job_id,
+            loop_id,
+        )
+        job.status = "failed"
+        job.error_message = f"Queue enqueue failed: {enqueue_error}"
+        job.progress = 0.0
+        job.progress_message = "Queue unavailable"
+        job.finished_at = datetime.utcnow()
+        db.commit()
+        db.refresh(job)
+        raise RuntimeError(f"Failed to enqueue render job: {enqueue_error}") from enqueue_error
     
     return job, False
 

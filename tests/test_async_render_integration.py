@@ -119,6 +119,35 @@ class TestJobService:
         assert job.error_message == "S3 upload timeout"
         assert job.retry_count == 2
 
+    @patch("app.services.job_service.get_queue")
+    @patch("app.services.job_service._find_existing_job", return_value=None)
+    def test_create_render_job_marks_failed_when_enqueue_errors(
+        self,
+        _mock_find_existing,
+        mock_get_queue,
+        render_params,
+    ):
+        """If Redis enqueue fails, DB job must not remain queued."""
+        from app.models.loop import Loop
+
+        mock_db = MagicMock()
+        loop = Loop(id=123, file_key="loops/test.wav")
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value.first.return_value = loop
+        mock_db.query.return_value = mock_query
+
+        mock_get_queue.side_effect = RuntimeError("redis unavailable")
+
+        with pytest.raises(RuntimeError):
+            create_render_job(mock_db, loop_id=123, params=render_params)
+
+        created_job = mock_db.add.call_args[0][0]
+        assert created_job.status == "failed"
+        assert created_job.progress_message == "Queue unavailable"
+        assert "Queue enqueue failed" in (created_job.error_message or "")
+        assert mock_db.commit.call_count >= 2
+
 
 class TestAsyncRenderSchemas:
     """Test Pydantic request/response schemas."""

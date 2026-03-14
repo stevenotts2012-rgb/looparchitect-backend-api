@@ -689,6 +689,12 @@ async def generate_arrangement(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to enqueue arrangement job: {enqueue_error}",
         )
+    except RuntimeError as enqueue_error:
+        logger.exception("Queue unavailable while enqueuing arrangement_id=%s", arrangement.id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Background queue unavailable: {enqueue_error}",
+        )
 
     logger.info(
         "Arrangement job enqueued: arrangement_id=%s job_id=%s queue_name=%s",
