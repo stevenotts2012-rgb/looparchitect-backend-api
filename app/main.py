@@ -22,7 +22,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-_embedded_worker_thread: threading.Thread | None = None
+_embedded_worker_threads: list[threading.Thread] = []
 
 
 def _start_embedded_rq_worker_if_enabled() -> None:
@@ -30,7 +30,7 @@ def _start_embedded_rq_worker_if_enabled() -> None:
 
     This is a deployment-safe fallback for environments that only launch the web process.
     """
-    global _embedded_worker_thread
+    global _embedded_worker_threads
 
     enabled = os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").strip().lower() in {
         "1",
@@ -42,9 +42,19 @@ def _start_embedded_rq_worker_if_enabled() -> None:
         logger.info("Embedded RQ worker disabled via ENABLE_EMBEDDED_RQ_WORKER")
         return
 
-    if _embedded_worker_thread and _embedded_worker_thread.is_alive():
-        logger.info("Embedded RQ worker already running")
+    worker_count_raw = os.getenv("EMBEDDED_RQ_WORKER_COUNT", "2").strip()
+    try:
+        worker_count = max(1, int(worker_count_raw))
+    except ValueError:
+        worker_count = 2
+
+    alive_workers = [thread for thread in _embedded_worker_threads if thread.is_alive()]
+    if len(alive_workers) >= worker_count:
+        logger.info("Embedded RQ workers already running: count=%s", len(alive_workers))
+        _embedded_worker_threads = alive_workers
         return
+
+    _embedded_worker_threads = alive_workers
 
     try:
         from app.queue import is_redis_available
@@ -64,13 +74,19 @@ def _start_embedded_rq_worker_if_enabled() -> None:
         except Exception:
             logger.exception("Embedded RQ worker exited unexpectedly")
 
-    _embedded_worker_thread = threading.Thread(
-        target=_worker_target,
-        name="embedded-rq-worker",
-        daemon=True,
-    )
-    _embedded_worker_thread.start()
-    logger.info("Embedded RQ worker thread started")
+    workers_to_start = worker_count - len(_embedded_worker_threads)
+    for index in range(workers_to_start):
+        worker_number = len(_embedded_worker_threads) + 1
+        thread = threading.Thread(
+            target=_worker_target,
+            name=f"embedded-rq-worker-{worker_number}",
+            daemon=True,
+        )
+        thread.start()
+        _embedded_worker_threads.append(thread)
+        logger.info("Embedded RQ worker thread started: name=%s", thread.name)
+
+    logger.info("Embedded RQ workers active: count=%s", len(_embedded_worker_threads))
 
 
 def _is_railway_environment() -> bool:
