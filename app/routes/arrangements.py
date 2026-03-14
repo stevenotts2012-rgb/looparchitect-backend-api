@@ -10,7 +10,9 @@ import tempfile
 import json
 import asyncio
 import io
+import threading
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import boto3
 from botocore.exceptions import ClientError
@@ -34,7 +36,7 @@ from app.schemas.arrangement import (
 from app.schemas.style_profile import StyleOverrides
 from app.services.audit_logging import log_feature_event
 from app.services.job_service import create_render_job
-from app.queue import DEFAULT_RENDER_QUEUE_NAME, is_redis_available
+from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_queue, is_redis_available
 from app.services.style_service import style_service
 from app.services.llm_style_parser import llm_style_parser
 from app.services.rule_based_fallback import parse_with_rules
@@ -77,6 +79,66 @@ def _sync_arrangement_status_from_job(db: Session, arrangement: Arrangement) -> 
         arrangement.progress_message = linked_job.progress_message or "Running arrangement job"
         db.commit()
         db.refresh(arrangement)
+        return arrangement
+
+    is_stale_queued = (
+        linked_job.status == "queued"
+        and linked_job.created_at is not None
+        and linked_job.created_at <= datetime.utcnow() - timedelta(seconds=45)
+    )
+
+    if arrangement.status == "queued" and is_stale_queued:
+        logger.warning(
+            "Detected stale queued arrangement; starting fallback worker: arrangement_id=%s job_id=%s age_seconds=%s",
+            arrangement.id,
+            linked_job.id,
+            int((datetime.utcnow() - linked_job.created_at).total_seconds()) if linked_job.created_at else None,
+        )
+
+        try:
+            queue = get_queue(name=DEFAULT_RENDER_QUEUE_NAME)
+            rq_job = queue.fetch_job(linked_job.id)
+            if rq_job:
+                try:
+                    rq_job.cancel()
+                except Exception:
+                    pass
+                rq_job.delete()
+        except Exception:
+            logger.warning("Could not cancel queued RQ job for fallback launch: job_id=%s", linked_job.id, exc_info=True)
+
+        linked_job.status = "processing"
+        linked_job.started_at = datetime.utcnow()
+        linked_job.progress = max(float(linked_job.progress or 0.0), 10.0)
+        linked_job.progress_message = "Fallback worker started"
+        arrangement.status = "processing"
+        arrangement.progress = max(float(arrangement.progress or 0.0), 10.0)
+        arrangement.progress_message = "Fallback worker started"
+        db.commit()
+        db.refresh(arrangement)
+
+        fallback_job_id = str(linked_job.id)
+        fallback_loop_id = int(linked_job.loop_id)
+        fallback_params_json = linked_job.params_json
+
+        def _run_fallback() -> None:
+            try:
+                from app.workers.render_worker import render_loop_worker
+
+                params = json.loads(fallback_params_json) if fallback_params_json else {}
+                render_loop_worker(fallback_job_id, fallback_loop_id, params)
+            except Exception:
+                logger.exception(
+                    "Fallback worker execution failed: arrangement_id=%s job_id=%s",
+                    arrangement.id,
+                    fallback_job_id,
+                )
+
+        threading.Thread(
+            target=_run_fallback,
+            name=f"arrangement-fallback-{arrangement.id}",
+            daemon=True,
+        ).start()
         return arrangement
 
     if linked_job.status == "failed" and arrangement.status in {"queued", "processing"}:
