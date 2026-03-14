@@ -213,22 +213,57 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             rq_job_id = None
 
         logger.info(
-            "Worker start: incoming_job_id=%s app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s params=%s",
+            "Worker job received: incoming_job_id=%s app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s",
             job_id,
             app_job_id,
             rq_job_id,
             arrangement_id,
             loop_id,
-            params,
+        )
+        logger.info(
+            "Worker start processing: app_job_id=%s arrangement_id=%s loop_id=%s",
+            app_job_id,
+            arrangement_id,
+            loop_id,
         )
 
         if arrangement_id is not None:
+            from app.models.arrangement import Arrangement
+
+            arrangement_row = (
+                db.query(Arrangement)
+                .filter(Arrangement.id == int(arrangement_id))
+                .first()
+            )
+            if not arrangement_row:
+                logger.error(
+                    "Arrangement row not found for worker job: app_job_id=%s arrangement_id=%s loop_id=%s",
+                    app_job_id,
+                    arrangement_id,
+                    loop_id,
+                )
+                update_job_status(
+                    db,
+                    app_job_id,
+                    "failed",
+                    error_message=f"Arrangement {arrangement_id} not found",
+                )
+                return
+
+            if arrangement_row.status == "queued":
+                arrangement_row.status = "processing"
+                arrangement_row.progress = 5.0
+                arrangement_row.progress_message = "Worker accepted job"
+                db.commit()
+
             logger.info(
-                "[%s] Arrangement-mode render job detected: arrangement_id=%s loop_id=%s",
-                job_id,
+                "Arrangement-mode worker context: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s",
+                app_job_id,
                 arrangement_id,
                 loop_id,
+                arrangement_row.status,
             )
+
             update_job_status(
                 db,
                 app_job_id,
@@ -239,25 +274,78 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             from app.services.arrangement_jobs import run_arrangement_job
 
             logger.info(
-                "[%s] Arrangement-mode BEFORE run_arrangement_job(arrangement_id=%s)",
-                job_id,
+                "Arrangement-mode START run_arrangement_job: app_job_id=%s arrangement_id=%s loop_id=%s",
+                app_job_id,
                 arrangement_id,
+                loop_id,
             )
             run_arrangement_job(int(arrangement_id))
             logger.info(
-                "[%s] Arrangement-mode AFTER run_arrangement_job(arrangement_id=%s)",
-                job_id,
+                "Arrangement-mode END run_arrangement_job: app_job_id=%s arrangement_id=%s loop_id=%s",
+                app_job_id,
                 arrangement_id,
+                loop_id,
             )
+
+            db.expire_all()
+            arrangement_row = (
+                db.query(Arrangement)
+                .filter(Arrangement.id == int(arrangement_id))
+                .first()
+            )
+
+            if arrangement_row and arrangement_row.status == "done":
+                update_job_status(
+                    db,
+                    app_job_id,
+                    "succeeded",
+                    progress=100.0,
+                    progress_message="Arrangement job completed",
+                )
+                logger.info(
+                    "Worker success: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s",
+                    app_job_id,
+                    arrangement_id,
+                    loop_id,
+                    arrangement_row.status,
+                )
+                return
+
+            if arrangement_row and arrangement_row.status == "failed":
+                update_job_status(
+                    db,
+                    app_job_id,
+                    "failed",
+                    error_message=arrangement_row.error_message or "Arrangement job failed",
+                )
+                logger.error(
+                    "Worker failure: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s error=%s",
+                    app_job_id,
+                    arrangement_id,
+                    loop_id,
+                    arrangement_row.status,
+                    arrangement_row.error_message,
+                )
+                return
+
+            if arrangement_row:
+                arrangement_row.status = "failed"
+                arrangement_row.error_message = "Arrangement worker did not produce terminal status"
+                arrangement_row.progress_message = "Worker failed"
+                db.commit()
 
             update_job_status(
                 db,
                 app_job_id,
-                "succeeded",
-                progress=100.0,
-                progress_message="Arrangement job completed",
+                "failed",
+                error_message="Arrangement worker did not produce terminal status",
             )
-            logger.info("[%s] Arrangement-mode render job completed", app_job_id)
+            logger.error(
+                "Worker failure: app_job_id=%s arrangement_id=%s loop_id=%s reason=no terminal arrangement status",
+                app_job_id,
+                arrangement_id,
+                loop_id,
+            )
             return
 
         logger.info("[%s] Legacy render-mode job detected for loop_id=%s", app_job_id, loop_id)
@@ -409,7 +497,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     
     except Exception as e:
         logger.exception(
-            "[%s] Worker failed loop_id=%s arrangement_id=%s params=%s error=%s",
+            "Worker failure with traceback: app_job_id=%s incoming_job_id=%s loop_id=%s arrangement_id=%s params=%s error=%s",
+            app_job_id,
             job_id,
             loop_id,
             arrangement_id if 'arrangement_id' in locals() else None,
