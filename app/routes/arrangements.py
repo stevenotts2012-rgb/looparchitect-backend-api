@@ -84,7 +84,7 @@ def _sync_arrangement_status_from_job(db: Session, arrangement: Arrangement) -> 
     is_stale_queued = (
         linked_job.status == "queued"
         and linked_job.created_at is not None
-        and linked_job.created_at <= datetime.utcnow() - timedelta(seconds=45)
+        and linked_job.created_at <= datetime.utcnow() - timedelta(seconds=15)
     )
 
     if arrangement.status == "queued" and is_stale_queued:
