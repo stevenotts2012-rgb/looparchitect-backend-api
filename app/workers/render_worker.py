@@ -156,6 +156,40 @@ def _upload_render_output(job_id: str, filename: str, file_path: Path) -> tuple[
     return s3_key, content_type
 
 
+def _resolve_app_job_id(db: Session, incoming_job_id: str) -> str:
+    """Resolve the app-level job id for worker status updates."""
+    direct_match = db.query(RenderJob).filter(RenderJob.id == incoming_job_id).first()
+    if direct_match:
+        return incoming_job_id
+
+    rq_job_id = None
+    try:
+        from rq import get_current_job
+
+        current_rq_job = get_current_job()
+        rq_job_id = current_rq_job.id if current_rq_job else None
+    except Exception:
+        rq_job_id = None
+
+    if rq_job_id and rq_job_id != incoming_job_id:
+        rq_match = db.query(RenderJob).filter(RenderJob.id == rq_job_id).first()
+        if rq_match:
+            logger.warning(
+                "Worker job id mismatch resolved: incoming_job_id=%s rq_job_id=%s using_app_job_id=%s",
+                incoming_job_id,
+                rq_job_id,
+                rq_job_id,
+            )
+            return rq_job_id
+
+    logger.error(
+        "Worker could not resolve app job id: incoming_job_id=%s rq_job_id=%s",
+        incoming_job_id,
+        rq_job_id,
+    )
+    return incoming_job_id
+
+
 def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     """
     Worker function: process a single render job.
@@ -164,15 +198,27 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     """
     _ensure_db_models()
     db = SessionLocal()
+    app_job_id = job_id
     
     try:
         arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
+        app_job_id = _resolve_app_job_id(db, job_id)
+        rq_job_id = None
+        try:
+            from rq import get_current_job
+
+            current_rq_job = get_current_job()
+            rq_job_id = current_rq_job.id if current_rq_job else None
+        except Exception:
+            rq_job_id = None
 
         logger.info(
-            "[%s] render_loop_worker START loop_id=%s arrangement_id=%s params=%s",
+            "Worker start: incoming_job_id=%s app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s params=%s",
             job_id,
-            loop_id,
+            app_job_id,
+            rq_job_id,
             arrangement_id,
+            loop_id,
             params,
         )
 
@@ -185,7 +231,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
             update_job_status(
                 db,
-                job_id,
+                app_job_id,
                 "processing",
                 progress=10.0,
                 progress_message="Running arrangement job",
@@ -206,28 +252,28 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
             update_job_status(
                 db,
-                job_id,
+                app_job_id,
                 "succeeded",
                 progress=100.0,
                 progress_message="Arrangement job completed",
             )
-            logger.info("[%s] Arrangement-mode render job completed", job_id)
+            logger.info("[%s] Arrangement-mode render job completed", app_job_id)
             return
 
-        logger.info("[%s] Legacy render-mode job detected for loop_id=%s", job_id, loop_id)
+        logger.info("[%s] Legacy render-mode job detected for loop_id=%s", app_job_id, loop_id)
 
         # Load job and loop
-        job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
+        job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
         if not job:
-            logger.error(f"Job {job_id} not found in database")
+            logger.error(f"Job {app_job_id} not found in database")
             return
         
         loop = db.query(Loop).filter(Loop.id == loop_id).first()
         if not loop:
-            logger.error(f"Loop {loop_id} not found for job {job_id}")
+            logger.error(f"Loop {loop_id} not found for job {app_job_id}")
             update_job_status(
                 db,
-                job_id,
+                app_job_id,
                 "failed",
                 error_message=f"Loop {loop_id} not found",
             )
@@ -259,18 +305,18 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
         )
         
         # Mark as processing
-        update_job_status(db, job_id, "processing", progress=10.0)
+        update_job_status(db, app_job_id, "processing", progress=10.0)
         
         # Create temporary working directory
         with tempfile.TemporaryDirectory() as temp_dir_str:
             temp_dir = Path(temp_dir_str)
             
             # Download audio
-            update_job_status(db, job_id, "processing", progress=20.0, progress_message="Downloading audio")
+            update_job_status(db, app_job_id, "processing", progress=20.0, progress_message="Downloading audio")
             input_file = _download_loop_audio(loop, temp_dir)
             
             # Load and prepare audio
-            update_job_status(db, job_id, "processing", progress=30.0, progress_message="Loading audio")
+            update_job_status(db, app_job_id, "processing", progress=30.0, progress_message="Loading audio")
             from pydub import AudioSegment
             
             try:
@@ -313,7 +359,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
             update_job_status(
                 db,
-                job_id,
+                app_job_id,
                 "processing",
                 progress=60.0,
                 progress_message="Rendering from render_plan_json",
@@ -341,8 +387,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
 
-            update_job_status(db, job_id, "processing", progress=90.0, progress_message="Uploading")
-            s3_key, content_type = _upload_render_output(job_id, filename, output_path)
+            update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
+            s3_key, content_type = _upload_render_output(app_job_id, filename, output_path)
             output_files = [
                 OutputFile(
                     name="Render Plan Arrangement",
@@ -354,12 +400,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             # Mark as succeeded
             update_job_status(
                 db,
-                job_id,
+                app_job_id,
                 "succeeded",
                 progress=100.0,
                 output_files=output_files,
             )
-            logger.info(f"[{job_id}] Render completed successfully")
+            logger.info(f"[{app_job_id}] Render completed successfully")
     
     except Exception as e:
         logger.exception(
@@ -371,12 +417,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             e,
         )
         try:
-            job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
+            job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
             if job:
                 job.retry_count = (job.retry_count or 0) + 1
                 update_job_status(
                     db,
-                    job_id,
+                    app_job_id,
                     "failed",
                     error_message=f"{str(e)[:500]}",
                 )

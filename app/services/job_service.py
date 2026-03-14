@@ -93,17 +93,27 @@ def create_render_job(
     db.commit()
     db.refresh(job)
 
-    logger.info(f"Created render job: job_id={job_id}, loop_id={loop_id}")
+    arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
+
+    logger.info(
+        "App render job created: app_job_id=%s arrangement_id=%s loop_id=%s",
+        job_id,
+        arrangement_id,
+        loop_id,
+    )
 
     # Enqueue to Redis (never leave silent orphaned queued jobs on enqueue failure)
     try:
         queue = get_queue(name=DEFAULT_RENDER_QUEUE_NAME)
         from app.workers.render_worker import render_loop_worker
 
-        queue.enqueue(render_loop_worker, job_id, loop_id, params)
+        rq_job = queue.enqueue(render_loop_worker, job_id, loop_id, params, job_id=job_id)
         logger.info(
-            "Enqueued render job: job_id=%s queue_name=%s function_name=%s",
+            "Render job enqueued: app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s queue_name=%s function_name=%s",
             job_id,
+            getattr(rq_job, "id", None),
+            arrangement_id,
+            loop_id,
             queue.name,
             render_loop_worker.__name__,
         )

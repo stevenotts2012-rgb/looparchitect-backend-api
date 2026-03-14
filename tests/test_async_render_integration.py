@@ -121,6 +121,41 @@ class TestJobService:
 
     @patch("app.services.job_service.get_queue")
     @patch("app.services.job_service._find_existing_job", return_value=None)
+    def test_create_render_job_uses_app_job_id_for_worker_and_rq_job(
+        self,
+        _mock_find_existing,
+        mock_get_queue,
+        render_params,
+    ):
+        """Enqueue must pass app job_id to worker and as explicit RQ job id."""
+        from app.models.loop import Loop
+
+        mock_db = MagicMock()
+        loop = Loop(id=123, file_key="loops/test.wav")
+
+        mock_query = MagicMock()
+        mock_query.filter.return_value.first.return_value = loop
+        mock_db.query.return_value = mock_query
+
+        mock_queue = MagicMock()
+        mock_rq_job = MagicMock()
+        mock_rq_job.id = "rq-job-id-123"
+        mock_queue.enqueue.return_value = mock_rq_job
+        mock_get_queue.return_value = mock_queue
+
+        job, _ = create_render_job(mock_db, loop_id=123, params=render_params)
+
+        enqueue_call = mock_queue.enqueue.call_args
+        assert enqueue_call is not None
+        enqueue_args, enqueue_kwargs = enqueue_call
+
+        assert enqueue_args[1] == job.id
+        assert enqueue_args[2] == 123
+        assert enqueue_args[3] == render_params
+        assert enqueue_kwargs["job_id"] == job.id
+
+    @patch("app.services.job_service.get_queue")
+    @patch("app.services.job_service._find_existing_job", return_value=None)
     def test_create_render_job_marks_failed_when_enqueue_errors(
         self,
         _mock_find_existing,
