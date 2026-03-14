@@ -134,6 +134,10 @@ def create_tables_if_missing():
                     "processed_file_url": "VARCHAR",
                     "analysis_json": "TEXT",
                     "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                    "is_stem_pack": "VARCHAR DEFAULT 'false'",
+                    "stem_roles_json": "TEXT",
+                    "stem_files_json": "TEXT",
+                    "stem_validation_json": "TEXT",
                 }
 
                 for column_name, column_type in required_loop_columns.items():
@@ -175,6 +179,9 @@ def create_tables_if_missing():
                     "ai_parsing_used": "BOOLEAN DEFAULT false",
                     "producer_arrangement_json": "TEXT",
                     "render_plan_json": "TEXT",
+                    "stem_arrangement_json": "TEXT",
+                    "stem_render_path": "VARCHAR",
+                    "rendered_from_stems": "BOOLEAN DEFAULT false",
                     "progress": "FLOAT DEFAULT 0.0",
                     "progress_message": "VARCHAR(256)",
                     "output_s3_key": "VARCHAR",
