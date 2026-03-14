@@ -20,6 +20,7 @@ from app.services.job_service import update_job_status
 from app.services.render_executor import render_from_plan
 from app.services.storage import storage
 from app.schemas.job import OutputFile
+from app.services.arrangement_jobs import _parse_stem_metadata_from_loop
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,28 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 )
                 render_plan_json = json.dumps(_build_dev_fallback_render_plan(loop, params))
 
+            # ----------------------------------------------------------------
+            # LOAD STEMS — worker must load stems so render uses real layers
+            # ----------------------------------------------------------------
+            worker_stems = None
+            stem_metadata = _parse_stem_metadata_from_loop(loop)
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                try:
+                    from app.services.stem_loader import StemLoadError, load_stems_from_metadata
+                    worker_stems = load_stems_from_metadata(stem_metadata, timeout_seconds=60.0)
+                    logger.info(
+                        "[%s] Worker loaded %d stems: %s",
+                        job_id, len(worker_stems), list(worker_stems.keys()),
+                    )
+                except Exception as stem_err:
+                    logger.warning(
+                        "[%s] Worker stem load failed (%s) — falling back to stereo",
+                        job_id, stem_err,
+                    )
+                    worker_stems = None
+            else:
+                logger.info("[%s] No stem metadata on loop %d — stereo fallback", job_id, loop_id)
+
             update_job_status(
                 db,
                 job_id,
@@ -252,6 +275,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 render_plan_json=render_plan_json,
                 audio_source=audio,
                 output_path=output_path,
+                stems=worker_stems,
             )
 
             timeline_json = render_result["timeline_json"]

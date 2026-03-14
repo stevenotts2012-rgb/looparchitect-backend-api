@@ -156,6 +156,148 @@ def _apply_headroom_ceiling(audio: AudioSegment, target_peak_dbfs: float = -6.0)
     return audio - (peak - target_peak_dbfs)
 
 
+def debug_render_report(arrangement_id: int) -> list[dict]:
+    """
+    Produce a section-by-section render diagnostics report for one arrangement.
+
+    Returns a list of dicts, one per section, each containing:
+      - section_name, section_type, bars, bar_start
+      - requested_instruments (from render_plan_json)
+      - active_stem_roles (after role selection)
+      - stems_used (list of keys actually passed to audio builder)
+      - pre_dsp_peak_dbfs (peak after stem mix, before section DSP)
+      - post_dsp_peak_dbfs (peak after section DSP)
+      - full_mix_active (bool)
+      - gain_applied_per_stem (dict: stem_name -> dBFS applied)
+      - clip_detected (bool: post_dsp_peak >= 0.0 dBFS)
+
+    This function loads audio from storage, so it should only be called when
+    the arrangement's render_plan_json and loop stems are available.
+
+    Usage::
+        from app.services.arrangement_jobs import debug_render_report
+        report = debug_render_report(arrangement_id=42)
+        for row in report:
+            print(row)
+    """
+    from app.db import SessionLocal
+    from app.models.arrangement import Arrangement
+    from app.models.loop import Loop
+    from app.services.stem_loader import StemLoadError, load_stems_from_metadata, normalize_stem_durations, map_instruments_to_stems
+
+    db = SessionLocal()
+    report: list[dict] = []
+    try:
+        arrangement = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
+        if not arrangement:
+            raise ValueError(f"Arrangement {arrangement_id} not found")
+        loop = db.query(Loop).filter(Loop.id == arrangement.loop_id).first()
+        if not loop:
+            raise ValueError(f"Loop {arrangement.loop_id} not found for arrangement {arrangement_id}")
+
+        render_plan_raw = arrangement.render_plan_json
+        if not render_plan_raw:
+            raise ValueError(f"Arrangement {arrangement_id} has no render_plan_json")
+        render_plan = json.loads(render_plan_raw)
+
+        bpm = float(render_plan.get("bpm") or loop.bpm or 120.0)
+        bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
+
+        stem_metadata = _parse_stem_metadata_from_loop(loop)
+        stems: dict[str, AudioSegment] | None = None
+        if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+            try:
+                stems = load_stems_from_metadata(stem_metadata, timeout_seconds=60.0)
+                stems = normalize_stem_durations(stems)
+                logger.info(
+                    "debug_render_report: loaded stems %s for arrangement %d",
+                    list(stems.keys()), arrangement_id,
+                )
+            except StemLoadError as e:
+                logger.warning("debug_render_report: stem load failed: %s", e)
+
+        for section_idx, section in enumerate(render_plan.get("sections") or []):
+            section_name = section.get("name", f"Section {section_idx + 1}")
+            section_type = str(section.get("type") or section.get("section_type") or "verse").strip().lower()
+            bar_start = int(section.get("bar_start") or 0)
+            section_bars = int(section.get("bars") or 8)
+            requested_instruments: list[str] = list(section.get("instruments") or [])
+            active_roles: list[str] = list(section.get("active_stem_roles") or requested_instruments)
+
+            row: dict = {
+                "section_idx": section_idx,
+                "section_name": section_name,
+                "section_type": section_type,
+                "bar_start": bar_start,
+                "bars": section_bars,
+                "requested_instruments": requested_instruments,
+                "active_stem_roles": active_roles,
+                "stems_used": [],
+                "gain_applied_per_stem_db": {},
+                "pre_dsp_peak_dbfs": None,
+                "post_dsp_peak_dbfs": None,
+                "full_mix_active": False,
+                "clip_detected": False,
+                "mode": "stems" if stems else "stereo_fallback",
+            }
+
+            if stems:
+                enabled_stems = map_instruments_to_stems(active_roles, stems)
+                if not enabled_stems:
+                    enabled_stems = stems
+
+                row["stems_used"] = list(enabled_stems.keys())
+                row["full_mix_active"] = "full_mix" in enabled_stems
+
+                stem_count = max(1, len(enabled_stems))
+                gain_map: dict[str, float] = {}
+                for stem_name in enabled_stems:
+                    gain_map[stem_name] = _stem_premix_gain_db(stem_name, stem_count)
+                row["gain_applied_per_stem_db"] = gain_map
+
+                section_ms = section_bars * bar_duration_ms
+                section_audio = _build_section_audio_from_stems(
+                    stems=enabled_stems,
+                    section_bars=section_bars,
+                    bar_duration_ms=bar_duration_ms,
+                    section_idx=section_idx,
+                )[:section_ms]
+
+                row["pre_dsp_peak_dbfs"] = round(float(section_audio.max_dBFS), 2)
+
+                # Apply same DSP as _render_producer_arrangement so peak is comparable
+                if section_type == "intro":
+                    section_audio = section_audio - 4
+                elif section_type in {"drop", "hook", "chorus"}:
+                    section_audio = section_audio + 4.0
+                    section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
+                elif section_type in {"breakdown", "bridge", "break"}:
+                    section_audio = section_audio - 6
+                elif section_type == "outro":
+                    section_audio = section_audio - 4
+                else:
+                    energy = float(section.get("energy") or 0.6)
+                    energy_db = max(-5.0, min(0.0, -5.0 + (energy * 5.0)))
+                    section_audio = section_audio + energy_db
+
+                row["post_dsp_peak_dbfs"] = round(float(section_audio.max_dBFS), 2)
+                row["clip_detected"] = row["post_dsp_peak_dbfs"] >= 0.0
+
+            report.append(row)
+            logger.info(
+                "DEBUG_RENDER_REPORT [%d] %s type=%s stems=%s pre=%.1f post=%.1f clip=%s",
+                section_idx, section_name, section_type,
+                row["stems_used"],
+                row["pre_dsp_peak_dbfs"] if row["pre_dsp_peak_dbfs"] is not None else float("nan"),
+                row["post_dsp_peak_dbfs"] if row["post_dsp_peak_dbfs"] is not None else float("nan"),
+                row["clip_detected"],
+            )
+    finally:
+        db.close()
+
+    return report
+
+
 def _parse_style_sections(raw_json: str | None) -> list[dict] | None:
     """
     Parse style sections from arrangement_json.
@@ -977,23 +1119,14 @@ def _render_producer_arrangement(
         # DRAMATIC SECTION-SPECIFIC PROCESSING
         # ====================================================================
         
+        pre_dsp_peak = float(section_audio.max_dBFS)
         if section_type == "intro":
-            # INTRO: Very quiet start, heavy filtering, fade in
-            logger.info(f"Processing INTRO section: {section_name}")
-            # Log audio level BEFORE processing
-            samples_before = section_audio.get_array_of_samples()
-            rms_before = int((sum(s*s for s in samples_before) / len(samples_before)) ** 0.5) if samples_before else 0
-            db_before = 20 * (rms_before / 32767) if rms_before > 0 else -999
-            
-            section_audio = section_audio - 12  # Much quieter (-12dB)
-            section_audio = section_audio.low_pass_filter(800)  # Heavy low-pass filter
-            section_audio = section_audio.fade_in(min(4000, section_ms // 2))  # Long fade in
-            
-            # Log audio level AFTER processing
-            samples_after = section_audio.get_array_of_samples()
-            rms_after = int((sum(s*s for s in samples_after) / len(samples_after)) ** 0.5) if samples_after else 0
-            db_after = 20 * (rms_after / 32767) if rms_after > 0 else -999
-            logger.info(f"  INTRO processing: BEFORE={db_before:+.1f}dB → AFTER={db_after:+.1f}dB (expected -12dB reduction)")
+            # INTRO: Gentle entry — moderate level reduction + subtle LPF so stems remain audible
+            logger.info(f"Processing INTRO section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
+            section_audio = section_audio - 4   # -4 dB: stems already stripped to melody+pads
+            section_audio = section_audio.low_pass_filter(3500)  # Gentle air-cut, not mud
+            section_audio = section_audio.fade_in(min(4000, section_ms // 2))
+            logger.info(f"  INTRO post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
             
         elif section_type in {"buildup", "build_up", "build"}:
             # BUILDUP: Gradual volume increase, building tension
@@ -1021,78 +1154,55 @@ def _render_producer_arrangement(
             section_audio = sum(buildup_segments)
             
         elif section_type in {"drop", "hook", "chorus"}:
-            # DROP/HOOK: MAXIMUM IMPACT - full volume, no filtering, hard hit
-            logger.info(f"Processing DROP section: {section_name}")
+            # HOOK: Full energy, headroom-safe boost
+            logger.info(f"Processing HOOK section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
             hook_evolution = section.get("hook_evolution") if isinstance(section.get("hook_evolution"), dict) else {}
             hook_stage = str(hook_evolution.get("stage") or "hook1").strip().lower()
-            
-            # Add dramatic silence before hook for impact (unless it's the very first section)
-            if bar_start > 0 and section_idx > 0:
-                # Create pre-hook silence - at least 1/2 bar for dramatic pause
-                silence_gap = int(bar_duration_ms * 0.5)  # Half-bar silence
-                
-                # Check if previous section exists and if we should cut
-                if len(arranged) > silence_gap:
-                    # Remove end of previous section and insert silence
-                    arranged = arranged[:-int(bar_duration_ms * 0.25)]  # Trim trailing quarter-bar
-                    arranged += AudioSegment.silent(duration=silence_gap)
-                    logger.info(f"  Added pre-hook silence: {silence_gap}ms before {section_name}")
-            
-            section_audio = section_audio + 8  # LOUD (+8dB from normal, even louder than before)
-            # No filtering - full frequency range for maximum impact
-            
-            # Add slight brightness for punch on hook sections
-            if section_type in {"hook", "chorus"}:
-                # Overlay a bright signal for extra punch
-                bright = section_audio.high_pass_filter(100) + 2
-                section_audio = section_audio.overlay(bright, gain_during_overlay=-2)
 
+            # Add brief pre-hook gap for impact (unless first section)
+            if bar_start > 0 and section_idx > 0:
+                silence_gap = int(bar_duration_ms * 0.25)  # Quarter-bar gap
+                arranged += AudioSegment.silent(duration=silence_gap)
+                logger.info(f"  Added pre-hook silence: {silence_gap}ms before {section_name}")
+
+            # Boost to near ceiling — do NOT exceed -2 dBFS to avoid post-mastering clip.
+            # Stems already at -6 dBFS; +4 dB = -2 dBFS, which is safe.
+            boost_db = 4.0
             if hook_stage == "hook2":
-                section_audio = section_audio + 1
-                section_audio = section_audio.overlay(section_audio.high_pass_filter(2200) + 2, gain_during_overlay=-3)
+                boost_db = 4.5
             elif hook_stage == "hook3":
-                section_audio = section_audio + 2
-                bright_wide = section_audio.high_pass_filter(1800) + 3
-                body = section_audio.low_pass_filter(250) + 1
-                section_audio = section_audio.overlay(bright_wide, gain_during_overlay=-3).overlay(body, gain_during_overlay=-4)
+                boost_db = 5.0
+            section_audio = section_audio + boost_db
+            # Guard rail: never let this escape -1 dBFS before it hits mastering
+            section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
+            logger.info(f"  HOOK post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS (stage={hook_stage})")
             
         elif section_type in {"breakdown", "bridge", "break"}:
-            # BREAKDOWN: Very quiet, sparse, ambient
-            logger.info(f"Processing BREAKDOWN section: {section_name}")
-            section_audio = section_audio - 10  # Much quieter (-10dB)
-            section_audio = section_audio.low_pass_filter(1200)  # Filter out highs
-            section_audio = section_audio.high_pass_filter(100)  # Filter out some lows
-            
-            # Make it sparse by adding gaps
-            if len(section_audio) > 4000:
-                # Split into chunks with gaps
-                chunk_size = len(section_audio) // 4
-                sparse_audio = AudioSegment.silent(duration=0)
-                for i in range(4):
-                    chunk_start = i * chunk_size
-                    chunk_end = chunk_start + (chunk_size // 2)  # Only use half
-                    sparse_audio += section_audio[chunk_start:chunk_end]
-                    if i < 3:  # Add gap between chunks
-                        sparse_audio += AudioSegment.silent(duration=chunk_size // 2)
-                section_audio = sparse_audio
+            # BREAKDOWN/BRIDGE: Stripped, ambient — keep stems intact, apply mild EQ + gain
+            logger.info(f"Processing BREAKDOWN section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
+            section_audio = section_audio - 6  # Moderate reduction (-6 dB)
+            section_audio = section_audio.low_pass_filter(7000)  # Air reduction only, keep body
+            section_audio = section_audio.high_pass_filter(60)   # Remove sub rumble
+            # NOTE: do NOT chunk/slice the audio — that creates abrupt cuts in loops
+            logger.info(f"  BREAKDOWN post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
                 
         elif section_type == "outro":
             # OUTRO: Fade out, reduced energy
-            logger.info(f"Processing OUTRO section: {section_name}")
-            section_audio = section_audio - 6  # Quieter (-6dB)
-            section_audio = section_audio.fade_out(min(4000, section_ms // 2))  # Long fade out
-            
+            logger.info(f"Processing OUTRO section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
+            section_audio = section_audio - 4   # Slightly quieter (-4 dB)
+            section_audio = section_audio.fade_out(min(4000, section_ms // 2))
+            logger.info(f"  OUTRO post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
+
         else:
-            # VERSE/STANDARD: Apply energy-based volume (quieter baseline than drop)
-            # This makes the verse feel different from the punch of the hook
-            energy_db = -8 + (section_energy * 9)  # Range: -8dB (low) to +1dB (high energy verses only)
-            logger.info(f"Processing {section_type.upper()} section: {section_name} (energy={section_energy:.2f}, volume={energy_db:+.1f}dB)")
-            
-            # Verses get a slightly thinner texture by HF reduction
-            if section_type == "verse":
-                section_audio = section_audio.low_pass_filter(7000)  # Slight HF reduction for warmth
-            
+            # VERSE/STANDARD: Energy-based gain. Range: -5 dB (low energy) to 0 dB (high energy)
+            # Clamp to +0 to avoid verses ever adding headroom violations.
+            energy_db = max(-5.0, min(0.0, -5.0 + (section_energy * 5.0)))
+            logger.info(
+                f"Processing {section_type.upper()} section: {section_name} "
+                f"(pre_dsp_peak={pre_dsp_peak:.1f} dBFS energy={section_energy:.2f} gain={energy_db:+.1f}dB)"
+            )
             section_audio = section_audio + energy_db
+            logger.info(f"  {section_type.upper()} post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
         
         # ====================================================================
         # APPLY VARIATIONS (FILLS, ROLLS, DROPS)
