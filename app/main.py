@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import os
 import logging
 import threading
+import time
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -56,23 +57,16 @@ def _start_embedded_rq_worker_if_enabled() -> None:
 
     _embedded_worker_threads = alive_workers
 
-    try:
-        from app.queue import is_redis_available
-
-        if not is_redis_available():
-            logger.warning("Embedded RQ worker not started: Redis unavailable at startup")
-            return
-    except Exception as exc:
-        logger.warning("Embedded RQ worker precheck failed: %s", exc)
-        return
-
     def _worker_target() -> None:
-        try:
-            from app.workers.main import run_worker
+        from app.workers.main import run_worker
 
-            run_worker()
-        except Exception:
-            logger.exception("Embedded RQ worker exited unexpectedly")
+        while True:
+            try:
+                run_worker()
+                logger.warning("Embedded RQ worker exited; restarting in 10s")
+            except Exception:
+                logger.exception("Embedded RQ worker failed; restarting in 10s")
+            time.sleep(10)
 
     workers_to_start = worker_count - len(_embedded_worker_threads)
     for index in range(workers_to_start):
