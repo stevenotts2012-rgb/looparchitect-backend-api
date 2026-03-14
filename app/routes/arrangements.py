@@ -55,6 +55,9 @@ router = APIRouter()
 
 def _sync_arrangement_status_from_job(db: Session, arrangement: Arrangement) -> Arrangement:
     """Best-effort sync of arrangement status from its linked render job record."""
+    now_utc = datetime.utcnow()
+    processing_timeout_seconds = max(60, int(settings.render_job_timeout_seconds or 900))
+
     try:
         linked_job = (
             db.query(RenderJob)
@@ -84,15 +87,47 @@ def _sync_arrangement_status_from_job(db: Session, arrangement: Arrangement) -> 
     is_stale_queued = (
         linked_job.status == "queued"
         and linked_job.created_at is not None
-        and linked_job.created_at <= datetime.utcnow() - timedelta(seconds=15)
+        and linked_job.created_at <= now_utc - timedelta(seconds=15)
     )
+
+    processing_started_at = linked_job.started_at or linked_job.created_at
+    is_stale_processing = (
+        linked_job.status == "processing"
+        and processing_started_at is not None
+        and processing_started_at <= now_utc - timedelta(seconds=processing_timeout_seconds)
+    )
+
+    if arrangement.status in {"queued", "processing"} and is_stale_processing:
+        elapsed_seconds = int((now_utc - processing_started_at).total_seconds())
+        timeout_message = (
+            f"Render job timed out after {elapsed_seconds}s (limit {processing_timeout_seconds}s)"
+        )
+        logger.error(
+            "Detected stale processing arrangement; forcing timeout failure: arrangement_id=%s job_id=%s elapsed_seconds=%s timeout_seconds=%s",
+            arrangement.id,
+            linked_job.id,
+            elapsed_seconds,
+            processing_timeout_seconds,
+        )
+
+        linked_job.status = "failed"
+        linked_job.finished_at = now_utc
+        linked_job.error_message = timeout_message
+        linked_job.progress_message = "Render job timed out"
+
+        arrangement.status = "failed"
+        arrangement.error_message = timeout_message
+        arrangement.progress_message = "Render job timed out"
+        db.commit()
+        db.refresh(arrangement)
+        return arrangement
 
     if arrangement.status == "queued" and is_stale_queued:
         logger.warning(
             "Detected stale queued arrangement; starting fallback worker: arrangement_id=%s job_id=%s age_seconds=%s",
             arrangement.id,
             linked_job.id,
-            int((datetime.utcnow() - linked_job.created_at).total_seconds()) if linked_job.created_at else None,
+            int((now_utc - linked_job.created_at).total_seconds()) if linked_job.created_at else None,
         )
 
         try:
@@ -108,7 +143,7 @@ def _sync_arrangement_status_from_job(db: Session, arrangement: Arrangement) -> 
             logger.warning("Could not cancel queued RQ job for fallback launch: job_id=%s", linked_job.id, exc_info=True)
 
         linked_job.status = "processing"
-        linked_job.started_at = datetime.utcnow()
+        linked_job.started_at = now_utc
         linked_job.progress = max(float(linked_job.progress or 0.0), 10.0)
         linked_job.progress_message = "Fallback worker started"
         arrangement.status = "processing"
