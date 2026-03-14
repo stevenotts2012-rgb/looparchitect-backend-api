@@ -116,42 +116,29 @@ def create_tables_if_missing():
                 )
             """))
 
-            # Ensure loop columns required by current ORM model exist
-            inspector = sa.inspect(connection)
-            if "loops" in inspector.get_table_names():
-                existing_loop_columns = {col["name"] for col in inspector.get_columns("loops")}
-                required_loop_columns = {
-                    "name": "VARCHAR",
-                    "tempo": "FLOAT",
-                    "key": "VARCHAR",
-                    "filename": "VARCHAR",
-                    "file_url": "VARCHAR",
-                    "file_key": "VARCHAR",
-                    "bpm": "INTEGER",
-                    "bars": "INTEGER",
-                    "musical_key": "VARCHAR",
-                    "genre": "VARCHAR",
-                    "processed_file_url": "VARCHAR",
-                    "analysis_json": "TEXT",
-                    "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-                    "is_stem_pack": "VARCHAR DEFAULT 'false'",
-                    "stem_roles_json": "TEXT",
-                    "stem_files_json": "TEXT",
-                    "stem_validation_json": "TEXT",
-                }
+            # ADD COLUMN IF NOT EXISTS (PostgreSQL 9.6+) -- idempotent, no inspector needed
+            for col_name, col_type in [
+                ("name",                 "VARCHAR"),
+                ("tempo",                "FLOAT"),
+                ("key",                  "VARCHAR"),
+                ("filename",             "VARCHAR"),
+                ("file_url",             "VARCHAR"),
+                ("file_key",             "VARCHAR"),
+                ("bpm",                  "INTEGER"),
+                ("bars",                 "INTEGER"),
+                ("musical_key",          "VARCHAR"),
+                ("genre",                "VARCHAR"),
+                ("processed_file_url",   "VARCHAR"),
+                ("analysis_json",        "TEXT"),
+                ("created_at",           "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("is_stem_pack",         "VARCHAR DEFAULT 'false'"),
+                ("stem_roles_json",      "TEXT"),
+                ("stem_files_json",      "TEXT"),
+                ("stem_validation_json", "TEXT"),
+            ]:
+                connection.execute(text(f"ALTER TABLE loops ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+            logger.info("✅ loops column guard complete")
 
-                for column_name, column_type in required_loop_columns.items():
-                    if column_name not in existing_loop_columns:
-                        connection.execute(
-                            text(
-                                f"ALTER TABLE loops ADD COLUMN {column_name} {column_type}"
-                            )
-                        )
-                        logger.info(
-                            "✅ Added missing column loops.%s during startup",
-                            column_name,
-                        )
-            
             # Create arrangements table with all required columns
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS arrangements (
@@ -171,62 +158,45 @@ def create_tables_if_missing():
                 )
             """))
 
-            # Ensure newer arrangement columns exist for deployments that skipped migrations
-            if "arrangements" in inspector.get_table_names():
-                existing_columns = {col["name"] for col in inspector.get_columns("arrangements")}
-                required_columns = {
-                    "style_profile_json": "TEXT",
-                    "ai_parsing_used": "BOOLEAN DEFAULT false",
-                    "producer_arrangement_json": "TEXT",
-                    "render_plan_json": "TEXT",
-                    "stem_arrangement_json": "TEXT",
-                    "stem_render_path": "VARCHAR",
-                    "rendered_from_stems": "BOOLEAN DEFAULT false",
-                    "progress": "FLOAT DEFAULT 0.0",
-                    "progress_message": "VARCHAR(256)",
-                    "output_s3_key": "VARCHAR",
-                    "output_url": "VARCHAR",
-                }
+            # ADD COLUMN IF NOT EXISTS for arrangements -- idempotent
+            for col_name, col_type in [
+                ("style_profile_json",        "TEXT"),
+                ("ai_parsing_used",           "BOOLEAN DEFAULT false"),
+                ("producer_arrangement_json", "TEXT"),
+                ("render_plan_json",          "TEXT"),
+                ("stem_arrangement_json",     "TEXT"),
+                ("stem_render_path",          "VARCHAR"),
+                ("rendered_from_stems",       "BOOLEAN DEFAULT false"),
+                ("progress",                  "FLOAT DEFAULT 0.0"),
+                ("progress_message",          "VARCHAR(256)"),
+                ("output_s3_key",             "VARCHAR"),
+                ("output_url",               "VARCHAR"),
+            ]:
+                connection.execute(text(f"ALTER TABLE arrangements ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+            logger.info("✅ arrangements column guard complete")
 
-                for column_name, column_type in required_columns.items():
-                    if column_name not in existing_columns:
-                        connection.execute(
-                            text(
-                                f"ALTER TABLE arrangements ADD COLUMN {column_name} {column_type}"
-                            )
-                        )
-                        logger.info(
-                            "✅ Added missing column arrangements.%s during startup",
-                            column_name,
-                        )
-            
-            # Create indexes
-            connection.execute(text("""
-                CREATE INDEX IF NOT EXISTS ix_loops_id ON loops(id)
-            """))
-            connection.execute(text("""
-                CREATE INDEX IF NOT EXISTS ix_arrangements_id ON arrangements(id)
-            """))
-            connection.execute(text("""
-                CREATE INDEX IF NOT EXISTS ix_arrangements_loop_id ON arrangements(loop_id)
-            """))
-            connection.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_arrangement_loop_status ON arrangements(loop_id, status)
-            """))
-            
-            # Try to add foreign key if it doesn't exist
-            try:
-                connection.execute(text("""
-                    ALTER TABLE arrangements 
-                    ADD CONSTRAINT fk_arrangements_loop_id 
-                    FOREIGN KEY (loop_id) REFERENCES loops(id)
-                """))
-            except Exception:
-                # Foreign key likely already exists, that's fine
-                pass
-        
+            # Indexes
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_loops_id ON loops(id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_arrangements_id ON arrangements(id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_arrangements_loop_id ON arrangements(loop_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS idx_arrangement_loop_status ON arrangements(loop_id, status)"))
+
         engine.dispose()
         logger.info("✅ Database tables verified/created successfully")
+
+        # Foreign key runs in its own separate transaction.
+        # A duplicate-constraint error CANNOT roll back the column additions above.
+        try:
+            fk_engine = sa.create_engine(settings.database_url)
+            with fk_engine.begin() as fk_conn:
+                fk_conn.execute(text("""
+                    ALTER TABLE arrangements
+                    ADD CONSTRAINT fk_arrangements_loop_id
+                    FOREIGN KEY (loop_id) REFERENCES loops(id)
+                """))
+            fk_engine.dispose()
+        except Exception:
+            pass  # Constraint already exists -- fine
     except Exception as e:
         logger.exception("❌ Failed to create database tables")
         raise RuntimeError("Failed to create required database tables") from e
