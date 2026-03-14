@@ -23,6 +23,7 @@ from pydub import AudioSegment
 from app.config import settings
 from app.db import get_db
 from app.models.arrangement import Arrangement
+from app.models.job import RenderJob
 from app.models.loop import Loop
 from app.schemas.arrangement import (
     AudioArrangementGenerateRequest,
@@ -48,6 +49,44 @@ from app.services.storage import storage
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _sync_arrangement_status_from_job(db: Session, arrangement: Arrangement) -> Arrangement:
+    """Best-effort sync of arrangement status from its linked render job record."""
+    try:
+        linked_job = (
+            db.query(RenderJob)
+            .filter(RenderJob.params_json.like(f'%"arrangement_id": {arrangement.id}%'))
+            .order_by(RenderJob.created_at.desc())
+            .first()
+        )
+    except Exception:
+        logger.warning(
+            "Failed to query linked render job for arrangement %s",
+            arrangement.id,
+            exc_info=True,
+        )
+        return arrangement
+
+    if not linked_job:
+        return arrangement
+
+    if linked_job.status == "processing" and arrangement.status == "queued":
+        arrangement.status = "processing"
+        arrangement.progress = max(float(arrangement.progress or 0.0), 10.0)
+        arrangement.progress_message = linked_job.progress_message or "Running arrangement job"
+        db.commit()
+        db.refresh(arrangement)
+        return arrangement
+
+    if linked_job.status == "failed" and arrangement.status in {"queued", "processing"}:
+        arrangement.status = "failed"
+        arrangement.error_message = linked_job.error_message or "Render job failed"
+        arrangement.progress_message = "Worker failed"
+        db.commit()
+        db.refresh(arrangement)
+
+    return arrangement
 
 
 def _ensure_arrangements_schema(db: Session) -> None:
@@ -814,6 +853,8 @@ def get_arrangement(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Arrangement with ID {arrangement_id} not found",
         )
+
+    arrangement = _sync_arrangement_status_from_job(db, arrangement)
 
     return ArrangementResponse.from_orm(arrangement)
 
