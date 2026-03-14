@@ -2,6 +2,7 @@
 Tests for Phase B arrangement routes.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -68,6 +69,33 @@ class TestArrangementCreation:
         assert arrangement.target_seconds == 180
         assert arrangement.status == "queued"
         mock_job.assert_called_once()
+
+    def test_generate_arrangement_enqueues_redis_job(self, test_loop, client, db):
+        """POST /arrangements/generate should enqueue through create_render_job and return render_job_ids."""
+        fake_job = SimpleNamespace(id="job-123")
+
+        with patch("app.routes.arrangements.create_render_job", return_value=(fake_job, False)) as mock_enqueue:
+            response = client.post(
+                "/api/v1/arrangements/generate",
+                json={
+                    "loop_id": test_loop.id,
+                    "target_seconds": 60,
+                    "genre": "electronic",
+                    "use_ai_parsing": False,
+                },
+            )
+
+        assert response.status_code == 202, response.text
+        payload = response.json()
+        assert payload["arrangement_id"] > 0
+        assert payload["loop_id"] == test_loop.id
+        assert payload["render_job_ids"] == ["job-123"]
+
+        # Ensure enqueue path is used and arrangement_id is passed to worker params
+        assert mock_enqueue.called
+        call_args, _ = mock_enqueue.call_args
+        assert call_args[1] == test_loop.id
+        assert call_args[2]["arrangement_id"] == payload["arrangement_id"]
 
 
 class TestArrangementRetrieval:

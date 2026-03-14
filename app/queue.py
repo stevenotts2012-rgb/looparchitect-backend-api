@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_RENDER_QUEUE_NAME = "render"
+
 
 def is_redis_available() -> bool:
     """Check if Redis is available without raising exception."""
@@ -40,7 +42,7 @@ def get_redis_conn() -> redis.Redis:
         raise
 
 
-def get_queue(conn: redis.Redis = None, name: str = "render") -> "Queue":
+def get_queue(conn: redis.Redis = None, name: str = DEFAULT_RENDER_QUEUE_NAME) -> "Queue":
     """Get or create the render job queue."""
     from rq import Queue
 

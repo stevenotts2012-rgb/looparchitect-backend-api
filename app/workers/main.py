@@ -22,12 +22,12 @@ def _heartbeat_loop() -> None:
 
 
 def _run_rq_worker() -> None:
-    from app.queue import get_redis_conn, get_queue
+    from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_redis_conn, get_queue
     from app.workers.render_worker import _ensure_db_models
 
     _ensure_db_models()
     redis_conn = get_redis_conn()
-    queue_name = "render"
+    queue_name = DEFAULT_RENDER_QUEUE_NAME
     queue = get_queue(redis_conn, name=queue_name)
 
     from rq import Worker

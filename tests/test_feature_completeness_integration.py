@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import wave
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -60,8 +61,11 @@ def test_api_create_loop_arrange_render_job_completes_and_plan_has_events():
     )
     assert arrange_response.status_code == 200, arrange_response.text
 
-    # Prevent automatic background execution so we can run worker deterministically in-test.
-    with patch("app.routes.arrangements.run_arrangement_job", lambda arrangement_id: None):
+    # Mock Redis enqueue path so test remains deterministic without external Redis.
+    with patch(
+        "app.routes.arrangements.create_render_job",
+        return_value=(SimpleNamespace(id="test-job-1"), False),
+    ):
         generate_response = client.post(
             "/api/v1/arrangements/generate",
             json={
@@ -74,6 +78,7 @@ def test_api_create_loop_arrange_render_job_completes_and_plan_has_events():
         )
     assert generate_response.status_code == 202, generate_response.text
     arrangement_id = generate_response.json()["arrangement_id"]
+    assert generate_response.json()["render_job_ids"] == ["test-job-1"]
 
     # Run worker directly for deterministic completion assertion.
     run_arrangement_job(arrangement_id)

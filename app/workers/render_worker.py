@@ -166,6 +166,36 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     db = SessionLocal()
     
     try:
+        arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
+
+        if arrangement_id is not None:
+            logger.info(
+                "[%s] Arrangement-mode render job detected: arrangement_id=%s loop_id=%s",
+                job_id,
+                arrangement_id,
+                loop_id,
+            )
+            update_job_status(
+                db,
+                job_id,
+                "processing",
+                progress=10.0,
+                progress_message="Running arrangement job",
+            )
+            from app.services.arrangement_jobs import run_arrangement_job
+
+            run_arrangement_job(int(arrangement_id))
+
+            update_job_status(
+                db,
+                job_id,
+                "succeeded",
+                progress=100.0,
+                progress_message="Arrangement job completed",
+            )
+            logger.info("[%s] Arrangement-mode render job completed", job_id)
+            return
+
         # Load job and loop
         job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
         if not job:

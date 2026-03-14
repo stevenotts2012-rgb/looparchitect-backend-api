@@ -33,6 +33,8 @@ from app.schemas.arrangement import (
 from app.schemas.style_profile import StyleOverrides
 from app.services.arrangement_jobs import run_arrangement_job
 from app.services.audit_logging import log_feature_event
+from app.services.job_service import create_render_job
+from app.queue import DEFAULT_RENDER_QUEUE_NAME
 from app.services.style_service import style_service
 from app.services.llm_style_parser import llm_style_parser
 from app.services.rule_based_fallback import parse_with_rules
@@ -355,7 +357,6 @@ def _map_style_params_to_overrides(style_params: dict | None) -> StyleOverrides 
 )
 async def generate_arrangement(
     request: AudioArrangementGenerateRequest,
-    background_tasks: BackgroundTasks,
     http_request: Request,
     db: Session = Depends(get_db),
 ):
@@ -653,6 +654,13 @@ async def generate_arrangement(
         )
     db.refresh(arrangement)
 
+    logger.info(
+        "Arrangement created: arrangement_id=%s loop_id=%s status=%s",
+        arrangement.id,
+        arrangement.loop_id,
+        arrangement.status,
+    )
+
     log_feature_event(
         logger,
         event="arrangement_created",
@@ -663,8 +671,31 @@ async def generate_arrangement(
         ai_parsing_used=ai_parsing_used,
     )
 
-    # Schedule background job
-    background_tasks.add_task(run_arrangement_job, arrangement.id)
+    enqueue_params = {
+        "genre": request.genre,
+        "length_seconds": effective_target_seconds,
+        "energy": request.intensity,
+        "variations": int(request.variation_count or 1),
+        "variation_styles": [],
+        "custom_style": effective_style_text or request.style_preset,
+        "arrangement_id": arrangement.id,
+        "correlation_id": correlation_id,
+    }
+    try:
+        job, _ = create_render_job(db, arrangement.loop_id, enqueue_params)
+    except ValueError as enqueue_error:
+        logger.exception("Failed to enqueue arrangement job for arrangement_id=%s", arrangement.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to enqueue arrangement job: {enqueue_error}",
+        )
+
+    logger.info(
+        "Arrangement job enqueued: arrangement_id=%s job_id=%s queue_name=%s",
+        arrangement.id,
+        job.id,
+        DEFAULT_RENDER_QUEUE_NAME,
+    )
 
     log_feature_event(
         logger,
@@ -680,7 +711,7 @@ async def generate_arrangement(
         loop_id=arrangement.loop_id,
         status=arrangement.status,
         created_at=arrangement.created_at,
-        render_job_ids=[],
+        render_job_ids=[job.id],
         seed_used=seed_used,
         style_preset=style_preset,
         style_profile=json.loads(style_profile_json) if style_profile_json else None,

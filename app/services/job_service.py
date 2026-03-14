@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.job import RenderJob
 from app.models.loop import Loop
-from app.queue import get_queue, get_redis_conn
+from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_queue
 from app.schemas.job import OutputFile, RenderJobStatusResponse
 
 logger = logging.getLogger(__name__)
@@ -96,11 +96,16 @@ def create_render_job(
     logger.info(f"Created render job: job_id={job_id}, loop_id={loop_id}")
     
     # Enqueue to Redis
-    queue = get_queue()
+    queue = get_queue(name=DEFAULT_RENDER_QUEUE_NAME)
     from app.workers.render_worker import render_loop_worker
-    
+
     queue.enqueue(render_loop_worker, job_id, loop_id, params)
-    logger.info(f"Enqueued job {job_id} to Redis queue")
+    logger.info(
+        "Enqueued render job: job_id=%s queue_name=%s function_name=%s",
+        job_id,
+        queue.name,
+        render_loop_worker.__name__,
+    )
     
     return job, False
 
