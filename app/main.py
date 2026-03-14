@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 import os
 import logging
+import threading
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -21,6 +22,55 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+_embedded_worker_thread: threading.Thread | None = None
+
+
+def _start_embedded_rq_worker_if_enabled() -> None:
+    """Start RQ worker in a daemon thread when enabled.
+
+    This is a deployment-safe fallback for environments that only launch the web process.
+    """
+    global _embedded_worker_thread
+
+    enabled = os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        logger.info("Embedded RQ worker disabled via ENABLE_EMBEDDED_RQ_WORKER")
+        return
+
+    if _embedded_worker_thread and _embedded_worker_thread.is_alive():
+        logger.info("Embedded RQ worker already running")
+        return
+
+    try:
+        from app.queue import is_redis_available
+
+        if not is_redis_available():
+            logger.warning("Embedded RQ worker not started: Redis unavailable at startup")
+            return
+    except Exception as exc:
+        logger.warning("Embedded RQ worker precheck failed: %s", exc)
+        return
+
+    def _worker_target() -> None:
+        try:
+            from app.workers.main import run_worker
+
+            run_worker()
+        except Exception:
+            logger.exception("Embedded RQ worker exited unexpectedly")
+
+    _embedded_worker_thread = threading.Thread(
+        target=_worker_target,
+        name="embedded-rq-worker",
+        daemon=True,
+    )
+    _embedded_worker_thread.start()
+    logger.info("Embedded RQ worker thread started")
 
 
 def _is_railway_environment() -> bool:
@@ -278,6 +328,8 @@ async def lifespan(app: FastAPI):
         run_migrations()
     except Exception as _mig_err:
         logger.error("⚠️  Startup migration error (non-fatal): %s", _mig_err)
+
+    _start_embedded_rq_worker_if_enabled()
     
     logger.info("✅ Application startup complete")
     yield
