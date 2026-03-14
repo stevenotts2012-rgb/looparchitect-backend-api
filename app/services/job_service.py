@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.job import RenderJob
 from app.models.loop import Loop
+from app.config import settings
 from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_queue
 from app.schemas.job import OutputFile, RenderJobStatusResponse
 
@@ -107,7 +108,14 @@ def create_render_job(
         queue = get_queue(name=DEFAULT_RENDER_QUEUE_NAME)
         from app.workers.render_worker import render_loop_worker
 
-        rq_job = queue.enqueue(render_loop_worker, job_id, loop_id, params, job_id=job_id)
+        rq_job = queue.enqueue(
+            render_loop_worker,
+            job_id,
+            loop_id,
+            params,
+            job_id=job_id,
+            job_timeout=max(60, int(settings.render_job_timeout_seconds or 900)),
+        )
         logger.info(
             "Render job enqueued: app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s queue_name=%s function_name=%s",
             job_id,
