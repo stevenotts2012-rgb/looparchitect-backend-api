@@ -50,7 +50,8 @@ class TestArrangementCreation:
 
     def test_create_arrangement_creates_row(self, test_loop, client, db):
         """POST /arrangements should create a queued arrangement row."""
-        with patch("app.routes.arrangements.run_arrangement_job") as mock_job:
+        fake_job = SimpleNamespace(id="job-create-123")
+        with patch("app.routes.arrangements.is_redis_available", return_value=True), patch("app.routes.arrangements.create_render_job", return_value=(fake_job, False)) as mock_enqueue:
             response = client.post(
                 "/api/v1/arrangements/",
                 json={
@@ -68,13 +69,13 @@ class TestArrangementCreation:
         assert arrangement is not None
         assert arrangement.target_seconds == 180
         assert arrangement.status == "queued"
-        mock_job.assert_called_once()
+        mock_enqueue.assert_called_once()
 
     def test_generate_arrangement_enqueues_redis_job(self, test_loop, client, db):
         """POST /arrangements/generate should enqueue through create_render_job and return render_job_ids."""
         fake_job = SimpleNamespace(id="job-123")
 
-        with patch("app.routes.arrangements.create_render_job", return_value=(fake_job, False)) as mock_enqueue:
+        with patch("app.routes.arrangements.is_redis_available", return_value=True), patch("app.routes.arrangements.create_render_job", return_value=(fake_job, False)) as mock_enqueue:
             response = client.post(
                 "/api/v1/arrangements/generate",
                 json={
@@ -96,6 +97,52 @@ class TestArrangementCreation:
         call_args, _ = mock_enqueue.call_args
         assert call_args[1] == test_loop.id
         assert call_args[2]["arrangement_id"] == payload["arrangement_id"]
+
+    def test_generate_arrangement_marks_arrangement_failed_when_enqueue_runtime_error(self, test_loop, client, db):
+        """POST /arrangements/generate should not leave arrangement stuck in queued when enqueue fails."""
+        with patch("app.routes.arrangements.is_redis_available", return_value=True), patch("app.routes.arrangements.create_render_job", side_effect=RuntimeError("redis unavailable")):
+            response = client.post(
+                "/api/v1/arrangements/generate",
+                json={
+                    "loop_id": test_loop.id,
+                    "target_seconds": 60,
+                    "genre": "electronic",
+                    "use_ai_parsing": False,
+                },
+            )
+
+        assert response.status_code == 503
+
+        arrangement = (
+            db.query(Arrangement)
+            .filter(Arrangement.loop_id == test_loop.id)
+            .order_by(Arrangement.id.desc())
+            .first()
+        )
+        assert arrangement is not None
+        assert arrangement.status == "failed"
+        assert arrangement.progress_message == "Queue unavailable"
+        assert arrangement.error_message is not None
+        assert "Queue enqueue failed" in arrangement.error_message
+
+    def test_generate_arrangement_rejects_when_redis_unavailable_before_row_creation(self, test_loop, client, db):
+        """POST /arrangements/generate should return 503 without creating an arrangement row when Redis is down."""
+        with patch("app.routes.arrangements.is_redis_available", return_value=False):
+            response = client.post(
+                "/api/v1/arrangements/generate",
+                json={
+                    "loop_id": test_loop.id,
+                    "target_seconds": 60,
+                    "genre": "electronic",
+                    "use_ai_parsing": False,
+                },
+            )
+
+        assert response.status_code == 503
+        assert "Background job queue is unavailable" in response.text
+
+        arrangement_count = db.query(Arrangement).filter(Arrangement.loop_id == test_loop.id).count()
+        assert arrangement_count == 0
 
 
 class TestArrangementRetrieval:

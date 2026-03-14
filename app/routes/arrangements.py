@@ -14,7 +14,7 @@ from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
@@ -31,10 +31,9 @@ from app.schemas.arrangement import (
     ArrangementResponse,
 )
 from app.schemas.style_profile import StyleOverrides
-from app.services.arrangement_jobs import run_arrangement_job
 from app.services.audit_logging import log_feature_event
 from app.services.job_service import create_render_job
-from app.queue import DEFAULT_RENDER_QUEUE_NAME
+from app.queue import DEFAULT_RENDER_QUEUE_NAME, is_redis_available
 from app.services.style_service import style_service
 from app.services.llm_style_parser import llm_style_parser
 from app.services.rule_based_fallback import parse_with_rules
@@ -245,7 +244,6 @@ def _generate_producer_arrangement(
 )
 def create_arrangement(
     request: ArrangementCreateRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """Create an arrangement job and enqueue background processing."""
@@ -261,11 +259,47 @@ def create_arrangement(
         status="queued",
         target_seconds=request.target_duration_seconds,
     )
+
+    if not is_redis_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Background job queue is unavailable. Redis service may be offline.",
+        )
+
     db.add(arrangement)
     db.commit()
     db.refresh(arrangement)
 
-    background_tasks.add_task(run_arrangement_job, arrangement.id)
+    enqueue_params = {
+        "length_seconds": int(request.target_duration_seconds or 180),
+        "arrangement_id": arrangement.id,
+    }
+
+    try:
+        create_render_job(db, arrangement.loop_id, enqueue_params)
+    except ValueError as enqueue_error:
+        arrangement.status = "failed"
+        arrangement.progress = 0.0
+        arrangement.progress_message = "Queue enqueue validation failed"
+        arrangement.error_message = f"Enqueue validation failed: {enqueue_error}"
+        db.commit()
+        db.refresh(arrangement)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to enqueue arrangement job: {enqueue_error}",
+        )
+    except RuntimeError as enqueue_error:
+        arrangement.status = "failed"
+        arrangement.progress = 0.0
+        arrangement.progress_message = "Queue unavailable"
+        arrangement.error_message = f"Queue enqueue failed: {enqueue_error}"
+        db.commit()
+        db.refresh(arrangement)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Background queue unavailable: {enqueue_error}",
+        )
+
     return ArrangementResponse.from_orm(arrangement)
 
 
@@ -390,6 +424,12 @@ async def generate_arrangement(
                     "Please re-upload the loop before generating."
                 ),
             )
+
+    if not is_redis_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Background job queue is unavailable. Redis service may be offline.",
+        )
 
     bpm_for_duration = float(loop.bpm or loop.tempo or 120.0)
     effective_target_seconds = request.target_seconds
@@ -684,12 +724,32 @@ async def generate_arrangement(
     try:
         job, _ = create_render_job(db, arrangement.loop_id, enqueue_params)
     except ValueError as enqueue_error:
+        try:
+            arrangement.status = "failed"
+            arrangement.progress = 0.0
+            arrangement.progress_message = "Queue enqueue validation failed"
+            arrangement.error_message = f"Enqueue validation failed: {enqueue_error}"
+            db.commit()
+            db.refresh(arrangement)
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to mark arrangement as failed after enqueue validation error")
         logger.exception("Failed to enqueue arrangement job for arrangement_id=%s", arrangement.id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to enqueue arrangement job: {enqueue_error}",
         )
     except RuntimeError as enqueue_error:
+        try:
+            arrangement.status = "failed"
+            arrangement.progress = 0.0
+            arrangement.progress_message = "Queue unavailable"
+            arrangement.error_message = f"Queue enqueue failed: {enqueue_error}"
+            db.commit()
+            db.refresh(arrangement)
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to mark arrangement as failed after queue outage")
         logger.exception("Queue unavailable while enqueuing arrangement_id=%s", arrangement.id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
