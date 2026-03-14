@@ -10,6 +10,13 @@ from app.services.mastering import apply_mastering
 
 logger = logging.getLogger(__name__)
 
+
+def _apply_master_headroom(audio: AudioSegment, target_peak_dbfs: float = -6.0) -> AudioSegment:
+    peak = float(audio.max_dBFS)
+    if peak == float("-inf") or peak <= target_peak_dbfs:
+        return audio
+    return audio - (peak - target_peak_dbfs)
+
 _RENDER_MOVE_EVENT_TYPES = {
     "variation",
     "beat_switch",
@@ -230,6 +237,7 @@ def render_from_plan(
         stems=stems,
         loop_variations=loop_variations,
     )
+    output_audio = _apply_master_headroom(output_audio)
 
     mastering_result = apply_mastering(
         output_audio,

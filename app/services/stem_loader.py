@@ -18,6 +18,34 @@ from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
 
+_ROLE_FAMILIES = {
+    "drums": "rhythm",
+    "percussion": "rhythm",
+    "bass": "low_end",
+    "melody": "lead",
+    "vocal": "lead",
+    "vocals": "lead",
+    "pads": "harmonic",
+    "harmony": "harmonic",
+    "fx": "texture",
+    "accent": "texture",
+    "full_mix": "fallback_mix",
+}
+
+_ROLE_PRIORITY = {
+    "drums": 0,
+    "percussion": 1,
+    "bass": 0,
+    "melody": 0,
+    "vocals": 1,
+    "vocal": 1,
+    "pads": 0,
+    "harmony": 1,
+    "fx": 0,
+    "accent": 1,
+    "full_mix": 0,
+}
+
 
 class StemLoadError(Exception):
     """Raised when stem audio files cannot be loaded."""
@@ -230,51 +258,83 @@ def map_instruments_to_stems(
         → returns {"drums": AudioSegment, "bass": AudioSegment}
     """
     enabled_stems: Dict[str, AudioSegment] = {}
-    
-    # Build mapping rules
+
     instrument_to_stem_map = {
-        "kick": "drums",
-        "snare": "drums",
-        "drums": "drums",
-        "percussion": "drums",
-        "hats": "drums",
-        "hi-hat": "drums",
-        "bass": "bass",
-        "sub": "bass",
-        "melody": "melody",
-        "lead": "melody",
-        "synth": "melody",
-        "keys": "melody",
-        "pad": "harmony",
-        "pads": "harmony",
-        "chord": "harmony",
-        "chords": "harmony",
-        "harmony": "harmony",
-        "strings": "harmony",
-        "other": "melody",
-        "fx": "fx",
-        "sfx": "fx",
-        "riser": "fx",
-        "impact": "fx",
-        "vocal": "vocal",
-        "vocals": "vocal",
-        "voice": "vocal",
+        "kick": ("drums", "percussion"),
+        "snare": ("drums", "percussion"),
+        "drums": ("drums", "percussion"),
+        "percussion": ("percussion", "drums"),
+        "hats": ("drums", "percussion"),
+        "hi-hat": ("drums", "percussion"),
+        "bass": ("bass",),
+        "sub": ("bass",),
+        "melody": ("melody", "vocals", "vocal"),
+        "lead": ("melody", "vocals", "vocal"),
+        "synth": ("melody",),
+        "keys": ("melody",),
+        "pad": ("pads", "harmony"),
+        "pads": ("pads", "harmony"),
+        "chord": ("pads", "harmony"),
+        "chords": ("pads", "harmony"),
+        "harmony": ("harmony", "pads"),
+        "strings": ("harmony", "pads"),
+        "other": ("melody",),
+        "fx": ("fx", "accent"),
+        "sfx": ("fx", "accent"),
+        "riser": ("fx", "accent"),
+        "impact": ("accent", "fx"),
+        "accent": ("accent", "fx"),
+        "vocal": ("vocal", "vocals", "melody"),
+        "vocals": ("vocals", "vocal", "melody"),
+        "voice": ("vocals", "vocal"),
+        "full_mix": ("full_mix",),
     }
-    
-    # If no instruments specified, enable all stems
-    if not instruments:
-        return dict(available_stems)
-    
-    # Map instruments to stem names
-    requested_stem_names = set()
-    for instrument in instruments:
+
+    def _dedupe_roles(role_names: list[str]) -> list[str]:
+        chosen_by_family: dict[str, str] = {}
+        for role_name in role_names:
+            family = _ROLE_FAMILIES.get(role_name, role_name)
+            existing = chosen_by_family.get(family)
+            if existing is None:
+                chosen_by_family[family] = role_name
+                continue
+            if _ROLE_PRIORITY.get(role_name, 99) < _ROLE_PRIORITY.get(existing, 99):
+                chosen_by_family[family] = role_name
+        return [
+            role_name for role_name in role_names
+            if chosen_by_family.get(_ROLE_FAMILIES.get(role_name, role_name)) == role_name
+        ]
+
+    def _resolve_instrument(instrument: str) -> str | None:
         instrument_lower = instrument.lower().strip()
-        stem_name = instrument_to_stem_map.get(instrument_lower)
-        if stem_name:
-            requested_stem_names.add(stem_name)
-    
-    # Return matching stems
-    for stem_name in requested_stem_names:
+        if instrument_lower in available_stems:
+            return instrument_lower
+        for candidate in instrument_to_stem_map.get(instrument_lower, ()):
+            if candidate in available_stems:
+                return candidate
+        return None
+
+    isolated_available = [name for name in available_stems.keys() if name != "full_mix"]
+    exclude_full_mix = len(isolated_available) >= 2
+
+    if not instruments:
+        selected_names = list(available_stems.keys())
+    else:
+        selected_names = []
+        for instrument in instruments:
+            resolved = _resolve_instrument(instrument)
+            if resolved and resolved not in selected_names:
+                selected_names.append(resolved)
+
+    if exclude_full_mix:
+        selected_names = [name for name in selected_names if name != "full_mix"]
+
+    selected_names = _dedupe_roles(selected_names)
+
+    if not selected_names and "full_mix" in available_stems:
+        selected_names = ["full_mix"]
+
+    for stem_name in selected_names:
         if stem_name in available_stems:
             enabled_stems[stem_name] = available_stems[stem_name]
     

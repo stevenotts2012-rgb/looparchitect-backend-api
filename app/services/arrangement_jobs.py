@@ -36,6 +36,125 @@ from app.services.transition_engine import build_transition_plan
 
 logger = logging.getLogger(__name__)
 
+_ISOLATED_STEM_ROLES = {
+    "drums",
+    "percussion",
+    "bass",
+    "melody",
+    "harmony",
+    "pads",
+    "fx",
+    "accent",
+    "vocal",
+    "vocals",
+}
+
+_SECTION_ROLE_PREFERENCES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "intro": (("melody", "vocals", "vocal"), ("pads", "harmony")),
+    "verse": (("drums", "percussion"), ("bass",)),
+    "hook": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony")),
+    "chorus": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony")),
+    "drop": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony")),
+    "bridge": (("pads", "harmony"), ("melody", "vocals", "vocal")),
+    "breakdown": (("pads", "harmony"), ("melody", "vocals", "vocal")),
+    "break": (("pads", "harmony"), ("melody", "vocals", "vocal")),
+    "outro": (("melody", "vocals", "vocal"), ("pads", "harmony")),
+}
+
+_SECTION_MIN_LAYERS = {
+    "intro": 1,
+    "verse": 2,
+    "hook": 3,
+    "chorus": 3,
+    "drop": 3,
+    "bridge": 1,
+    "breakdown": 1,
+    "break": 1,
+    "outro": 1,
+}
+
+_PREMIX_GAIN_DB = {
+    "drums": -5.0,
+    "percussion": -6.0,
+    "bass": -6.0,
+    "melody": -7.0,
+    "vocals": -7.0,
+    "vocal": -7.0,
+    "harmony": -8.0,
+    "pads": -8.5,
+    "fx": -10.0,
+    "accent": -9.0,
+    "full_mix": -9.0,
+}
+
+
+def _ordered_unique_roles(roles: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for role in roles:
+        normalized = str(role or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _pick_available_role(available_roles: list[str], candidates: tuple[str, ...]) -> str | None:
+    for candidate in candidates:
+        if candidate in available_roles:
+            return candidate
+    return None
+
+
+def _select_section_stem_roles(
+    section_type: str,
+    available_roles: list[str],
+    *,
+    verse_count: int = 0,
+) -> list[str]:
+    isolated_roles = [role for role in available_roles if role in _ISOLATED_STEM_ROLES]
+    full_mix_available = "full_mix" in available_roles
+    sufficient_isolated = len(isolated_roles) >= 2
+    role_source = isolated_roles if sufficient_isolated else available_roles
+
+    selected: list[str] = []
+    for candidates in _SECTION_ROLE_PREFERENCES.get(section_type, _SECTION_ROLE_PREFERENCES["verse"]):
+        role = _pick_available_role(role_source, candidates)
+        if role and role not in selected:
+            selected.append(role)
+
+    if section_type == "verse" and verse_count > 1 and "melody" in role_source and "melody" not in selected:
+        selected.append("melody")
+
+    min_layers = _SECTION_MIN_LAYERS.get(section_type, 1)
+    if not sufficient_isolated and full_mix_available and len(selected) < min_layers:
+        return ["full_mix"]
+
+    if sufficient_isolated:
+        selected = [role for role in selected if role != "full_mix"]
+
+    if not selected:
+        if isolated_roles:
+            return isolated_roles[:max(1, min_layers)]
+        if full_mix_available:
+            return ["full_mix"]
+
+    return selected
+
+
+def _stem_premix_gain_db(stem_name: str, stem_count: int) -> float:
+    base_gain = _PREMIX_GAIN_DB.get(stem_name, -7.0)
+    stacked_layer_penalty = max(0, stem_count - 1) * 0.75
+    return base_gain - stacked_layer_penalty
+
+
+def _apply_headroom_ceiling(audio: AudioSegment, target_peak_dbfs: float = -6.0) -> AudioSegment:
+    peak = float(audio.max_dBFS)
+    if peak == float("-inf") or peak <= target_peak_dbfs:
+        return audio
+    return audio - (peak - target_peak_dbfs)
+
 
 def _parse_style_sections(raw_json: str | None) -> list[dict] | None:
     """
@@ -247,11 +366,11 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
     if not stem_metadata or not stem_metadata.get("enabled") or not stem_metadata.get("succeeded"):
         return sections
 
-    available_roles = [
+    available_roles = _ordered_unique_roles([
         str(role).strip().lower()
         for role in (stem_metadata.get("roles_detected") or (stem_metadata.get("stem_s3_keys") or {}).keys())
         if str(role).strip()
-    ]
+    ])
     if not available_roles:
         return sections
 
@@ -263,32 +382,25 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
         transition_out = "cut"
 
         if section_type == "intro":
-            active_roles = [role for role in ("melody", "harmony", "fx") if role in available_roles]
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
             transition_out = "filter_open"
         elif section_type == "verse":
             verse_count += 1
-            active_roles = [role for role in ("drums", "bass") if role in available_roles]
-            if verse_count > 1 and "harmony" in available_roles:
-                active_roles.append("harmony")
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
             transition_out = "lift"
         elif section_type in {"hook", "chorus", "drop"}:
             hook_count += 1
-            if hook_count >= 3:
-                active_roles = list(available_roles)
-            elif hook_count == 2:
-                active_roles = [role for role in ("drums", "bass", "melody", "harmony", "fx") if role in available_roles]
-            else:
-                active_roles = [role for role in ("drums", "bass", "melody", "harmony") if role in available_roles]
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
             transition_out = "impact"
         elif section_type in {"bridge", "breakdown", "break"}:
-            active_roles = [role for role in ("harmony", "fx", "melody") if role in available_roles]
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
             transition_out = "riser"
         elif section_type == "outro":
-            active_roles = [role for role in ("melody", "harmony", "fx") if role in available_roles]
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
             transition_out = "fade"
 
         if not active_roles:
-            active_roles = list(available_roles)
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
 
         section["instruments"] = active_roles
         section["active_stem_roles"] = active_roles
@@ -672,6 +784,7 @@ def _build_section_audio_from_stems(
     
     # Mix all enabled stems with per-bar offset variation
     mixed = AudioSegment.silent(duration=target_ms)
+    stem_count = max(1, len(stems))
     
     for stem_name, stem_audio in stems.items():
         # Repeat stem to fill section duration
@@ -685,12 +798,14 @@ def _build_section_audio_from_stems(
             if offset > 0:
                 stem_repeated = stem_repeated[offset:] + stem_repeated[:offset]
                 stem_repeated = stem_repeated[:target_ms]
+
+        stem_repeated = stem_repeated.apply_gain(_stem_premix_gain_db(stem_name, stem_count))
         
         # Mix this stem in
         mixed = mixed.overlay(stem_repeated)
         logger.debug(f"    Mixed stem '{stem_name}' into section (duration: {len(stem_repeated)}ms)")
-    
-    return mixed
+
+    return _apply_headroom_ceiling(mixed, target_peak_dbfs=-6.0)
 
 
 def _render_producer_arrangement(
@@ -792,8 +907,12 @@ def _render_producer_arrangement(
                 enabled_stems = stems
 
             logger.info(
-                f"  Section '{section_name}' using stems: {list(enabled_stems.keys())} "
-                f"(requested instruments: {section_instruments})"
+                "STEM_SECTION_RENDER section='%s' type=%s requested=%s active=%s full_mix_active=%s",
+                section_name,
+                section_type,
+                section_instruments,
+                list(enabled_stems.keys()),
+                "full_mix" in enabled_stems,
             )
 
             section_audio = _build_section_audio_from_stems(

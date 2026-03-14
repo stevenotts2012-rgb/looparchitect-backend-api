@@ -1,5 +1,6 @@
 from app.services.arrangement_jobs import (
     _apply_stem_primary_section_states,
+    _build_section_audio_from_stems,
     _build_pre_render_plan,
     _render_producer_arrangement,
     _validate_render_plan_quality,
@@ -85,18 +86,19 @@ def test_apply_stem_primary_section_states_assigns_role_sets_by_section() -> Non
     stem_metadata = {
         "enabled": True,
         "succeeded": True,
-        "roles_detected": ["drums", "bass", "melody", "harmony", "fx"],
+        "roles_detected": ["full_mix", "drums", "bass", "melody", "pads"],
     }
 
     updated = _apply_stem_primary_section_states(sections, stem_metadata)
 
-    assert updated[0]["active_stem_roles"] == ["melody", "harmony", "fx"]
+    assert updated[0]["active_stem_roles"] == ["melody", "pads"]
     assert updated[1]["active_stem_roles"] == ["drums", "bass"]
-    assert updated[2]["active_stem_roles"] == ["drums", "bass", "harmony"]
-    assert updated[3]["active_stem_roles"] == ["drums", "bass", "melody", "harmony"]
-    assert updated[4]["active_stem_roles"] == ["drums", "bass", "melody", "harmony", "fx"]
-    assert updated[5]["active_stem_roles"] == ["harmony", "fx", "melody"]
-    assert updated[6]["active_stem_roles"] == ["melody", "harmony", "fx"]
+    assert updated[2]["active_stem_roles"] == ["drums", "bass", "melody"]
+    assert updated[3]["active_stem_roles"] == ["drums", "bass", "melody", "pads"]
+    assert updated[4]["active_stem_roles"] == ["drums", "bass", "melody", "pads"]
+    assert updated[5]["active_stem_roles"] == ["pads", "melody"]
+    assert updated[6]["active_stem_roles"] == ["melody", "pads"]
+    assert all("full_mix" not in section["active_stem_roles"] for section in updated)
     assert all(section["stem_primary"] is True for section in updated)
 
 
@@ -123,14 +125,32 @@ def test_build_pre_render_plan_marks_stem_primary_mode() -> None:
         stem_metadata={
             "enabled": True,
             "succeeded": True,
-            "roles_detected": ["drums", "bass", "melody", "harmony", "fx"],
+            "roles_detected": ["full_mix", "drums", "bass", "melody", "pads"],
         },
         loop_variation_manifest=None,
     )
 
     assert render_plan["render_profile"]["stem_primary_mode"] is True
-    assert render_plan["sections"][0]["active_stem_roles"] == ["melody", "harmony", "fx"]
+    assert render_plan["sections"][0]["active_stem_roles"] == ["melody", "pads"]
     assert render_plan["sections"][1]["active_stem_roles"] == ["drums", "bass"]
+
+
+def test_build_section_audio_from_stems_applies_headroom() -> None:
+    stems = {
+        "drums": Sine(80).to_audio_segment(duration=1000).apply_gain(-1),
+        "bass": Sine(120).to_audio_segment(duration=1000).apply_gain(-1),
+        "melody": Sine(440).to_audio_segment(duration=1000).apply_gain(-1),
+        "pads": Sine(660).to_audio_segment(duration=1000).apply_gain(-1),
+    }
+
+    section_audio = _build_section_audio_from_stems(
+        stems=stems,
+        section_bars=1,
+        bar_duration_ms=1000,
+        section_idx=0,
+    )
+
+    assert section_audio.max_dBFS <= -5.5
 
 
 def test_apply_stem_primary_section_states_marks_hook_evolution_stages() -> None:
