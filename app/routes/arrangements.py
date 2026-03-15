@@ -32,6 +32,7 @@ from app.schemas.arrangement import (
     AudioArrangementGenerateResponse,
     ArrangementCreateRequest,
     ArrangementResponse,
+    ArrangementPlan,
     ArrangementPlanRequest,
     ArrangementPlanResponse,
 )
@@ -49,7 +50,11 @@ from app.services.render_plan import RenderPlanGenerator
 from app.services.arrangement_validator import ArrangementValidator
 from app.services.daw_export import DAWExporter
 from app.services.storage import storage
-from app.services.arrangement_planner import arrangement_planner_service
+from app.services.arrangement_planner import (
+    arrangement_planner_service,
+    validate_arrangement_plan,
+    plan_to_producer_arrangement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -607,8 +612,71 @@ async def generate_arrangement(
         if moves_text:
             effective_style_text = f"{effective_style_text}; producer moves: {moves_text}" if effective_style_text else f"producer moves: {moves_text}"
 
+    # Highest priority: explicit user-edited arrangement plan
+    if request.arrangement_plan:
+        try:
+            planner_plan = ArrangementPlan.model_validate(request.arrangement_plan)
+
+            detected_roles: list[str] = []
+            loop_stem_meta = loop.stem_metadata or {}
+            if isinstance(loop_stem_meta, dict):
+                detected_roles = [str(role) for role in (loop_stem_meta.get("roles_detected") or []) if role]
+
+            validation = validate_arrangement_plan(planner_plan, detected_roles)
+            if not validation.valid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": "Invalid arrangement_plan",
+                        "errors": validation.errors,
+                        "warnings": validation.warnings,
+                    },
+                )
+
+            producer_arrangement_json = json.dumps(
+                {
+                    "version": "2.1",
+                    "producer_arrangement": plan_to_producer_arrangement(planner_plan),
+                    "from_user_plan": True,
+                    "correlation_id": correlation_id,
+                },
+                default=str,
+            )
+
+            structure_preview = [
+                {
+                    "name": str(section.type).replace("_", " ").title(),
+                    "bars": int(section.bars),
+                    "energy": round(float(section.energy) / 5.0, 3),
+                }
+                for section in planner_plan.sections
+            ]
+
+            style_profile_json = json.dumps(
+                {
+                    "source": "user_arrangement_plan",
+                    "planner_notes": planner_plan.planner_notes.model_dump(),
+                }
+            )
+            ai_parsing_used = True
+            style_preset = "user_plan"
+
+            logger.info(
+                "Using user-supplied arrangement plan: sections=%s total_bars=%s",
+                len(planner_plan.sections),
+                planner_plan.total_bars,
+            )
+        except HTTPException:
+            raise
+        except Exception as plan_error:
+            logger.warning("Failed to parse user arrangement_plan: %s", plan_error, exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid arrangement_plan payload: {plan_error}",
+            )
+
     # V2: Handle LLM-based style parsing
-    if request.use_ai_parsing and effective_style_text:
+    if not request.arrangement_plan and request.use_ai_parsing and effective_style_text:
         try:
             logger.info(f"Parsing style text: {effective_style_text}")
             loop_metadata = {
@@ -685,7 +753,7 @@ async def generate_arrangement(
             # Fall through to preset-based or default handling
 
     # V1: Handle preset-based style configuration (fallback)
-    elif settings.feature_style_engine and request.style_preset:
+    elif not request.arrangement_plan and settings.feature_style_engine and request.style_preset:
         try:
             bpm_for_plan = float(loop.bpm or loop.tempo or 120.0)
             loop_bars = int(loop.bars or 4)
@@ -710,7 +778,7 @@ async def generate_arrangement(
 
     # METADATA ANALYZER INTEGRATION: Auto-detect genre/mood if not already determined
     # This runs when ProducerEngine is enabled but no genre/style was parsed from AI or preset
-    if settings.feature_producer_engine and not ai_parsing_used and not request.genre:
+    if settings.feature_producer_engine and not request.arrangement_plan and not ai_parsing_used and not request.genre:
         try:
             logger.info("Auto-detecting genre/mood from loop metadata for ProducerEngine")
             

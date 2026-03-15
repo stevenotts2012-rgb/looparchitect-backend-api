@@ -307,6 +307,36 @@ def validate_arrangement_plan(plan: ArrangementPlan, detected_roles: list[str]) 
     return ArrangementPlanValidation(valid=len(errors) == 0, errors=errors, warnings=warnings)
 
 
+def plan_to_producer_arrangement(plan: ArrangementPlan) -> dict[str, Any]:
+    """Convert planner output into producer_arrangement-compatible payload."""
+    sections: list[dict[str, Any]] = []
+    bar_cursor = 0
+
+    for section in plan.sections:
+        bars = int(section.bars)
+        section_payload = {
+            "name": str(section.type).replace("_", " ").title(),
+            "type": section.type,
+            "bar_start": int(bar_cursor),
+            "bars": bars,
+            "energy": round(float(section.energy) / 5.0, 3),
+            "instruments": list(section.active_roles),
+            "transition_hint": section.transition_into,
+            "notes": section.notes,
+        }
+        sections.append(section_payload)
+        bar_cursor += bars
+
+    return {
+        "version": "2.1",
+        "sections": sections,
+        "tracks": [],
+        "transitions": [],
+        "energy_curve": [],
+        "total_bars": int(plan.total_bars),
+    }
+
+
 class ArrangementPlannerService:
     """LLM-backed arrangement planner with deterministic fallback."""
 

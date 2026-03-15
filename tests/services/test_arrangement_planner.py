@@ -2,6 +2,7 @@ from app.schemas.arrangement import ArrangementPlannerConfig, ArrangementPlanner
 from app.services.arrangement_planner import (
     build_fallback_arrangement_plan,
     validate_arrangement_plan,
+    plan_to_producer_arrangement,
 )
 
 
@@ -63,3 +64,24 @@ def test_empty_roles_returns_empty_valid_plan() -> None:
     assert plan.total_bars == 0
     assert plan.sections == []
     assert validation.valid is True
+
+
+def test_plan_to_producer_arrangement_preserves_order_and_bars() -> None:
+    planner_input = ArrangementPlannerInput(
+        bpm=140,
+        detected_roles=["drums", "bass", "melody"],
+        target_total_bars=32,
+        source_type="stem_pack",
+    )
+    plan = build_fallback_arrangement_plan(
+        planner_input=planner_input,
+        user_request="energy with clear hooks",
+        planner_config=ArrangementPlannerConfig(strict=True),
+    )
+
+    producer = plan_to_producer_arrangement(plan)
+
+    assert producer["total_bars"] == plan.total_bars
+    assert len(producer["sections"]) == len(plan.sections)
+    assert producer["sections"][0]["bar_start"] == 0
+    assert producer["sections"][1]["bar_start"] == plan.sections[0].bars

@@ -217,6 +217,10 @@ class AudioArrangementGenerateRequest(BaseModel):
         default=None,
         description="Optional producer move directives (e.g., beat_switch, halftime_drop, stop_time)",
     )
+    arrangement_plan: Optional[dict] = Field(
+        default=None,
+        description="Optional validated arrangement plan to drive deterministic producer arrangement generation.",
+    )
     seed: Optional[int | str] = Field(
         default=None,
         description="Optional deterministic seed",
