@@ -17,6 +17,7 @@ import shutil
 from pathlib import Path
 
 import httpx
+import numpy as np
 from pydub import AudioSegment
 
 from app.db import SessionLocal
@@ -200,6 +201,55 @@ def _apply_headroom_ceiling(audio: AudioSegment, target_peak_dbfs: float = -6.0)
     if peak == float("-inf") or peak <= target_peak_dbfs:
         return audio
     return audio - (peak - target_peak_dbfs)
+
+
+def _rms_dbfs(audio: AudioSegment) -> float:
+    """Return RMS in dBFS with silence-safe floor."""
+    rms = int(audio.rms or 0)
+    if rms <= 0:
+        return -120.0
+    full_scale = float(1 << (8 * audio.sample_width - 1))
+    return float(20.0 * np.log10(max(rms, 1) / full_scale))
+
+
+def _stabilize_section_loudness(
+    current: AudioSegment,
+    previous: AudioSegment | None,
+    section_type: str,
+    previous_section_type: str | None = None,
+) -> AudioSegment:
+    """Limit abrupt adjacent section loudness swings that sound like pumping."""
+    if previous is None:
+        return current
+
+    prev_type = str(previous_section_type or "").strip().lower()
+    current_type = str(section_type or "").strip().lower()
+
+    current_rms = _rms_dbfs(current)
+    previous_rms = _rms_dbfs(previous)
+    delta_db = current_rms - previous_rms
+
+    up_limit = 2.5
+    down_limit = -2.5
+
+    if current_type in {"hook", "drop", "chorus"}:
+        # Only constrain the known problematic ramp into hook sections.
+        if prev_type in {"pre_hook", "buildup", "build_up", "build"}:
+            up_limit = 4.0
+            down_limit = -4.0
+        else:
+            return current
+
+    if current_type in {"intro", "outro", "breakdown", "bridge", "break"}:
+        up_limit = 1.5
+        down_limit = -4.0
+
+    clamped_delta = min(up_limit, max(down_limit, delta_db))
+    correction_db = clamped_delta - delta_db
+
+    if abs(correction_db) >= 0.25:
+        return current.apply_gain(correction_db)
+    return current
 
 
 def debug_render_report(arrangement_id: int) -> list[dict]:
@@ -1149,6 +1199,7 @@ def _render_producer_arrangement(
     timeline_sections = []
     producer_debug_report: list[dict] = []
     previous_section_context: dict | None = None
+    previous_section_audio: AudioSegment | None = None
     
     for section_idx, section in enumerate(sections):
         section_name = section.get("name", f"Section {section_idx + 1}")
@@ -1308,11 +1359,11 @@ def _render_producer_arrangement(
 
             # Boost to near ceiling — do NOT exceed -2 dBFS to avoid post-mastering clip.
             # Stems already at -6 dBFS; +4 dB = -2 dBFS, which is safe.
-            boost_db = 4.0
+            boost_db = 3.0
             if hook_stage == "hook2":
-                boost_db = 4.5
+                boost_db = 3.5
             elif hook_stage == "hook3":
-                boost_db = 5.0
+                boost_db = 4.0
             section_audio = section_audio + boost_db
             # Guard rail: never let this escape -1 dBFS before it hits mastering
             section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
@@ -1398,14 +1449,14 @@ def _render_producer_arrangement(
                 
                 if var_type in {"hats_roll", "fill", "hi_hat_stutter"}:
                     # Hat rolls and fills: volume boost
-                    variation_segment = variation_segment + 8
+                    variation_segment = variation_segment + 4
                 elif var_type in {"snare_fill", "drum_fill", "kick_fill"}:
                     # Snare fills: heavy boost
-                    variation_segment = variation_segment + 10
+                    variation_segment = variation_segment + 5
                 elif var_type in {"bass_drop", "drop", "bass_glide"}:
                     # Drops: add silence then huge impact
                     drop_gap = min(200, len(variation_segment) // 4)
-                    variation_segment = AudioSegment.silent(duration=drop_gap) + variation_segment[drop_gap:] + 12
+                    variation_segment = AudioSegment.silent(duration=drop_gap) + variation_segment[drop_gap:] + 5
                 elif var_type == "reverse":
                     # Reverse effect
                     variation_segment = variation_segment.reverse()
@@ -1491,7 +1542,7 @@ def _render_producer_arrangement(
                     pre_riser = section_audio[:riser_start]
                     riser_part = section_audio[riser_start:]
                     # Create riser effect with volume automation
-                    riser_part = riser_part + 12  # Huge volume boost
+                    riser_part = riser_part + 6  # Controlled boost
                     riser_part = riser_part.high_pass_filter(300)  # Filter lows
                     section_audio = pre_riser + riser_part
                     
@@ -1500,6 +1551,15 @@ def _render_producer_arrangement(
                     impact_gap = min(500, trans_duration_ms)
                     section_audio = section_audio[:-impact_gap] + AudioSegment.silent(duration=impact_gap)
                 section_applied_events.append(f"transition:{trans_type}")
+
+        section_audio = _stabilize_section_loudness(
+            current=section_audio,
+            previous=previous_section_audio,
+            section_type=section_type,
+            previous_section_type=(previous_section_context or {}).get("section_type"),
+        )
+        section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
+        previous_section_audio = section_audio
         
         arranged += section_audio
         
