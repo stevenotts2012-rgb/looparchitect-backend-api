@@ -1178,6 +1178,16 @@ def get_arrangement_metadata(
             metadata["render_plan"] = json.loads(arrangement.render_plan_json)
         except json.JSONDecodeError:
             logger.warning(f"Failed to decode render_plan_json for arrangement {arrangement_id}")
+
+    # Include rendered timeline/debug payload if available
+    if arrangement.arrangement_json:
+        try:
+            timeline = json.loads(arrangement.arrangement_json)
+            metadata["timeline"] = timeline
+            if isinstance(timeline, dict) and "producer_debug_report" in timeline:
+                metadata["producer_debug_report"] = timeline.get("producer_debug_report")
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to decode arrangement_json for arrangement {arrangement_id}")
     
     return metadata
 
