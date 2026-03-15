@@ -30,6 +30,7 @@ from app.models.loop import Loop
 from app.schemas.arrangement import (
     AudioArrangementGenerateRequest,
     AudioArrangementGenerateResponse,
+    ArrangementPreviewCandidate,
     ArrangementCreateRequest,
     ArrangementResponse,
     ArrangementPlan,
@@ -216,6 +217,7 @@ def _ensure_arrangements_schema(db: Session) -> None:
             "output_s3_key": "VARCHAR",
             "output_url": "VARCHAR",
             "stems_zip_url": "VARCHAR",
+            "is_saved": "BOOLEAN DEFAULT true",
         }
 
         for column_name, column_type in required_columns.items():
@@ -460,12 +462,16 @@ def create_arrangement(
 )
 def list_arrangements(
     loop_id: int | None = None,
+    include_unsaved: bool = False,
     db: Session = Depends(get_db),
 ):
     """List arrangements with optional filtering by loop_id."""
+    _ensure_arrangements_schema(db)
     query = db.query(Arrangement)
     if loop_id is not None:
         query = query.filter(Arrangement.loop_id == loop_id)
+    if not include_unsaved:
+        query = query.filter(Arrangement.is_saved.isnot(False))
     arrangements = query.order_by(Arrangement.created_at.desc()).all()
     return [ArrangementResponse.from_orm(item) for item in arrangements]
 
@@ -874,101 +880,149 @@ async def generate_arrangement(
             logger.warning(f"Metadata analysis failed: {metadata_error}", exc_info=True)
             # Continue without metadata-based generation
 
-    # Create arrangement record
+    # Create arrangement record(s)
     _ensure_arrangements_schema(db)
-    logger.info(f"DEBUG-SAVE: Creating arrangement with: ai_parsing_used={ai_parsing_used}, has_producer_json={producer_arrangement_json is not None}, json_len={len(producer_arrangement_json) if producer_arrangement_json else 0}")
-    arrangement = Arrangement(
-        loop_id=request.loop_id,
-        status="queued",
-        target_seconds=effective_target_seconds,
-        genre=request.genre,
-        intensity=request.intensity,
-        include_stems=request.include_stems,
-        arrangement_json=structure_json,
-        style_profile_json=style_profile_json,
-        ai_parsing_used=ai_parsing_used,
-        producer_arrangement_json=producer_arrangement_json,
-    )
-    db.add(arrangement)
-    try:
-        db.commit()
-    except Exception as commit_error:
-        db.rollback()
-        logger.exception("Failed to create arrangement row")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create arrangement record: {str(commit_error)}",
-        )
-    db.refresh(arrangement)
-
     logger.info(
-        "Arrangement created: arrangement_id=%s loop_id=%s status=%s",
-        arrangement.id,
-        arrangement.loop_id,
-        arrangement.status,
+        "DEBUG-SAVE: Creating arrangement previews with auto_save=%s ai_parsing_used=%s has_producer_json=%s json_len=%s",
+        request.auto_save,
+        ai_parsing_used,
+        producer_arrangement_json is not None,
+        len(producer_arrangement_json) if producer_arrangement_json else 0,
     )
 
-    log_feature_event(
-        logger,
-        event="arrangement_created",
-        correlation_id=correlation_id,
-        arrangement_id=arrangement.id,
-        loop_id=arrangement.loop_id,
-        sections_count=len(structure_preview or []),
-        ai_parsing_used=ai_parsing_used,
-    )
+    candidate_count = max(1, int(request.variation_count or 1))
+    candidates: list[ArrangementPreviewCandidate] = []
+    render_job_ids: list[str] = []
+    first_arrangement: Arrangement | None = None
 
-    enqueue_params = {
-        "genre": request.genre,
-        "length_seconds": effective_target_seconds,
-        "energy": request.intensity,
-        "variations": int(request.variation_count or 1),
-        "variation_styles": [],
-        "custom_style": effective_style_text or request.style_preset,
-        "arrangement_id": arrangement.id,
-        "correlation_id": correlation_id,
-    }
-    try:
-        job, _ = create_render_job(db, arrangement.loop_id, enqueue_params)
-    except ValueError as enqueue_error:
-        try:
-            arrangement.status = "failed"
-            arrangement.progress = 0.0
-            arrangement.progress_message = "Queue enqueue validation failed"
-            arrangement.error_message = f"Enqueue validation failed: {enqueue_error}"
-            db.commit()
-            db.refresh(arrangement)
-        except Exception:
-            db.rollback()
-            logger.exception("Failed to mark arrangement as failed after enqueue validation error")
-        logger.exception("Failed to enqueue arrangement job for arrangement_id=%s", arrangement.id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to enqueue arrangement job: {enqueue_error}",
+    base_seed = None
+    if isinstance(seed_used, int):
+        base_seed = seed_used
+    elif isinstance(request.seed, int):
+        base_seed = int(request.seed)
+
+    for variation_index in range(candidate_count):
+        candidate_seed = (base_seed + variation_index) if base_seed is not None else None
+        candidate_structure_json = structure_json
+        if structure_preview and candidate_seed is not None:
+            candidate_structure_json = json.dumps(
+                {
+                    "seed": candidate_seed,
+                    "sections": structure_preview,
+                    "correlation_id": correlation_id,
+                    "variation_index": variation_index,
+                }
+            )
+
+        arrangement = Arrangement(
+            loop_id=request.loop_id,
+            status="queued",
+            target_seconds=effective_target_seconds,
+            genre=request.genre,
+            intensity=request.intensity,
+            include_stems=request.include_stems,
+            arrangement_json=candidate_structure_json,
+            style_profile_json=style_profile_json,
+            ai_parsing_used=ai_parsing_used,
+            producer_arrangement_json=producer_arrangement_json,
+            is_saved=request.auto_save,
         )
-    except RuntimeError as enqueue_error:
+        db.add(arrangement)
         try:
-            arrangement.status = "failed"
-            arrangement.progress = 0.0
-            arrangement.progress_message = "Queue unavailable"
-            arrangement.error_message = f"Queue enqueue failed: {enqueue_error}"
             db.commit()
-            db.refresh(arrangement)
-        except Exception:
+        except Exception as commit_error:
             db.rollback()
-            logger.exception("Failed to mark arrangement as failed after queue outage")
-        logger.exception("Queue unavailable while enqueuing arrangement_id=%s", arrangement.id)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Background queue unavailable: {enqueue_error}",
+            logger.exception("Failed to create arrangement row")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create arrangement record: {str(commit_error)}",
+            )
+        db.refresh(arrangement)
+
+        if first_arrangement is None:
+            first_arrangement = arrangement
+
+        logger.info(
+            "Arrangement created: arrangement_id=%s loop_id=%s status=%s variation_index=%s",
+            arrangement.id,
+            arrangement.loop_id,
+            arrangement.status,
+            variation_index,
         )
 
-    logger.info(
-        "Arrangement job enqueued: arrangement_id=%s job_id=%s queue_name=%s",
-        arrangement.id,
-        job.id,
-        DEFAULT_RENDER_QUEUE_NAME,
-    )
+        log_feature_event(
+            logger,
+            event="arrangement_created",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement.id,
+            loop_id=arrangement.loop_id,
+            sections_count=len(structure_preview or []),
+            ai_parsing_used=ai_parsing_used,
+        )
+
+        enqueue_params = {
+            "genre": request.genre,
+            "length_seconds": effective_target_seconds,
+            "energy": request.intensity,
+            "variations": 1,
+            "variation_styles": [],
+            "custom_style": effective_style_text or request.style_preset,
+            "arrangement_id": arrangement.id,
+            "correlation_id": correlation_id,
+            "variation_index": variation_index,
+        }
+        try:
+            job, _ = create_render_job(db, arrangement.loop_id, enqueue_params)
+        except ValueError as enqueue_error:
+            try:
+                arrangement.status = "failed"
+                arrangement.progress = 0.0
+                arrangement.progress_message = "Queue enqueue validation failed"
+                arrangement.error_message = f"Enqueue validation failed: {enqueue_error}"
+                db.commit()
+                db.refresh(arrangement)
+            except Exception:
+                db.rollback()
+                logger.exception("Failed to mark arrangement as failed after enqueue validation error")
+            logger.exception("Failed to enqueue arrangement job for arrangement_id=%s", arrangement.id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to enqueue arrangement job: {enqueue_error}",
+            )
+        except RuntimeError as enqueue_error:
+            try:
+                arrangement.status = "failed"
+                arrangement.progress = 0.0
+                arrangement.progress_message = "Queue unavailable"
+                arrangement.error_message = f"Queue enqueue failed: {enqueue_error}"
+                db.commit()
+                db.refresh(arrangement)
+            except Exception:
+                db.rollback()
+                logger.exception("Failed to mark arrangement as failed after queue outage")
+            logger.exception("Queue unavailable while enqueuing arrangement_id=%s", arrangement.id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Background queue unavailable: {enqueue_error}",
+            )
+
+        logger.info(
+            "Arrangement job enqueued: arrangement_id=%s job_id=%s queue_name=%s",
+            arrangement.id,
+            job.id,
+            DEFAULT_RENDER_QUEUE_NAME,
+        )
+
+        render_job_ids.append(job.id)
+        candidates.append(
+            ArrangementPreviewCandidate(
+                arrangement_id=arrangement.id,
+                status=arrangement.status,
+                created_at=arrangement.created_at,
+                render_job_id=job.id,
+                seed_used=candidate_seed,
+            )
+        )
 
     log_feature_event(
         logger,
@@ -980,16 +1034,42 @@ async def generate_arrangement(
     )
 
     return AudioArrangementGenerateResponse(
-        arrangement_id=arrangement.id,
-        loop_id=arrangement.loop_id,
-        status=arrangement.status,
-        created_at=arrangement.created_at,
-        render_job_ids=[job.id],
+        arrangement_id=first_arrangement.id if first_arrangement else None,
+        loop_id=request.loop_id,
+        status=first_arrangement.status if first_arrangement else None,
+        created_at=first_arrangement.created_at if first_arrangement else None,
+        render_job_ids=render_job_ids,
         seed_used=seed_used,
         style_preset=style_preset,
         style_profile=json.loads(style_profile_json) if style_profile_json else None,
         structure_preview=structure_preview,
+        candidates=candidates,
     )
+
+
+@router.post(
+    "/{arrangement_id}/save",
+    response_model=ArrangementResponse,
+    summary="Save arrangement preview",
+    description="Marks a generated preview arrangement as saved so it appears in history.",
+)
+def save_arrangement_preview(
+    arrangement_id: int,
+    db: Session = Depends(get_db),
+):
+    _ensure_arrangements_schema(db)
+
+    arrangement = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
+    if not arrangement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Arrangement with ID {arrangement_id} not found",
+        )
+
+    arrangement.is_saved = True
+    db.commit()
+    db.refresh(arrangement)
+    return ArrangementResponse.from_orm(arrangement)
 
 
 @router.post(

@@ -22,6 +22,7 @@ class Arrangement(Base):
     genre = Column(String, nullable=True)
     intensity = Column(String, nullable=True)
     include_stems = Column(Boolean, default=False)
+    is_saved = Column(Boolean, default=True, nullable=True)
     
     # Output paths
     output_s3_key = Column(String, nullable=True)  # S3 key like "arrangements/{id}.wav"

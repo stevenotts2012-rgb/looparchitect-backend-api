@@ -7,10 +7,13 @@ from fastapi.testclient import TestClient
 from pydub import AudioSegment
 from pydub.generators import Sine
 
-from app.db import SessionLocal
+import app.db as db_module
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
 from main import app
+
+
+pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")
 
 
 @pytest.fixture
@@ -20,7 +23,7 @@ def client():
 
 @pytest.fixture
 def db():
-    db = SessionLocal()
+    db = db_module.SessionLocal()
     yield db
     db.close()
 

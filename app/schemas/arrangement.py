@@ -231,6 +231,10 @@ class AudioArrangementGenerateRequest(BaseModel):
         le=3,
         description="Optional number of variations to queue (feature-flagged)",
     )
+    auto_save: bool = Field(
+        default=False,
+        description="Whether generated arrangements should be persisted to user history immediately",
+    )
     
     @model_validator(mode='after')
     def validate_duration_params(self):
@@ -246,13 +250,21 @@ class StructurePreviewItem(BaseModel):
     energy: float
 
 
+class ArrangementPreviewCandidate(BaseModel):
+    arrangement_id: int
+    status: str
+    created_at: datetime
+    render_job_id: Optional[str] = None
+    seed_used: Optional[int] = None
+
+
 class AudioArrangementGenerateResponse(BaseModel):
     """Response from audio arrangement generation request."""
 
-    arrangement_id: int = Field(..., description="ID of created arrangement")
+    arrangement_id: Optional[int] = Field(default=None, description="ID of first created arrangement")
     loop_id: int = Field(..., description="ID of source loop")
-    status: str = Field(..., description="Current status: queued, processing, done, failed")
-    created_at: datetime = Field(..., description="Timestamp of creation")
+    status: Optional[str] = Field(default=None, description="Current status: queued, processing, done, failed")
+    created_at: Optional[datetime] = Field(default=None, description="Timestamp of first creation")
     render_job_ids: List[str] = Field(default_factory=list, description="Reserved for async variation jobs")
     seed_used: Optional[int] = Field(default=None, description="Resolved seed used for deterministic generation")
     style_preset: Optional[str] = Field(default=None, description="Resolved style preset id")
@@ -263,6 +275,10 @@ class AudioArrangementGenerateResponse(BaseModel):
     structure_preview: List[StructurePreviewItem] = Field(
         default_factory=list,
         description="Section plan preview generated at request time",
+    )
+    candidates: List[ArrangementPreviewCandidate] = Field(
+        default_factory=list,
+        description="Generated preview candidates. Save one explicitly to add to history.",
     )
 
     class Config:
