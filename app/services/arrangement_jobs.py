@@ -50,27 +50,39 @@ _ISOLATED_STEM_ROLES = {
 }
 
 _SECTION_ROLE_PREFERENCES: dict[str, tuple[tuple[str, ...], ...]] = {
-    "intro": (("melody", "vocals", "vocal"), ("pads", "harmony")),
+    "intro": (("melody", "vocals", "vocal"), ("pads", "harmony"), ("fx", "accent")),
     "verse": (("drums", "percussion"), ("bass",)),
-    "hook": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony")),
-    "chorus": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony")),
-    "drop": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony")),
-    "bridge": (("pads", "harmony"), ("melody", "vocals", "vocal")),
-    "breakdown": (("pads", "harmony"), ("melody", "vocals", "vocal")),
-    "break": (("pads", "harmony"), ("melody", "vocals", "vocal")),
-    "outro": (("melody", "vocals", "vocal"), ("pads", "harmony")),
+    "pre_hook": (("percussion", "drums"), ("bass",), ("fx", "accent"), ("melody", "vocals", "vocal")),
+    "hook": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony"), ("fx", "accent")),
+    "bridge": (("pads", "harmony"), ("melody", "vocals", "vocal"), ("fx", "accent")),
+    "outro": (("melody", "vocals", "vocal"), ("pads", "harmony"), ("fx", "accent"), ("bass",)),
 }
 
 _SECTION_MIN_LAYERS = {
     "intro": 1,
     "verse": 2,
+    "pre_hook": 2,
     "hook": 3,
-    "chorus": 3,
-    "drop": 3,
     "bridge": 1,
-    "breakdown": 1,
-    "break": 1,
     "outro": 1,
+}
+
+_SECTION_MAX_LAYERS = {
+    "intro": 3,
+    "verse": 3,
+    "pre_hook": 3,
+    "hook": 5,
+    "bridge": 2,
+    "outro": 2,
+}
+
+_SECTION_ROLE_EXCLUSIONS = {
+    "intro": {"drums", "percussion", "bass"},
+    "verse": set(),
+    "pre_hook": {"drums"},
+    "hook": set(),
+    "bridge": {"drums", "percussion", "bass"},
+    "outro": set(),
 }
 
 _PREMIX_GAIN_DB = {
@@ -107,16 +119,43 @@ def _pick_available_role(available_roles: list[str], candidates: tuple[str, ...]
     return None
 
 
+def _normalize_section_type(section_type: str) -> str:
+    value = str(section_type or "verse").strip().lower()
+    if value in {"chorus", "drop"}:
+        return "hook"
+    if value in {"buildup", "build_up", "build", "prehook", "pre-hook"}:
+        return "pre_hook"
+    if value in {"breakdown", "break"}:
+        return "bridge"
+    return value
+
+
+def _material_difference_ratio(left: list[str], right: list[str]) -> float:
+    left_set = set(left)
+    right_set = set(right)
+    if not left_set and not right_set:
+        return 0.0
+    intersection = len(left_set & right_set)
+    union = len(left_set | right_set)
+    if union <= 0:
+        return 0.0
+    return 1.0 - (intersection / union)
+
+
 def _select_section_stem_roles(
     section_type: str,
     available_roles: list[str],
     *,
     verse_count: int = 0,
 ) -> list[str]:
+    section_type = _normalize_section_type(section_type)
     isolated_roles = [role for role in available_roles if role in _ISOLATED_STEM_ROLES]
     full_mix_available = "full_mix" in available_roles
     sufficient_isolated = len(isolated_roles) >= 2
     role_source = isolated_roles if sufficient_isolated else available_roles
+
+    excluded_roles = _SECTION_ROLE_EXCLUSIONS.get(section_type, set())
+    role_source = [role for role in role_source if role not in excluded_roles]
 
     selected: list[str] = []
     for candidates in _SECTION_ROLE_PREFERENCES.get(section_type, _SECTION_ROLE_PREFERENCES["verse"]):
@@ -128,14 +167,21 @@ def _select_section_stem_roles(
         selected.append("melody")
 
     min_layers = _SECTION_MIN_LAYERS.get(section_type, 1)
+    max_layers = _SECTION_MAX_LAYERS.get(section_type, max(1, len(selected)))
     if not sufficient_isolated and full_mix_available and len(selected) < min_layers:
         return ["full_mix"]
 
     if sufficient_isolated:
         selected = [role for role in selected if role != "full_mix"]
 
+    if len(selected) > max_layers:
+        selected = selected[:max_layers]
+
     if not selected:
         if isolated_roles:
+            fallback_roles = [role for role in isolated_roles if role not in excluded_roles]
+            if fallback_roles:
+                return fallback_roles[:max(1, min_layers)]
             return isolated_roles[:max(1, min_layers)]
         if full_mix_available:
             return ["full_mix"]
@@ -518,8 +564,10 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
 
     hook_count = 0
     verse_count = 0
+    previous_roles: list[str] = []
+
     for section in sections:
-        section_type = str(section.get("type") or "verse").strip().lower()
+        section_type = _normalize_section_type(section.get("type") or "verse")
         active_roles: list[str] = []
         transition_out = "cut"
 
@@ -530,12 +578,15 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
             verse_count += 1
             active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
             transition_out = "lift"
+        elif section_type == "pre_hook":
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
+            transition_out = "riser"
         elif section_type in {"hook", "chorus", "drop"}:
             hook_count += 1
-            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
+            active_roles = _select_section_stem_roles("hook", available_roles, verse_count=verse_count)
             transition_out = "impact"
         elif section_type in {"bridge", "breakdown", "break"}:
-            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
+            active_roles = _select_section_stem_roles("bridge", available_roles, verse_count=verse_count)
             transition_out = "riser"
         elif section_type == "outro":
             active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
@@ -544,10 +595,89 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
         if not active_roles:
             active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
 
+        # Prevent near-identical section stem sets so contrast is not just volume-based.
+        if previous_roles and _material_difference_ratio(previous_roles, active_roles) < 0.25:
+            if section_type == "hook":
+                for hook_role in ("fx", "pads", "harmony", "melody"):
+                    if hook_role in available_roles and hook_role not in active_roles:
+                        active_roles.append(hook_role)
+                        break
+            elif section_type in {"bridge", "outro", "intro", "pre_hook"}:
+                for removable in ("drums", "percussion", "bass"):
+                    if removable in active_roles and len(active_roles) > 1:
+                        active_roles = [role for role in active_roles if role != removable]
+                        break
+            elif section_type == "verse":
+                for removable in ("pads", "fx", "harmony"):
+                    if removable in active_roles and len(active_roles) > 2:
+                        active_roles = [role for role in active_roles if role != removable]
+                        break
+
         section["instruments"] = active_roles
         section["active_stem_roles"] = active_roles
         section["stem_primary"] = True
         section["transition_out"] = transition_out
+        section["type"] = section_type
+
+        baseline_variations: list[dict] = []
+        boundary_events: list[dict] = list(section.get("boundary_events") or [])
+
+        if section_type == "pre_hook":
+            baseline_variations.extend(
+                [
+                    {
+                        "variation_type": "pre_hook_drum_mute",
+                        "bar_start": max(0, int(section.get("bar_start", 0) or 0) + int(section.get("bars", 1) or 1) - 1),
+                        "duration_bars": 1,
+                        "intensity": 0.85,
+                        "params": {"pause_bars": 0.5},
+                    },
+                    {
+                        "variation_type": "bass_pause",
+                        "bar_start": max(0, int(section.get("bar_start", 0) or 0) + int(section.get("bars", 1) or 1) - 1),
+                        "duration_bars": 1,
+                        "intensity": 0.8,
+                        "params": {"pause_bars": 0.5},
+                    },
+                ]
+            )
+            boundary_events.append(
+                {
+                    "type": "snare_pickup",
+                    "bar": max(0, int(section.get("bar_start", 0) or 0) + int(section.get("bars", 1) or 1) - 1),
+                    "placement": "end_of_section",
+                    "intensity": 0.82,
+                    "params": {},
+                }
+            )
+
+        if section_type == "bridge":
+            baseline_variations.append(
+                {
+                    "variation_type": "bridge_strip",
+                    "bar_start": int(section.get("bar_start", 0) or 0),
+                    "duration_bars": max(1, int(section.get("bars", 1) or 1)),
+                    "intensity": 0.82,
+                    "params": {"strip": ["drums", "bass"]},
+                }
+            )
+
+        if section_type == "outro":
+            baseline_variations.append(
+                {
+                    "variation_type": "outro_strip_down",
+                    "bar_start": int(section.get("bar_start", 0) or 0),
+                    "duration_bars": max(1, int(section.get("bars", 1) or 1)),
+                    "intensity": 0.8,
+                    "params": {"pause_bars": 1.0},
+                }
+            )
+
+        if baseline_variations:
+            section.setdefault("variations", [])
+            section["variations"].extend(baseline_variations)
+        if boundary_events:
+            section["boundary_events"] = boundary_events
 
         if section_type in {"hook", "chorus", "drop"}:
             stage = "hook1"
@@ -560,6 +690,8 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
                 "density": 0.75 + min(0.2, (hook_count - 1) * 0.1),
                 "stereo_width": 1.0 + min(0.16, (hook_count - 1) * 0.08),
             }
+
+        previous_roles = list(active_roles)
 
     return sections
 
@@ -758,12 +890,14 @@ def _apply_producer_move_effect(
         return segment[:start] + rev
 
     if move_type == "drop_kick":
-        drop_len = int(min(len(segment), bar_duration_ms * 0.35))
+        pause_bars = float(params.get("pause_bars", 0.35) or 0.35)
+        drop_len = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
         return AudioSegment.silent(duration=drop_len) + segment[drop_len:]
 
     if move_type == "bass_pause":
-        pause_len = int(min(len(segment), bar_duration_ms * 0.5))
-        head = segment[:pause_len].high_pass_filter(220)
+        pause_bars = float(params.get("pause_bars", 0.5) or 0.5)
+        pause_len = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
+        head = segment[:pause_len].high_pass_filter(260) - (5 if stem_available else 3)
         return head + segment[pause_len:]
 
     if move_type == "disable_stem":
@@ -795,7 +929,8 @@ def _apply_producer_move_effect(
             return segment.high_pass_filter(low_hz).low_pass_filter(high_hz)
 
     if move_type == "silence_drop":
-        gap_ms = int(min(len(segment), bar_duration_ms * (0.22 + 0.2 * intensity)))
+        pause_bars = float(params.get("pause_bars", 0.22 + (0.2 * intensity)) or (0.22 + (0.2 * intensity)))
+        gap_ms = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
         return AudioSegment.silent(duration=gap_ms) + segment[gap_ms:]
 
     if move_type == "pre_hook_mute":
@@ -836,7 +971,8 @@ def _apply_producer_move_effect(
         return strip.fade_out(min(len(strip), int(bar_duration_ms * 0.85)))
 
     if move_type == "pre_hook_drum_mute":
-        mute_ms = int(min(len(segment), bar_duration_ms * (0.45 + 0.35 * intensity)))
+        pause_bars = float(params.get("pause_bars", 0.45 + (0.35 * intensity)) or (0.45 + (0.35 * intensity)))
+        mute_ms = int(min(len(segment), bar_duration_ms * max(0.2, pause_bars)))
         return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
 
     if move_type == "silence_drop_before_hook":
@@ -1011,10 +1147,12 @@ def _render_producer_arrangement(
     
     timeline_events = []
     timeline_sections = []
+    producer_debug_report: list[dict] = []
+    previous_section_context: dict | None = None
     
     for section_idx, section in enumerate(sections):
         section_name = section.get("name", f"Section {section_idx + 1}")
-        section_type = (section.get("section_type") or section.get("type") or "verse").strip().lower()
+        section_type = _normalize_section_type(section.get("section_type") or section.get("type") or "verse")
         bar_start = int(section.get("bar_start", 0) or 0)
         section_bars = int(section.get("bars", 0) or 0)
         if section_bars <= 0:
@@ -1063,6 +1201,7 @@ def _render_producer_arrangement(
                 bar_duration_ms=bar_duration_ms,
                 section_idx=section_idx,
             )[:section_ms]
+            active_role_snapshot = list(enabled_stems.keys())
 
         elif use_loop_variations and section_loop_variant in (loop_variations or {}):
             variation_source = (loop_variations or {})[section_loop_variant]
@@ -1101,6 +1240,7 @@ def _render_producer_arrangement(
                 instance_seed,
                 variation_intensity,
             )
+            active_role_snapshot = list(section.get("instruments") or section.get("active_stem_roles") or [])
         else:
             # STEREO FALLBACK MODE: Use full loop with DSP variation
             section_audio = _build_varied_section_audio(
@@ -1110,6 +1250,7 @@ def _render_producer_arrangement(
                 section_idx=section_idx,
                 section_type=section_type,
             )[:section_ms]
+            active_role_snapshot = list(section.get("instruments") or section.get("active_stem_roles") or [])
         
         logger.info(
             f"Processing section [{section_idx}] {section_name}: type={section_type} (raw={section.get('section_type') or section.get('type')}), bars={section_bars}, energy={section_energy}"
@@ -1176,6 +1317,17 @@ def _render_producer_arrangement(
             # Guard rail: never let this escape -1 dBFS before it hits mastering
             section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
             logger.info(f"  HOOK post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS (stage={hook_stage})")
+
+        elif section_type in {"pre_hook", "buildup", "build_up", "build"}:
+            logger.info(f"Processing PRE_HOOK section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
+            section_audio = section_audio.high_pass_filter(180) + 1
+            section_audio = section_audio.low_pass_filter(5000)
+            pre_hook_tail = min(len(section_audio), int(bar_duration_ms))
+            if pre_hook_tail > 0:
+                lead = section_audio[:-pre_hook_tail]
+                tail = section_audio[-pre_hook_tail:].high_pass_filter(600) + 2
+                section_audio = lead + tail
+            logger.info(f"  PRE_HOOK post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
             
         elif section_type in {"breakdown", "bridge", "break"}:
             # BREAKDOWN/BRIDGE: Stripped, ambient — keep stems intact, apply mild EQ + gain
@@ -1183,6 +1335,7 @@ def _render_producer_arrangement(
             section_audio = section_audio - 6  # Moderate reduction (-6 dB)
             section_audio = section_audio.low_pass_filter(7000)  # Air reduction only, keep body
             section_audio = section_audio.high_pass_filter(60)   # Remove sub rumble
+            section_audio = section_audio - 2
             # NOTE: do NOT chunk/slice the audio — that creates abrupt cuts in loops
             logger.info(f"  BREAKDOWN post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
                 
@@ -1190,6 +1343,7 @@ def _render_producer_arrangement(
             # OUTRO: Fade out, reduced energy
             logger.info(f"Processing OUTRO section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
             section_audio = section_audio - 4   # Slightly quieter (-4 dB)
+            section_audio = section_audio.low_pass_filter(2600)
             section_audio = section_audio.fade_out(min(4000, section_ms // 2))
             logger.info(f"  OUTRO post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
 
@@ -1207,6 +1361,7 @@ def _render_producer_arrangement(
         # ====================================================================
         # APPLY VARIATIONS (FILLS, ROLLS, DROPS)
         # ====================================================================
+        section_applied_events: list[str] = []
         
         render_profile = producer_arrangement.get("render_profile") or {}
         stem_meta = producer_arrangement.get("stem_separation") or render_profile.get("stem_separation") or {}
@@ -1264,6 +1419,7 @@ def _render_producer_arrangement(
                         bar_duration_ms=bar_duration_ms,
                         params=var_params,
                     )
+                    section_applied_events.append(var_type)
                 
                 # Splice back in
                 section_audio = section_audio[:var_start_ms] + variation_segment + section_audio[var_end_ms:]
@@ -1299,6 +1455,7 @@ def _render_producer_arrangement(
                 bar_duration_ms=bar_duration_ms,
                 params=params,
             )
+            section_applied_events.append(event_type)
             section_audio = section_audio[:event_start_ms] + boundary_segment + section_audio[event_end_ms:]
         
         # ====================================================================
@@ -1342,6 +1499,7 @@ def _render_producer_arrangement(
                     # Impact: silence then hit
                     impact_gap = min(500, trans_duration_ms)
                     section_audio = section_audio[:-impact_gap] + AudioSegment.silent(duration=impact_gap)
+                section_applied_events.append(f"transition:{trans_type}")
         
         arranged += section_audio
         
@@ -1356,6 +1514,8 @@ def _render_producer_arrangement(
             "bars": section_bars,
             "energy": section_energy,
             "active_stem_roles": section.get("active_stem_roles") or section.get("instruments") or [],
+            "runtime_active_stems": active_role_snapshot,
+            "applied_events": section_applied_events,
             "transition_out": section.get("transition_out") or (
                 (transition_info.get("transition_type") or transition_info.get("type")) if transition_info else "none"
             ),
@@ -1373,6 +1533,48 @@ def _render_producer_arrangement(
             "start_seconds": round(start_seconds, 3),
             "end_seconds": round(end_seconds, 3),
         })
+
+        difference_reasons: list[str] = []
+        if previous_section_context is None:
+            difference_reasons.append("First section establishes baseline arrangement layer state")
+        else:
+            if previous_section_context.get("section_type") != section_type:
+                difference_reasons.append(
+                    f"Section role changed: {previous_section_context.get('section_type')} -> {section_type}"
+                )
+            previous_roles = set(previous_section_context.get("active_roles") or [])
+            current_roles = set(active_role_snapshot or [])
+            added_roles = sorted(current_roles - previous_roles)
+            removed_roles = sorted(previous_roles - current_roles)
+            if added_roles:
+                difference_reasons.append(f"Added stems: {', '.join(added_roles)}")
+            if removed_roles:
+                difference_reasons.append(f"Removed stems: {', '.join(removed_roles)}")
+            energy_delta = section_energy - float(previous_section_context.get("energy", section_energy))
+            if abs(energy_delta) >= 0.08:
+                direction = "up" if energy_delta > 0 else "down"
+                difference_reasons.append(f"Energy moved {direction} by {energy_delta:+.2f}")
+            if section_applied_events:
+                difference_reasons.append(
+                    f"Inserted transition/move events: {', '.join(sorted(set(section_applied_events))[:6])}"
+                )
+
+        producer_debug_report.append(
+            {
+                "section_index": section_idx,
+                "section_name": section_name,
+                "section_type": section_type,
+                "active_stems": active_role_snapshot,
+                "transition_events_inserted": sorted(set(section_applied_events)),
+                "difference_from_previous": difference_reasons,
+            }
+        )
+
+        previous_section_context = {
+            "section_type": section_type,
+            "active_roles": active_role_snapshot,
+            "energy": section_energy,
+        }
         
         timeline_events.append({
             "type": "section_start",
@@ -1395,6 +1597,7 @@ def _render_producer_arrangement(
         "sections": timeline_sections,
         "events": timeline_events,
         "section_boundaries": producer_arrangement.get("section_boundaries") or [],
+        "producer_debug_report": producer_debug_report,
         "metadata": {
             "total_bars": total_bars,
             "key": producer_arrangement.get("key", "C"),

@@ -30,6 +30,8 @@ SUPPORTED_BOUNDARY_EVENTS = {
     "crash_hit",
     "bridge_strip",
     "outro_strip",
+    "pre_hook_drum_mute",
+    "bass_pause",
 }
 
 
@@ -111,6 +113,8 @@ def build_transition_plan(
         if next_type == "hook":
             if current_type != "intro" or energy_lift >= 0.1:
                 end_of_section.append("pre_hook_silence_drop")
+                end_of_section.append("pre_hook_drum_mute")
+                end_of_section.append("bass_pause")
             if has_fx:
                 end_of_section.append("riser_fx" if is_final_hook or energy_lift >= 0.2 else "reverse_cymbal")
             on_downbeat.append("crash_hit")
@@ -183,6 +187,9 @@ def build_transition_plan(
                     params["stems"] = ["fx"] if has_fx else []
                 elif event_name in {"drum_fill", "snare_pickup"}:
                     params["stems"] = ["drums"] if has_drums else []
+                elif event_name in {"pre_hook_drum_mute", "bass_pause"}:
+                    params["stems"] = ["drums", "bass"] if has_drums else ["bass"]
+                    params["pause_bars"] = 0.5
 
                 intensity = round(min(1.0, 0.7 + (0.2 if is_final_hook else 0.0) + min(0.15, energy_lift * 0.25)), 3)
                 flattened_events.append(
