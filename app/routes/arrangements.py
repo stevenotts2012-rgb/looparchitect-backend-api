@@ -32,6 +32,8 @@ from app.schemas.arrangement import (
     AudioArrangementGenerateResponse,
     ArrangementCreateRequest,
     ArrangementResponse,
+    ArrangementPlanRequest,
+    ArrangementPlanResponse,
 )
 from app.schemas.style_profile import StyleOverrides
 from app.services.audit_logging import log_feature_event
@@ -47,6 +49,7 @@ from app.services.render_plan import RenderPlanGenerator
 from app.services.arrangement_validator import ArrangementValidator
 from app.services.daw_export import DAWExporter
 from app.services.storage import storage
+from app.services.arrangement_planner import arrangement_planner_service
 
 logger = logging.getLogger(__name__)
 
@@ -918,6 +921,27 @@ async def generate_arrangement(
         style_preset=style_preset,
         style_profile=json.loads(style_profile_json) if style_profile_json else None,
         structure_preview=structure_preview,
+    )
+
+
+@router.post(
+    "/plan",
+    response_model=ArrangementPlanResponse,
+    summary="Generate AI arrangement plan",
+    description="Generate a strict JSON arrangement plan from loop metadata and detected stem roles.",
+)
+async def generate_arrangement_plan(request: ArrangementPlanRequest):
+    """Generate an arrangement plan with LLM + deterministic validation/fallback."""
+    plan, validation, planner_meta = await arrangement_planner_service.generate_plan(
+        planner_input=request.input,
+        user_request=request.user_request,
+        planner_config=request.planner_config,
+    )
+
+    return ArrangementPlanResponse(
+        plan=plan,
+        validation=validation,
+        planner_meta=planner_meta,
     )
 
 
