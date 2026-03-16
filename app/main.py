@@ -456,6 +456,30 @@ async def root_health():
     return {"ok": True}
 
 
+@app.get("/health/worker")
+async def worker_health():
+    """Report embedded worker thread status for queue diagnostics."""
+    alive_workers = [thread for thread in _embedded_worker_threads if thread.is_alive()]
+    enabled = os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    worker_count_raw = os.getenv("EMBEDDED_RQ_WORKER_COUNT", "2").strip()
+    try:
+        target_count = max(1, int(worker_count_raw))
+    except ValueError:
+        target_count = 2
+
+    return {
+        "embedded_worker_enabled": enabled,
+        "target_worker_count": target_count,
+        "active_worker_count": len(alive_workers),
+        "active_workers": [thread.name for thread in alive_workers],
+    }
+
+
 # Create uploads and renders directories if they don't exist
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("renders", exist_ok=True)
