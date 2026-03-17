@@ -217,7 +217,8 @@ def _ensure_arrangements_schema(db: Session) -> None:
             "output_s3_key": "VARCHAR",
             "output_url": "VARCHAR",
             "stems_zip_url": "VARCHAR",
-            "is_saved": "BOOLEAN DEFAULT true",
+            "is_saved": "BOOLEAN DEFAULT false",
+            "saved_at": "TIMESTAMP",
         }
 
         for column_name, column_type in required_columns.items():
@@ -471,9 +472,25 @@ def list_arrangements(
     if loop_id is not None:
         query = query.filter(Arrangement.loop_id == loop_id)
     if not include_unsaved:
-        query = query.filter(Arrangement.is_saved.isnot(False))
+        query = query.filter(Arrangement.is_saved.is_(True), Arrangement.saved_at.isnot(None))
     arrangements = query.order_by(Arrangement.created_at.desc()).all()
-    return [ArrangementResponse.from_orm(item) for item in arrangements]
+    
+    # Sync status for recent queued/processing arrangements to show fallback worker updates
+    # This ensures the list reflects recent job status changes from the fallback mechanism
+    synced_arrangements = []
+    for arrangement in arrangements:
+        if arrangement.status in {"queued", "processing"}:
+            # Only sync recent items (within last 60 seconds) to avoid unnecessary queries
+            age_seconds = (datetime.utcnow() - arrangement.created_at).total_seconds() if arrangement.created_at else 0
+            if age_seconds < 60:
+                synced = _sync_arrangement_status_from_job(db, arrangement)
+                synced_arrangements.append(synced)
+            else:
+                synced_arrangements.append(arrangement)
+        else:
+            synced_arrangements.append(arrangement)
+    
+    return [ArrangementResponse.from_orm(item) for item in synced_arrangements]
 
 
 def _map_style_params_to_overrides(style_params: dict | None) -> StyleOverrides | None:
@@ -926,6 +943,7 @@ async def generate_arrangement(
             ai_parsing_used=ai_parsing_used,
             producer_arrangement_json=producer_arrangement_json,
             is_saved=request.auto_save,
+            saved_at=datetime.utcnow() if request.auto_save else None,
         )
         db.add(arrangement)
         try:
@@ -1067,6 +1085,7 @@ def save_arrangement_preview(
         )
 
     arrangement.is_saved = True
+    arrangement.saved_at = arrangement.saved_at or datetime.utcnow()
     db.commit()
     db.refresh(arrangement)
     return ArrangementResponse.from_orm(arrangement)
