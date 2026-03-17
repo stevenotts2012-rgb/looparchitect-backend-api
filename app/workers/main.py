@@ -23,7 +23,7 @@ def _heartbeat_loop() -> None:
 
 def _run_rq_worker() -> None:
     from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_redis_conn, get_queue
-    from app.workers.render_worker import _ensure_db_models
+    from app.workers.render_worker import _ensure_db_models, render_loop_worker
 
     _ensure_db_models()
     redis_conn = get_redis_conn()
@@ -34,7 +34,19 @@ def _run_rq_worker() -> None:
 
     logger.info("Connected to Redis queue: %s", queue.name)
     logger.info("Listening on queue(s): %s", queue_name)
-    worker = Worker([queue], connection=redis_conn, log_job_description=True)
+    
+    # Verify job function is importable before starting worker
+    try:
+        # Quick test: verify the render_loop_worker function is callable
+        assert callable(render_loop_worker), "render_loop_worker is not callable"
+        logger.info("✅ Job function verified: render_loop_worker is callable")
+    except Exception as e:
+        logger.error("❌ Job function verification failed: %s", e, exc_info=True)
+        raise
+    
+    worker = Worker([queue], connection=redis_conn, log_job_description=True,
+                   default_result_ttl=500, default_failure_ttl=86400)
+    logger.info("🚀 Worker starting to listen for jobs...")
     worker.work(with_scheduler=False)
 
 
