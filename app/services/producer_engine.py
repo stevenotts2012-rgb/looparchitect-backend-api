@@ -248,6 +248,25 @@ class ProducerEngine:
         from app.services.producer_behavior_polish import ProducerBehaviorPolish
         arrangement = ProducerBehaviorPolish.polish(arrangement)
 
+        # Generate and attach layering plan
+        from app.services.arrangement_layering_engine import ArrangementLayeringEngine
+        section_names = [s.name.lower() for s in arrangement.sections]
+        detected_elements = [i.value for i in arrangement.tracks[0].effects] if arrangement.tracks else None
+        if not detected_elements and arrangement.sections:
+            detected_elements = [i.value for i in arrangement.sections[0].instruments]
+        layering_plan = ArrangementLayeringEngine.generate_layering_plan(
+            genre=genre,
+            mood="neutral",
+            energy_level=1.0,
+            arrangement_template=structure_template,
+            section_list=section_names,
+            detected_elements=detected_elements,
+        )
+        arrangement.layering_plan = layering_plan
+        for idx, section in enumerate(arrangement.sections):
+            if idx < len(layering_plan):
+                section.layering = layering_plan[idx]
+
         return arrangement
 
     @staticmethod

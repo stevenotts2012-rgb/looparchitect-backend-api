@@ -160,6 +160,9 @@ class ArrangementInfo(BaseModel):
     total_bars: int
     sections: List[dict]
     
+    arrangement_json: Optional[str] = None
+    layering_plan: Optional[list] = None
+
     class Config:
         from_attributes = True
 

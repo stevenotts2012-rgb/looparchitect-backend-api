@@ -447,7 +447,17 @@ def create_arrangement(
             detail=f"Background queue unavailable: {enqueue_error}",
         )
 
-    return ArrangementResponse.from_orm(arrangement)
+    # Attach layering plan and arrangement_json to response
+    response = ArrangementResponse.from_orm(arrangement)
+    if hasattr(arrangement, 'layering_plan') and arrangement.layering_plan:
+        response.layering_plan = [l.__dict__ for l in arrangement.layering_plan]
+    # Optionally include arrangement_json
+    try:
+        import json
+        response.arrangement_json = json.dumps(arrangement.to_dict())
+    except Exception:
+        response.arrangement_json = None
+    return response
 
 
 @router.get(

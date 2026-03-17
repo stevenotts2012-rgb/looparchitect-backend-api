@@ -124,11 +124,28 @@ class Section:
     energy_level: float = 0.5  # 0.0 to 1.0
     instruments: List[InstrumentType] = field(default_factory=list)
     variations: List[Variation] = field(default_factory=list)
+    # Optional layering info
+    layering: Optional['SectionLayering'] = None
     
     @property
     def bar_end(self) -> int:
         """Inclusive end bar."""
         return self.bar_start + self.bars - 1
+
+
+@dataclass
+class SectionLayering:
+    """Layering intelligence output for a section."""
+    section_name: str
+    active_elements: List[str]
+    muted_elements: List[str]
+    introduced_elements: List[str]
+    removed_elements: List[str]
+    transition_in: Optional[str]
+    transition_out: Optional[str]
+    variation_strategy: Optional[str]
+    energy_level: Optional[float]
+
 
 
 @dataclass
@@ -143,6 +160,8 @@ class ProducerArrangement:
     
     # Song structure
     sections: List[Section] = field(default_factory=list)
+    # Optional layering plan for all sections
+    layering_plan: Optional[List[SectionLayering]] = None
     
     # Energy envelope
     energy_curve: List[EnergyPoint] = field(default_factory=list)
@@ -182,9 +201,11 @@ class ProducerArrangement:
                     "energy": s.energy_level,
                     "instruments": [i.value for i in s.instruments],
                     "variations": len(s.variations),
+                    "layering": s.layering.__dict__ if s.layering else None,
                 }
                 for s in self.sections
             ],
+            "layering_plan": [l.__dict__ for l in self.layering_plan] if self.layering_plan else None,
             "energy_curve": [
                 {"bar": ep.bar, "energy": ep.energy}
                 for ep in self.energy_curve

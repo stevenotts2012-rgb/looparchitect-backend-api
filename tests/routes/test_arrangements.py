@@ -2,6 +2,7 @@
 Tests for Phase B arrangement routes.
 """
 
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -181,6 +182,7 @@ class TestArrangementCreation:
         created_rows = db.query(Arrangement).filter(Arrangement.id.in_(created_ids)).all()
         assert len(created_rows) == 3
         assert all(row.is_saved is False for row in created_rows)
+        assert all(row.saved_at is None for row in created_rows)
 
         list_response = client.get(f"/api/v1/arrangements/?loop_id={test_loop.id}")
         assert list_response.status_code == 200
@@ -213,6 +215,7 @@ class TestArrangementCreation:
 
         db.refresh(arrangement)
         assert arrangement.is_saved is True
+        assert arrangement.saved_at is not None
 
         after = client.get(f"/api/v1/arrangements/?loop_id={test_loop.id}")
         assert after.status_code == 200
@@ -247,8 +250,20 @@ class TestArrangementRetrieval:
 
     def test_list_arrangements_filters_by_loop_id(self, test_loop, db, client):
         """GET /arrangements?loop_id should filter results."""
-        arrangement_a = Arrangement(loop_id=test_loop.id, status="queued", target_seconds=120)
-        arrangement_b = Arrangement(loop_id=test_loop.id + 1, status="queued", target_seconds=120)
+        arrangement_a = Arrangement(
+            loop_id=test_loop.id,
+            status="queued",
+            target_seconds=120,
+            is_saved=True,
+            saved_at=datetime.utcnow(),
+        )
+        arrangement_b = Arrangement(
+            loop_id=test_loop.id + 1,
+            status="queued",
+            target_seconds=120,
+            is_saved=True,
+            saved_at=datetime.utcnow(),
+        )
         db.add_all([arrangement_a, arrangement_b])
         db.commit()
 

@@ -9,12 +9,14 @@ import shutil
 from fastapi import APIRouter, Depends, HTTPException
 import boto3
 from botocore.exceptions import ClientError
+import os
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
 from app.models.job import RenderJob
+from app.queue import get_redis_conn
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -112,6 +114,36 @@ async def health_ready(db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail=payload)
     return payload
 
+
+
+# --- Worker Health Endpoint ---
+@router.get("/health/worker")
+async def health_worker():
+    """Check RQ worker status (running, idle, busy)."""
+    try:
+        redis_conn = get_redis_conn()
+        from rq import Worker
+        workers = Worker.all(connection=redis_conn)
+        worker_status = []
+        for w in workers:
+            worker_status.append({
+                "name": w.name,
+                "state": w.get_state(),
+                "queues": [q.name for q in w.queues],
+                "pid": w.pid,
+                "last_heartbeat": w.last_heartbeat.isoformat() if w.last_heartbeat else None,
+            })
+        return {
+            "ok": bool(workers),
+            "worker_count": len(workers),
+            "workers": worker_status,
+        }
+    except Exception as e:
+        logger.exception("Worker health check failed")
+        return {
+            "ok": False,
+            "error": str(e),
+        }
 
 @router.get("/health")
 async def health_check_legacy():

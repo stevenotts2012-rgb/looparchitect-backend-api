@@ -126,3 +126,23 @@ def test_health_queue_debug_without_redis(client):
     assert data["queue_depth"] is None
     assert data["failed_queue_jobs"] is None
     assert "redis down" in (data["error"] or "")
+
+
+def test_health_worker_endpoint(client):
+    """Test /health/worker endpoint returns worker info."""
+    response = client.get("/api/v1/health/worker")
+    assert response.status_code == 200
+    data = response.json()
+    assert "ok" in data
+    assert "worker_count" in data
+    assert "workers" in data
+    # workers should be a list
+    assert isinstance(data["workers"], list)
+    # If workers exist, check structure
+    if data["workers"]:
+        w = data["workers"][0]
+        assert "name" in w
+        assert "state" in w
+        assert "queues" in w
+        assert "pid" in w
+        assert "last_heartbeat" in w
