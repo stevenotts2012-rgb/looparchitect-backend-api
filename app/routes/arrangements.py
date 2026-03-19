@@ -574,24 +574,22 @@ async def generate_arrangement(
 
     Returns immediately with arrangement_id. Check status endpoint for progress.
     """
-    # Validate that loop exists
+
+    # Validate loop exists and file key
     loop = db.query(Loop).filter(Loop.id == request.loop_id).first()
     if not loop:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Loop with ID {request.loop_id} not found",
         )
-
-    if settings.get_storage_backend() == "local":
-        if not loop.file_key:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Loop {request.loop_id} has no source file key. "
-                    "Please re-upload the loop before generating."
-                ),
-            )
-
+    if settings.get_storage_backend() == "local" and not loop.file_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Loop {request.loop_id} has no source file key. "
+                "Please re-upload the loop before generating."
+            ),
+        )
     if not is_redis_available():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -608,7 +606,6 @@ async def generate_arrangement(
             bpm_for_duration,
             effective_target_seconds,
         )
-
         local_filename = loop.file_key.split("/")[-1]
         local_path = Path("uploads") / local_filename
         if not local_path.exists():
