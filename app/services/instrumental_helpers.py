@@ -20,4 +20,3 @@ def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
         return AudioSegment.silent(duration=0)
     repeats = (target_ms // len(audio)) + 1
     return (audio * repeats)[:target_ms]
-

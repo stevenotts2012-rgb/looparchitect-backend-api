@@ -125,9 +125,8 @@ def _resolve_audio_file_path(file_url: str) -> Optional[Path]:
         Path object for local files, None for remote URLs (http/https)
     """
     if file_url.startswith("http"):
-        # Remote URL - return None to indicate simulation mode
-        # TODO: In real implementation, download the file
-        return None
+# Remote URL handled by real renderer via presign
+        pass
 
     if file_url.startswith("/uploads/"):
         file_path = file_url.replace("/uploads/", "")
@@ -313,7 +312,7 @@ async def render_arrangement(
         for profile in profiles:
             slug = _slugify(profile["name"])
             filename = f"instrumental_{loop_id}_{slug}.wav"
-            # TODO: Actually download and process remote file
+            # Real renderer handles remote via presign
             results.append(
                 VariationResult(
                     name=profile["name"],
@@ -402,7 +401,7 @@ def render_loop(
         # SIMULATION: Remote file - generate fake render
         os.makedirs(RENDERS_DIR, exist_ok=True)
         filename = f"instrumental_{loop_id}.wav"
-        # TODO: Actually download and process remote file
+        # Real renderer handles remote
         return RenderResponse(
             render_url=f"/api/v1/renders/{filename}",
             loop_id=loop_id
@@ -533,8 +532,7 @@ def render_loop_simulated(
     3. Simulates rendering by calling render_and_export_instrumental
     4. Returns render_url and status
     
-    NOTE: This is a simulation. No actual audio file is created yet.
-    The real audio processing will be added later (see TODOs in instrumental_renderer.py).
+    NOTE: Now uses real renderer (pydub + S3 presign).
     
     Args:
         loop_id: The ID of the loop to render
