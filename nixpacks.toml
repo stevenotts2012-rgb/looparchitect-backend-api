@@ -1,24 +1,15 @@
-[build]
-# Ensure Python is built fresh without relying on committed virtualenvs
-staticMax = 100
+[phases.build]
+  nixPkgs = ['nginx']
 
-[variables]
-# Prevent Python from buffering output
-PYTHONUNBUFFERED = "1"
-# Ensure we use the system Python, not a virtualenv
-PYTHONDONTWRITEBYTECODE = "1"
+[phases.run]
+  nginx = 'nginx -g "daemon off;"'
+  cmds = ['nginx']
 
-[phases.setup]
-# Use Nix packages for Python 3.11 with proper stdlib
-nixPkgs = ["python311", "python311Packages.pip", "gcc", "ffmpeg"]
+[languages.python]
+  version = "3.12"
 
-[phases.install]
-# Upgrade pip first for better compatibility
-cmds = [
-  "python -m pip install --upgrade pip setuptools wheel",
-  "pip install -r requirements.txt"
-]
+[staticAssets]
+  mountPath = "/static"
 
-[start]
-# Use uvicorn with proper port binding and no virtualenv references
-cmd = "sh -c 'uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'"
+[nginx]
+  clientMaxBodySize = "200M"
