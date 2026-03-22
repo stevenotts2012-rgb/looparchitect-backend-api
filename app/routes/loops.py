@@ -124,7 +124,8 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
     is_valid, error_msg = loop_service.validate_audio_file(
         filename=safe_filename,
         content_type=file.content_type or "audio/wav",
-        file_size=len(content)
+        file_size=len(content),
+        max_size_mb=settings.max_upload_size_mb
     )
     
     if not is_valid:
@@ -369,7 +370,8 @@ async def create_loop_with_upload(
         is_valid, error_msg = loop_service.validate_audio_file(
             filename=safe_filename,
             content_type=file.content_type or "audio/wav",
-            file_size=len(content)
+            file_size=len(content),
+            max_size_mb=settings.max_upload_size_mb
         )
         if not is_valid:
             raise HTTPException(status_code=400, detail=error_msg)

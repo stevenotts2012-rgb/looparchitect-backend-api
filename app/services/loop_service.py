@@ -235,8 +235,10 @@ class LoopService:
         filename: str,
         content_type: str,
         file_size: int,
-        max_size_mb: int = 50
+        max_size_mb: Optional[int] = None
     ) -> Tuple[bool, Optional[str]]:
+        from app.config import settings
+        max_size_mb = max_size_mb or settings.max_upload_size_mb
         """
         Validate audio file before upload.
 

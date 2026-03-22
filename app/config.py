@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
     
     # Request size limits
-    max_upload_size_mb: int = Field(default=100, validation_alias="MAX_UPLOAD_SIZE_MB")
-    max_request_body_size_mb: int = Field(default=100, validation_alias="MAX_REQUEST_BODY_SIZE_MB")
+    max_upload_size_mb: int = Field(default=200, validation_alias="MAX_UPLOAD_SIZE_MB")
+    max_request_body_size_mb: int = Field(default=200, validation_alias="MAX_REQUEST_BODY_SIZE_MB")
     render_job_timeout_seconds: int = Field(default=900, validation_alias="RENDER_JOB_TIMEOUT_SECONDS")
 
     @field_validator(

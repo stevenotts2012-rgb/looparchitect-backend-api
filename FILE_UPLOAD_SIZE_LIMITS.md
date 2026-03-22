@@ -11,11 +11,11 @@ If you're seeing a **413 error** when uploading files or making large requests, 
 ### Backend Settings (app/config.py)
 
 ```python
-# Maximum upload file size (default: 100MB)
-MAX_UPLOAD_SIZE_MB=100
+# Maximum upload file size (default: 200MB)
+MAX_UPLOAD_SIZE_MB=200
 
-# Maximum request body size (default: 100MB)
-MAX_REQUEST_BODY_SIZE_MB=100
+# Maximum request body size (default: 200MB)
+MAX_REQUEST_BODY_SIZE_MB=200
 ```
 
 ### Default Limits
@@ -107,8 +107,8 @@ Invoke-WebRequest -Uri "http://localhost:8000/api/v1/health" -UseBasicParsing
 
 ### Uploading Large Audio Files (>50MB)
 
-**Default Configuration**: ✅ Supports up to 100MB  
-**Recommendation**: Keep at 100MB for most use cases
+**Default Configuration**: ✅ Supports up to 200MB  
+**Recommendation**: Keep at 200MB for most use cases
 
 Large files:
 - WAV files: ~10MB per minute (44.1kHz, 16-bit stereo)
@@ -117,7 +117,8 @@ Large files:
 Examples:
 - 5-minute WAV: ~50MB ✅
 - 10-minute WAV: ~100MB ✅
-- 15-minute WAV: ~150MB ❌ (increase to 200MB)
+- 20-minute WAV: ~200MB ✅
+- 25-minute WAV: ~250MB ❌ (consider chunked uploads)
 
 ### PHASE 4 Style Parameters
 
@@ -274,7 +275,7 @@ Then try your request again.
 
 ## Summary
 
-✅ **Default**: 100MB limit (handles most audio files)  
+✅ **Default**: 200MB limit (handles most audio files)  
 ✅ **Configurable**: Use environment variables to increase  
 ✅ **Production**: Set limits in deployment platform  
 ❌ **Style params**: Should never cause 413 (only ~500 bytes)  
@@ -282,7 +283,7 @@ Then try your request again.
 
 **Most Likely Cause**: Uploading audio file >100MB
 
-**Quick Solution**: Increase `MAX_UPLOAD_SIZE_MB` to 150 or 200
+**Quick Solution**: Increase `MAX_UPLOAD_SIZE_MB` to 200 (default now)
 
 ---
 

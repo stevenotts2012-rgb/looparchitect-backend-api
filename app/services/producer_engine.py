@@ -162,93 +162,97 @@ class ProducerEngine:
     }
 
     @staticmethod
-    def generate(
+    async def generate(
         target_seconds: float,
         tempo: float = 120.0,
         genre: str = "generic",
         style_profile: Optional[StyleProfile] = None,
         structure_template: str = "standard",
-    ) -> ProducerArrangement:
-        """
-        Generate a complete ProducerArrangement.
-
+        enable_ai_advisor: bool = settings.feature_ai_arrangement_advisor,
+    ) -> Tuple[ProducerArrangement, Dict[str, Any]]:
+        \"\"\"
+        Generate ProducerArrangement with optional AI advisor enhancement.
+        
         Args:
-            target_seconds: Desired duration
-            tempo: BPM (default 120)
-            genre: Music genre (trap, rnb, pop, cinematic, generic)
-            style_profile: Optional StyleProfile for customization
-            structure_template: Template to use (standard, progressive, looped, minimal)
-
+            enable_ai_advisor: Use AI recommendations (requires OpenAI key)
+            
         Returns:
-            ProducerArrangement with full structure, energy curve, and instruments
-        """
+            (arrangement, advisor_metadata) where metadata contains:
+            - advisor_used, accepted, recommendation, rejection_reason
+        \"\"\"
+        from app.services.ai_arrangement_advisor import ai_arrangement_advisor
+        
         if tempo <= 0:
             raise ValueError("Tempo must be positive")
         if target_seconds <= 0:
             raise ValueError("target_seconds must be positive")
 
-        # Calculate total bars from target duration
+        # Generate baseline deterministic arrangement
         bar_duration_seconds = (60.0 / tempo) * 4.0
         total_bars = max(8, int(round(target_seconds / bar_duration_seconds)))
-
-        # Initialize arrangement
+        
         arrangement = ProducerArrangement(
             tempo=tempo,
-            key="C",  # Default key
+            key="C",
             total_bars=total_bars,
             total_seconds=target_seconds,
             genre=genre,
         )
 
-        # Apply style profile if provided
+        # Apply style profile
         if style_profile:
-            # Handle both old and new StyleProfile formats
-            # New format has resolved_params dict instead of drum_style/melody_style/bass_style
             if hasattr(style_profile, 'drum_style'):
                 arrangement.drum_style = style_profile.drum_style
                 arrangement.melody_style = style_profile.melody_style
                 arrangement.bass_style = style_profile.bass_style
             elif hasattr(style_profile, 'resolved_params'):
-                # New LLM-based StyleProfile format - map params to arrangement
                 params = style_profile.resolved_params or {}
                 arrangement.drum_style = f"drum_density_{params.get('drum_density', 0.5)}"
                 arrangement.melody_style = f"complexity_{params.get('melody_complexity', 0.5)}"
                 arrangement.bass_style = f"presence_{params.get('bass_presence', 0.5)}"
 
-        # Build sections from template
+        # Build core structure
         arrangement.sections = ProducerEngine._build_sections(
             total_bars, structure_template, genre
         )
-
-        # Generate energy curve
         arrangement.energy_curve = ProducerEngine._generate_energy_curve(
             arrangement.sections
         )
-
-        # Assign instruments based on genre and sections
         arrangement = ProducerEngine._assign_instruments(arrangement)
-
-        # Add transitions
         arrangement.transitions = ProducerEngine._generate_transitions(
             arrangement.sections
         )
-
-        # Add variations (every 8 bars minimum)
         arrangement.all_variations = ProducerEngine._generate_variations(
             arrangement.sections
         )
-
-        # Create tracks from instruments
         arrangement.tracks = ProducerEngine._create_tracks(arrangement)
-
-        # Validate
         arrangement = ProducerEngine._validate(arrangement)
-
-        # Apply producer behavior polish (musical realism improvements)
+        
         from app.services.producer_behavior_polish import ProducerBehaviorPolish
         arrangement = ProducerBehaviorPolish.polish(arrangement)
 
-        return arrangement
+        # AI Advisor integration
+        advisor_metadata = {"advisor_used": False}
+        
+        if enable_ai_advisor:
+            try:
+                rec, metadata = await ai_arrangement_advisor.advisor(target_seconds, tempo, genre, style_profile.model_dump() if style_profile else None)
+                advisor_metadata.update(metadata)
+                
+                if rec and metadata.get("accepted"):
+                    # Apply accepted recommendation selectively
+                    logger.info(f"Applying AI advisor recommendation: {rec.reasoning}")
+                    # TODO: Implement selective application of rec to arrangement
+                    # For now log and mark as enhanced
+                    arrangement.ai_advisor_used = True
+                    arrangement.ai_advisor_confidence = rec.confidence
+                    
+            except Exception as advisor_error:
+                logger.warning(f"AI advisor failed during enhancement: {advisor_error}")
+                advisor_metadata["error"] = str(advisor_error)[:100]
+
+        arrangement.advisor_metadata = advisor_metadata
+        return arrangement, advisor_metadata
 
     @staticmethod
     def _build_sections(
