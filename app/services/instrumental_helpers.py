@@ -1,7 +1,7 @@
 """Helpers for instrumental_renderer - copied/adapted from arrangement_jobs.py"""
 
 def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
-    \"\"\"Load audio bytes multi-format fallback.\"\"\"
+    """Load audio bytes multi-format fallback."""
     if not wav_bytes or len(wav_bytes) < 44:
         raise ValueError(f"Audio file too small")
     
@@ -15,7 +15,7 @@ def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
             raise ValueError("Audio decode failed")
     
 def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
-    \"\"\"Repeat audio to reach target duration.\"\"\"
+    """Repeat audio to reach target duration."""
     if target_ms <= 0:
         return AudioSegment.silent(duration=0)
     repeats = (target_ms // len(audio)) + 1
