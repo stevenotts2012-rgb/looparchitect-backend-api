@@ -163,13 +163,6 @@ def _resolve_app_job_id(db: Session, incoming_job_id: str) -> str:
         return incoming_job_id
 
     rq_job_id = None
-    try:
-        from rq import get_current_job
-
-        current_rq_job = get_current_job()
-        rq_job_id = current_rq_job.id if current_rq_job else None
-    except Exception:
-        rq_job_id = None
 
     if rq_job_id and rq_job_id != incoming_job_id:
         rq_match = db.query(RenderJob).filter(RenderJob.id == rq_job_id).first()
@@ -204,13 +197,6 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
         arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
         app_job_id = _resolve_app_job_id(db, job_id)
         rq_job_id = None
-        try:
-            from rq import get_current_job
-
-            current_rq_job = get_current_job()
-            rq_job_id = current_rq_job.id if current_rq_job else None
-        except Exception:
-            rq_job_id = None
 
         logger.info(
             "Worker job received: incoming_job_id=%s app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s",

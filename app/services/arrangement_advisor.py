@@ -1,9 +1,10 @@
-\"\"\"AI Arrangement Advisor - LLM recommendations with ProducerEngine validation.
+and falls back to deterministic ProducerEngine logic.
+"""AI Arrangement Advisor - LLM recommendations with ProducerEngine validation.
 
 Recommends structure modifications for ProducerEngine. Advisor suggestions are 
 validated against ProducerEngine rules before acceptance. Rejects invalid suggestions 
 and falls back to deterministic ProducerEngine logic.
-\"\"\"
+"""
 
 import logging
 import json
@@ -18,7 +19,7 @@ from app.services.producer_engine import ProducerEngine
 logger = logging.getLogger(__name__)
 
 class AIAdvisorRecommendation(BaseModel):
-    \"\"\"Schema for AI advisor recommendations.\"\"\"
+    """Schema for AI advisor recommendations."""
     suggested_structure: List[str]  # ['intro', 'verse', 'hook', ...]
     suggested_genre: Optional[str] = None
     energy_multiplier: float = 1.0  # 0.8-1.2
@@ -26,7 +27,7 @@ class AIAdvisorRecommendation(BaseModel):
     reasoning: str
 
 class ArrangementAdvisor:
-    \"\"\"AI advisor layer for ProducerEngine.\"\"\"
+    """AI advisor layer for ProducerEngine."""
     
     def __init__(self):
         self.client = None
@@ -43,7 +44,7 @@ class ArrangementAdvisor:
         base_genre: str,
         style_profile: Optional[Dict] = None
     ) -> Optional[AIAdvisorRecommendation]:
-        \"\"\"Get LLM recommendation for arrangement parameters.\"\"\"
+        """Get LLM recommendation for arrangement parameters."""
         if not self.client:
             logger.warning(\"OpenAI client unavailable, skipping advisor\")
             return None

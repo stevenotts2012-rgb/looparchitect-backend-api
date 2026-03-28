@@ -1,3 +1,8 @@
+
+# Load environment variables from .env before anything else
+from dotenv import load_dotenv
+load_dotenv()
+
 from contextlib import asynccontextmanager
 import os
 import shutil
@@ -89,63 +94,86 @@ def run_migrations():
     """Run Alembic migrations to update database schema."""
     try:
         from alembic.config import Config
-        from alembic.runtime.migration import MigrationContext
-        from alembic.operations import Operations
+        from alembic.script import ScriptDirectory
+        from alembic.runtime.environment import EnvironmentContext
         import sys
-        
+
         alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
         alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
-        
-        # Run migrations
+
+        script = ScriptDirectory.from_config(alembic_cfg)
+        logger.info("[MIGRATION] Starting Alembic migrations...")
+        def log_step(rev, context):
+            logger.info(f"[MIGRATION] Running upgrade step: {rev}")
+            return True
+
+        def run_steps(rev, context):
+            for revision in script.walk_revisions():
+                logger.info(f"[MIGRATION] Will run revision: {revision.revision} {revision.doc}")
+            return context.run_migrations()
+
         from alembic import command
+        logger.info("[MIGRATION] Running command.upgrade(head)...")
         command.upgrade(alembic_cfg, "head")
         logger.info("✅ Database migrations completed successfully")
     except Exception as e:
-        logger.warning(f"⚠️  Migration warning (may be expected on first run): {e}")
-        # Don't fail startup if migrations have issues - the schema fix script handles it
+        logger.exception(f"[MIGRATION] Exception during migration: {e}")
+        raise
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("🚀 Starting LoopArchitect API...")
-    logger.info(f"Environment: {settings.environment}")
-    logger.info(f"Debug mode: {settings.debug}")
+    logger.info("=== [LIFECYCLE] [ENTER] lifespan context manager ===")
+    try:
+        logger.info("=== [LIFECYCLE] 🚀 App startup begin ===")
+        logger.info(f"Environment: {settings.environment}")
+        logger.info(f"Debug mode: {settings.debug}")
 
-    # Validate startup configuration and runtime prerequisites
-    settings.validate_startup()
-    configure_audio_binaries(
-        ffmpeg_binary=settings.ffmpeg_binary or None,
-        ffprobe_binary=settings.ffprobe_binary or None,
-        raise_if_missing=settings.should_enforce_audio_binaries,
-    )
+        # Validate startup configuration and runtime prerequisites
+        settings.validate_startup()
+        configure_audio_binaries(
+            ffmpeg_binary=settings.ffmpeg_binary or None,
+            ffprobe_binary=settings.ffprobe_binary or None,
+            raise_if_missing=settings.should_enforce_audio_binaries,
+        )
 
-    ffmpeg_detected = bool(settings.ffmpeg_binary or shutil.which("ffmpeg"))
-    ffprobe_detected = bool(settings.ffprobe_binary or shutil.which("ffprobe"))
-    logger.info("FFmpeg detected: %s (ffprobe: %s)", ffmpeg_detected, ffprobe_detected)
+        ffmpeg_detected = bool(settings.ffmpeg_binary or shutil.which("ffmpeg"))
+        ffprobe_detected = bool(settings.ffprobe_binary or shutil.which("ffprobe"))
+        logger.info("FFmpeg detected: %s (ffprobe: %s)", ffmpeg_detected, ffprobe_detected)
 
-    redis_connected = is_redis_available()
-    if redis_connected:
-        logger.info("Redis connection status: connected")
-    elif settings.is_production:
-        logger.warning("Redis connection status: unavailable (production mode)")
-    else:
-        logger.warning("Redis connection status: unavailable (development mode, non-blocking)")
-    
-    # Run migrations on startup
-    run_migrations()
-    
-    # Initialize database tables
-    init_db()
+        redis_connected = is_redis_available()
+        if not redis_connected:
+            logger.error("[LIFECYCLE] ❌ Redis connection failed. Exiting. REDIS_URL: %s", os.getenv("REDIS_URL"))
+            raise RuntimeError(f"Redis connection failed. REDIS_URL: {os.getenv('REDIS_URL')}")
+        logger.info("[LIFECYCLE] ✅ Redis connection status: connected")
 
-    # Start embedded queue workers so queued render jobs are processed
-    _start_embedded_rq_worker_if_enabled()
-    
-    logger.info("✅ Application startup complete")
-    
-    yield
-    
-    # Shutdown
-    logger.info("👋 Shutting down LoopArchitect API")
+        # Run migrations on startup only when explicitly enabled
+        run_migrations_on_startup = os.getenv("RUN_MIGRATIONS_ON_STARTUP", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if run_migrations_on_startup:
+            run_migrations()
+        else:
+            logger.info("[LIFECYCLE] ⏭️ Skipping startup migrations (RUN_MIGRATIONS_ON_STARTUP=false)")
+
+        # Initialize database tables
+        init_db()
+
+        # Embedded RQ worker startup is disabled for Windows compatibility.
+        # Run the worker as a separate process using the command below.
+
+        logger.info("=== [LIFECYCLE] ✅ Startup complete. App ready. ===")
+        logger.info("=== [LIFECYCLE] [YIELD] Waiting for requests... ===")
+        yield
+        logger.info("=== [LIFECYCLE] 👋 Shutdown begin ===")
+    except Exception as exc:
+        logger.exception(f"[LIFECYCLE] Exception during startup or shutdown: {exc}")
+        raise
+    finally:
+        logger.info("=== [LIFECYCLE] [EXIT] lifespan context manager ===")
 
 # Determine server list for OpenAPI docs (used by Swagger UI as the base URL)
 _servers = []
@@ -297,12 +325,4 @@ app.include_router(arrange.router, prefix="/api/v1", tags=["arrange"])
 app.include_router(arrangements.router, prefix="/api/v1/arrangements", tags=["arrangements"])
 app.include_router(styles.router, prefix="/api/v1", tags=["styles"])
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=settings.debug,
-        log_level="info",
-    )
+

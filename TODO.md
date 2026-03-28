@@ -1,20 +1,11 @@
-# Fix HTTP 413 Payload Too Large - COMPLETE ✓
+# Windows RQ fork-context Runtime Fix TODO
 
-**All code changes implemented**:
-- ✅ `app/services/loop_service.py`: Validation now uses `settings.max_upload_size_mb` (200MB default)
-- ✅ `app/config.py`: Defaults bumped to 200MB
-- ✅ `app/routes/loops.py`: All upload endpoints pass config limit
-- ✅ `.env`: Local dev vars set (200MB)
-- ✅ `FILE_UPLOAD_SIZE_LIMITS.md`: Updated docs/examples
-
-**Status**: Local server restarted successfully (WatchFiles reloaded). Upload limits now 200MB across all endpoints.
-
-**Next Manual Steps** (user action):
-1. **Test Local**: Upload >100MB WAV via frontend/curl → verify success, no 400/413
-2. **Railway**: Dashboard → add `MAX_UPLOAD_SIZE_MB=200`, `MAX_REQUEST_BODY_SIZE_MB=200` → redeploy
-3. **Prod Test**: Upload large file on Railway deployment
-
-Server logs show changes loaded (ignore Redis/worker errors - unrelated). 200MB uploads ready!
-
-`http://localhost:8000/docs` → test `/api/v1/loops/upload`
-
+- [x] Inspect queue/runtime traceback and identify failing import path in `app/queue.py`
+- [x] Inspect `app/services/job_service.py`, `app/workers/main.py`, and `requirements.txt`
+- [ ] Pin RQ explicitly to a Windows-safe version
+- [ ] Change queue import to narrow path: `from rq.queue import Queue`
+- [ ] Change worker import to narrow path: `from rq.worker import Worker`
+- [ ] Reinstall dependencies (`python -m pip install -r requirements.txt`)
+- [ ] Start backend on Windows and capture startup result
+- [ ] Start worker on Windows and capture startup result
+- [ ] Re-test upload + Generate Arrangement and capture runtime truth

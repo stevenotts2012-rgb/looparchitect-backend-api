@@ -1,4 +1,4 @@
-\"\"\"AI Arrangement Advisor Service.
+"""AI Arrangement Advisor Service.
 
 Provides LLM-based recommendations to ProducerEngine while maintaining 
 deterministic control. Recommends (never overrides) structure changes 
@@ -10,7 +10,7 @@ Flow:
 3. ProducerEngine validates recommendation against rules
 4. Accept valid rec → apply selectively
 5. Reject invalid → deterministic fallback (guaranteed)
-\"\"\"
+"""
 
 import asyncio
 import json
@@ -25,7 +25,7 @@ from app.services.producer_models import ProducerArrangement, SectionType
 logger = logging.getLogger(__name__)
 
 class AdvisorRecommendation(BaseModel):
-    \"\"\"Structured AI recommendation schema.\"\"\"
+    """Structured AI recommendation schema."""
     suggested_genre: Optional[str] = Field(None, description=\"Genre suggestion\")
     suggested_template: Optional[str] = Field(None, description=\"Structure template: standard|progressive|looped|minimal\")
     energy_multiplier: float = Field(1.0, ge=0.8, le=1.2, description=\"Global energy scalar\")
@@ -34,7 +34,7 @@ class AdvisorRecommendation(BaseModel):
     reasoning: str = Field(..., max_length=200)
 
 class AIArrangementAdvisor:
-    \"\"\"AI advisor integration layer for ProducerEngine.\"\"\"
+    """AI advisor integration layer for ProducerEngine."""
     
     def __init__(self):
         self.client = None
@@ -53,7 +53,7 @@ class AIArrangementAdvisor:
                      tempo: float, 
                      genre: str, 
                      style_profile: Optional[Dict] = None) -> Tuple[Optional[AdvisorRecommendation], Dict]:
-        \"\"\"Get validated AI recommendation.\"\"\"
+        """Get validated AI recommendation."""
         metadata = {\"used_ai\": False, \"accepted\": False, \"reason\": \"not_used\"}
         
         if not self.client:
@@ -84,7 +84,7 @@ class AIArrangementAdvisor:
             return None, metadata
     
     async def _call_llm(self, target_seconds: float, tempo: float, genre: str, style_profile: Dict) -> Dict:
-        \"\"\"Call LLM for recommendation (strict JSON).\"\"\"
+        """Call LLM for recommendation (strict JSON)."""
         prompt = self._build_prompt(target_seconds, tempo, genre, style_profile)
         
         response = await asyncio.to_thread(
@@ -107,7 +107,7 @@ class AIArrangementAdvisor:
         return raw
     
     def _build_prompt(self, target_seconds: float, tempo: float, genre: str, style_profile: Dict) -> str:
-        \"\"\"Build structured LLM prompt.\"\"\"
+        """Build structured LLM prompt."""
         sp_summary = json.dumps(style_profile or {}, indent=2)[:400] if style_profile else \"none\"
         
         return f\"\"\"Recommend arrangement optimizations for ProducerEngine baseline:
@@ -143,7 +143,7 @@ RULES (NEVER VIOLATE):
 Conservative: Prefer 'standard' template, small multipliers (<1.1).\"\"\"
 
     def _validate_rec(self, rec: AdvisorRecommendation, target_seconds: float, genre: str) -> Tuple[bool, str]:
-        \"\"\"Strict rule-based validation.\"\"\"
+        """Strict rule-based validation."""
         errors = []
         
         # Genre validation

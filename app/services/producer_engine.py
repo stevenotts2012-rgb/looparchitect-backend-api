@@ -13,7 +13,7 @@ Output is a ProducerArrangement ready for audio synthesis.
 """
 
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from app.services.beat_genome_loader import BeatGenomeLoader
 from app.services.producer_models import (
     ProducerArrangement,
@@ -29,6 +29,8 @@ from app.services.producer_models import (
     VariationType,
     StyleProfile,
 )
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +172,7 @@ class ProducerEngine:
         structure_template: str = "standard",
         enable_ai_advisor: bool = settings.feature_ai_arrangement_advisor,
     ) -> Tuple[ProducerArrangement, Dict[str, Any]]:
-        \"\"\"
+        """
         Generate ProducerArrangement with optional AI advisor enhancement.
         
         Args:
@@ -179,7 +181,7 @@ class ProducerEngine:
         Returns:
             (arrangement, advisor_metadata) where metadata contains:
             - advisor_used, accepted, recommendation, rejection_reason
-        \"\"\"
+        """
         from app.services.ai_arrangement_advisor import ai_arrangement_advisor
         
         if tempo <= 0:

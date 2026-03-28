@@ -218,7 +218,6 @@ def _ensure_arrangements_schema(db: Session) -> None:
             "output_url": "VARCHAR",
             "stems_zip_url": "VARCHAR",
             "is_saved": "BOOLEAN DEFAULT false",
-            "saved_at": "TIMESTAMP",
         }
 
         for column_name, column_type in required_columns.items():
@@ -472,7 +471,7 @@ def list_arrangements(
     if loop_id is not None:
         query = query.filter(Arrangement.loop_id == loop_id)
     if not include_unsaved:
-        query = query.filter(Arrangement.is_saved.is_(True), Arrangement.saved_at.isnot(None))
+        query = query.filter(Arrangement.is_saved.is_(True))
     arrangements = query.order_by(Arrangement.created_at.desc()).all()
     
     # Sync status for recent queued/processing arrangements to show fallback worker updates
@@ -638,10 +637,7 @@ async def generate_arrangement(
             planner_plan = ArrangementPlan.model_validate(request.arrangement_plan)
 
             detected_roles: list[str] = []
-            loop_stem_meta = loop.stem_metadata or {}
-            if isinstance(loop_stem_meta, dict):
-                detected_roles = [str(role) for role in (loop_stem_meta.get("roles_detected") or []) if role]
-
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Loop with ID {request.loop_id} not found")
             validation = validate_arrangement_plan(planner_plan, detected_roles)
             if not validation.valid:
                 raise HTTPException(
@@ -940,7 +936,6 @@ async def generate_arrangement(
             ai_parsing_used=ai_parsing_used,
             producer_arrangement_json=producer_arrangement_json,
             is_saved=request.auto_save,
-            saved_at=datetime.utcnow() if request.auto_save else None,
         )
         db.add(arrangement)
         try:
@@ -1082,7 +1077,6 @@ def save_arrangement_preview(
         )
 
     arrangement.is_saved = True
-    arrangement.saved_at = arrangement.saved_at or datetime.utcnow()
     db.commit()
     db.refresh(arrangement)
     return ArrangementResponse.from_orm(arrangement)

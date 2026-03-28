@@ -19,7 +19,7 @@ librosa>=0.10.0
 numpy>=1.24.0
 soundfile>=0.12.0
 redis>=5.0.0
-rq>=1.15.0
+rq==1.15.1
 tenacity>=8.2.0
 python-json-logger>=2.0.0
 openai>=1.40.0

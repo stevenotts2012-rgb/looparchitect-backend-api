@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import redis
 
 if TYPE_CHECKING:
-    from rq import Queue
+    from rq.queue import Queue
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def get_redis_conn() -> redis.Redis:
 
 def get_queue(conn: redis.Redis = None, name: str = DEFAULT_RENDER_QUEUE_NAME) -> "Queue":
     """Get or create the render job queue."""
-    from rq import Queue
+    from rq.queue import Queue
 
     if conn is None:
         conn = get_redis_conn()
