@@ -7,6 +7,7 @@ Create Date: 2026-02-24
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
@@ -18,15 +19,22 @@ depends_on = None
 
 def upgrade():
     """Add status, processed_file_url, and analysis_json columns to loops table."""
-    # Add status column
-    op.add_column('loops', sa.Column('status', sa.String(), nullable=True))
-    
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    existing_columns = {col['name'] for col in inspector.get_columns('loops')}
+
+    # Add status column only if it doesn't already exist
+    if 'status' not in existing_columns:
+        op.add_column('loops', sa.Column('status', sa.String(), nullable=True))
+
     # Add processed_file_url column
-    op.add_column('loops', sa.Column('processed_file_url', sa.String(), nullable=True))
-    
+    if 'processed_file_url' not in existing_columns:
+        op.add_column('loops', sa.Column('processed_file_url', sa.String(), nullable=True))
+
     # Add analysis_json column
-    op.add_column('loops', sa.Column('analysis_json', sa.Text(), nullable=True))
-    
+    if 'analysis_json' not in existing_columns:
+        op.add_column('loops', sa.Column('analysis_json', sa.Text(), nullable=True))
+
     # Update existing rows to have 'pending' status
     op.execute("UPDATE loops SET status = 'pending' WHERE status IS NULL")
 

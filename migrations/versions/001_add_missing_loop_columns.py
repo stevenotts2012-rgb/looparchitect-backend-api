@@ -20,6 +20,11 @@ def upgrade() -> None:
     """Add missing columns to loops table (idempotent)."""
     conn = op.get_bind()
     inspector = inspect(conn)
+
+    # Skip entirely if the table doesn't exist yet (fresh DB managed by init_db)
+    if 'loops' not in inspector.get_table_names():
+        return
+
     existing_columns = {col['name'] for col in inspector.get_columns('loops')}
     
     # Add columns only if they don't exist
