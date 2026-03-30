@@ -18,6 +18,14 @@ depends_on = None
 
 def upgrade() -> None:
     """Create arrangements table."""
+    from sqlalchemy import inspect as sa_inspect
+    conn = op.get_bind()
+    inspector = sa_inspect(conn)
+
+    # Skip if the table already exists (fresh DB or previous run)
+    if 'arrangements' in inspector.get_table_names():
+        return
+
     op.create_table(
         'arrangements',
         sa.Column('id', sa.Integer(), nullable=False),
