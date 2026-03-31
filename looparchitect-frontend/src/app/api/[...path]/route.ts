@@ -32,10 +32,19 @@ const BACKEND_ORIGIN =
 /** HTTP methods that Next.js App Router should handle. */
 export const dynamic = "force-dynamic";
 
+// Next.js 15 made route segment params async (Promise<{…}>).
+// Next.js 13/14 passes them as a plain object.
+// Using Promise.resolve() handles both without a breaking change.
+type RouteContext = { params: Promise<{ path: string[] }> | { path: string[] } };
+
 async function proxyRequest(
   request: NextRequest,
-  { params }: { params: { path: string[] } }
+  context: RouteContext
 ): Promise<NextResponse> {
+  // Await params — resolves instantly on Next.js 14 (plain object) and
+  // correctly on Next.js 15 (Promise).
+  const params = await Promise.resolve(context.params);
+
   // Reconstruct the path from the catch-all segments, preserving the
   // leading /api/ prefix so FastAPI receives the exact same path.
   const backendPath = "/" + params.path.join("/");
@@ -56,10 +65,16 @@ async function proxyRequest(
     forwardHeaders.set("x-correlation-id", correlationId);
   }
 
-  let body: BodyInit | null = null;
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    body = await request.arrayBuffer();
-  }
+  // Stream the request body directly to FastAPI instead of buffering it with
+  // arrayBuffer().  Buffering the entire file in memory caused hangs and
+  // timeouts for large audio uploads (up to 50 MB) and prevented the POST
+  // from ever reaching the backend.  Streaming via request.body avoids that
+  // and works for any file size.  The duplex:"half" option below is required
+  // by Node 18+ fetch when a ReadableStream is used as the request body.
+  const body: BodyInit | null =
+    request.method !== "GET" && request.method !== "HEAD"
+      ? request.body
+      : null;
 
   let backendResponse: Response;
   try {
