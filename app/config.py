@@ -77,12 +77,23 @@ class Settings(BaseSettings):
     def allowed_origins(self) -> list[str]:
         """Build allowed origins for CORS policy.
 
-        - Always allow http://localhost:3000 for local development.
-        - Always allow http://localhost:5173 for Vite local development.
-        - Add production origins from CORS_ALLOWED_ORIGINS or FRONTEND_ORIGIN env vars.
-        - If FRONTEND_ORIGIN not set, use Railway default.
+        Local development (always included):
+          - http://localhost:3000   — canonical Next.js frontend (primary)
+          - http://127.0.0.1:3000  — same host via numeric IP (avoids localhost/127.0.0.1 mismatch)
+          - http://localhost:5173   — Vite alternative dev server
+          - http://127.0.0.1:5173  — Vite via numeric IP
+
+        Production origins come from CORS_ALLOWED_ORIGINS or FRONTEND_ORIGIN env vars.
+        A Railway default is appended when neither is set.
         """
-        origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+        origins: list[str] = [
+            # Canonical local-dev frontend: http://localhost:3000
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            # Vite alternative
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
 
         configured_origins = (self.cors_allowed_origins or self.frontend_origin).strip()
         if configured_origins:
