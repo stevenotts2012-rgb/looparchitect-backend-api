@@ -3,7 +3,7 @@
 from typing import List, Optional
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class OutputFile(BaseModel):
@@ -46,19 +46,27 @@ class RenderJobStatusResponse(BaseModel):
     job_id: str
     loop_id: int
     job_type: str
-    status: str  # queued|processing|succeeded|failed
+    status: str  # queued|processing|completed|failed  (succeeded is normalised to completed)
     progress: float = Field(0.0, ge=0.0, le=100.0, description="Progress percentage")
     progress_message: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
-    
-    # Outputs only when succeeded
+
+    # Outputs only when completed
     output_files: Optional[List[OutputFile]] = None
-    
+
     # Error details when failed
     error_message: Optional[str] = None
     retry_count: int = Field(0, ge=0)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_succeeded(cls, v: str) -> str:
+        """Normalize the internal 'succeeded' state to 'completed' for the API."""
+        if v == "succeeded":
+            return "completed"
+        return v
 
 
 class RenderJobHistoryResponse(BaseModel):
