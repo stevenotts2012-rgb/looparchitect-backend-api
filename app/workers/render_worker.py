@@ -199,6 +199,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     _ensure_db_models()
     db = SessionLocal()
     app_job_id = job_id
+    arrangement_id = None
     
     try:
         arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
@@ -221,7 +222,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             loop_id,
         )
         logger.info(
-            "Worker start processing: app_job_id=%s arrangement_id=%s loop_id=%s",
+            "JOB_START app_job_id=%s arrangement_id=%s loop_id=%s",
             app_job_id,
             arrangement_id,
             loop_id,
@@ -493,16 +494,20 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 progress=100.0,
                 output_files=output_files,
             )
-            logger.info(f"[{app_job_id}] Render completed successfully")
+            logger.info(
+                "JOB_SUCCESS app_job_id=%s arrangement_id=%s loop_id=%s",
+                app_job_id,
+                arrangement_id,
+                loop_id,
+            )
     
     except Exception as e:
         logger.exception(
-            "Worker failure with traceback: app_job_id=%s incoming_job_id=%s loop_id=%s arrangement_id=%s params=%s error=%s",
+            "JOB_FAILURE app_job_id=%s incoming_job_id=%s loop_id=%s arrangement_id=%s error=%s",
             app_job_id,
             job_id,
             loop_id,
-            arrangement_id if 'arrangement_id' in locals() else None,
-            params,
+            arrangement_id,
             e,
         )
         try:
