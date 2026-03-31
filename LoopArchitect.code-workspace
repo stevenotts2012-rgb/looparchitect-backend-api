@@ -1,0 +1,119 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../looparchitect-frontend"
+		}
+	],
+	"settings": {
+		"python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+		"python.terminal.activateEnvironment": true,
+		"editor.formatOnSave": true,
+		"editor.defaultFormatter": "ms-python.black-formatter",
+		"[python]": {
+			"editor.defaultFormatter": "ms-python.black-formatter",
+			"editor.formatOnSave": true,
+			"editor.codeActionsOnSave": {
+				"source.organizeImports": "explicit"
+			}
+		},
+		"black-formatter.args": [
+			"--line-length=100"
+		],
+		"isort.args": [
+			"--profile=black",
+			"--line-length=100"
+		],
+		"python.testing.pytestEnabled": true,
+		"python.testing.pytestArgs": [
+			"tests"
+		],
+		"python.testing.unittestEnabled": false,
+		"python.analysis.typeCheckingMode": "basic",
+		"python.analysis.extraPaths": [
+			"."
+		],
+		"files.exclude": {
+			"**/__pycache__": true,
+			"**/*.pyc": true,
+			".venv": true,
+			"*.egg-info": true
+		},
+		"search.exclude": {
+			"**/__pycache__": true,
+			".venv": true,
+			"migrations/versions": false
+		},
+		"terminal.integrated.env.windows": {
+			"PYTHONPATH": "${workspaceFolder}"
+		},
+		"terminal.integrated.env.linux": {
+			"PYTHONPATH": "${workspaceFolder}"
+		},
+		"terminal.integrated.env.osx": {
+			"PYTHONPATH": "${workspaceFolder}"
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			"ms-python.python",
+			"ms-python.black-formatter",
+			"ms-python.isort",
+			"ms-python.pylint",
+			"ms-python.vscode-pylance",
+			"ms-azuretools.vscode-docker",
+			"humao.rest-client",
+			"mtxr.sqltools",
+			"42crunch.vscode-openapi"
+		]
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Run FastAPI (uvicorn)",
+				"type": "debugpy",
+				"request": "launch",
+				"module": "uvicorn",
+				"args": [
+					"app.main:app",
+					"--host", "0.0.0.0",
+					"--port", "8000",
+					"--reload"
+				],
+				"jinja": true,
+				"envFile": "${workspaceFolder}/.env",
+				"env": {
+					"PYTHONPATH": "${workspaceFolder}"
+				}
+			},
+			{
+				"name": "Run Tests (pytest)",
+				"type": "debugpy",
+				"request": "launch",
+				"module": "pytest",
+				"args": [
+					"tests",
+					"-v",
+					"--tb=short"
+				],
+				"envFile": "${workspaceFolder}/.env",
+				"env": {
+					"PYTHONPATH": "${workspaceFolder}"
+				}
+			},
+			{
+				"name": "Run RQ Worker",
+				"type": "debugpy",
+				"request": "launch",
+				"module": "app.workers",
+				"envFile": "${workspaceFolder}/.env",
+				"env": {
+					"PYTHONPATH": "${workspaceFolder}"
+				}
+			}
+		]
+	}
+}
