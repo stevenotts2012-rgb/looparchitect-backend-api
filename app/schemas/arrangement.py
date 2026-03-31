@@ -328,6 +328,7 @@ class ArrangementResponse(BaseModel):
     output_url: Optional[str] = None
     stems_zip_url: Optional[str] = None
     mastering_metadata: Optional[dict] = None
+    arrangement_json: Optional[str] = Field(default=None, description="JSON timeline with sections")
     created_at: datetime
     updated_at: datetime
 
