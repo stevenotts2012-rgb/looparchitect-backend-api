@@ -1,0 +1,37 @@
+{
+	"folders": [
+		{
+			"name": "looparchitect-backend-api",
+			"path": "."
+		},
+		{
+			"name": "looparchitect-frontend",
+			"path": "../looparchitect-frontend"
+		}
+	],
+	"settings": {
+		"python.defaultInterpreterPath": "${workspaceFolder:looparchitect-backend-api}/.venv/bin/python",
+		"python.terminal.activateEnvironment": true,
+		"python.analysis.extraPaths": ["${workspaceFolder:looparchitect-backend-api}"],
+		"python.testing.pytestEnabled": true,
+		"python.testing.pytestArgs": ["tests", "-v"],
+		"editor.formatOnSave": true,
+		"editor.rulers": [100],
+		"files.exclude": {
+			"**/__pycache__": true,
+			"**/*.pyc": true,
+			".pytest_cache": true
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			"ms-python.python",
+			"ms-python.black-formatter",
+			"ms-python.isort",
+			"charliermarsh.ruff",
+			"humao.rest-client",
+			"mikestead.dotenv",
+			"eamodio.gitlens"
+		]
+	}
+}
