@@ -268,7 +268,18 @@ class AudioArrangementGenerateResponse(BaseModel):
     loop_id: int = Field(..., description="ID of source loop")
     status: Optional[str] = Field(default=None, description="Current status: queued, processing, done, failed")
     created_at: Optional[datetime] = Field(default=None, description="Timestamp of first creation")
-    render_job_ids: List[str] = Field(default_factory=list, description="Reserved for async variation jobs")
+    job_id: Optional[str] = Field(
+        default=None,
+        description="Primary render job ID to poll for status. None when no job was created.",
+    )
+    poll_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "URL to poll for job status: /api/v1/jobs/{job_id}. "
+            "Present when job_id is present; both are None when no job was created."
+        ),
+    )
+    render_job_ids: List[str] = Field(default_factory=list, description="All render job IDs (one per variation)")
     seed_used: Optional[int] = Field(default=None, description="Resolved seed used for deterministic generation")
     style_preset: Optional[str] = Field(default=None, description="Resolved style preset id")
     style_profile: Optional[dict] = Field(

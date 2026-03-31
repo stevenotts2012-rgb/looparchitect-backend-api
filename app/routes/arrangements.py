@@ -1058,11 +1058,14 @@ async def generate_arrangement(
         status_code=202,
     )
 
+    primary_job_id = render_job_ids[0] if render_job_ids else None
     return AudioArrangementGenerateResponse(
         arrangement_id=first_arrangement.id if first_arrangement else None,
         loop_id=request.loop_id,
         status=first_arrangement.status if first_arrangement else None,
         created_at=first_arrangement.created_at if first_arrangement else None,
+        job_id=primary_job_id,
+        poll_url=f"/api/v1/jobs/{primary_job_id}" if primary_job_id else None,
         render_job_ids=render_job_ids,
         seed_used=seed_used,
         style_preset=style_preset,

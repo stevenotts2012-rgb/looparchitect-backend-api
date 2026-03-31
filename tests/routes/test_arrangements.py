@@ -95,6 +95,9 @@ class TestArrangementCreation:
         assert payload["arrangement_id"] > 0
         assert payload["loop_id"] == test_loop.id
         assert payload["render_job_ids"] == ["job-123"]
+        # New fields: job_id and poll_url should point to the primary render job
+        assert payload["job_id"] == "job-123"
+        assert payload["poll_url"] == "/api/v1/jobs/job-123"
         assert len(payload["candidates"]) == 1
         assert payload["candidates"][0]["arrangement_id"] == payload["arrangement_id"]
 
@@ -177,6 +180,9 @@ class TestArrangementCreation:
         payload = response.json()
         assert len(payload["candidates"]) == 3
         assert payload["render_job_ids"] == ["job-preview-1", "job-preview-2", "job-preview-3"]
+        # job_id and poll_url must point to the first (primary) job
+        assert payload["job_id"] == "job-preview-1"
+        assert payload["poll_url"] == "/api/v1/jobs/job-preview-1"
 
         created_ids = [c["arrangement_id"] for c in payload["candidates"]]
         created_rows = db.query(Arrangement).filter(Arrangement.id.in_(created_ids)).all()
