@@ -27,7 +27,6 @@ virtualenv/
 .uv/
 
 # IDE & Editor
-.vscode/
 .idea/
 *.swp
 *.swo
