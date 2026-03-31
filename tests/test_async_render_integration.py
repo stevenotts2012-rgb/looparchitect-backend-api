@@ -13,7 +13,7 @@ from app.services.job_service import (
     _compute_dedupe_hash,
 )
 from app.models.job import RenderJob
-from app.schemas.job import RenderJobRequest
+from app.schemas.job import RenderJobRequest, RenderJobStatusResponse
 
 
 pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")
@@ -248,6 +248,48 @@ class TestRouteRegistration:
         assert "render_jobs" in ROUTE_CONFIG
         assert ROUTE_CONFIG["render_jobs"]["prefix"] == "/api/v1"
         assert "jobs" in ROUTE_CONFIG["render_jobs"]["tags"]
+
+
+class TestRenderJobStatusResponseNormalization:
+    """
+    Tests that RenderJobStatusResponse normalises the internal 'succeeded'
+    DB value to 'completed' so the polling frontend only needs to handle:
+    queued | processing | completed | failed
+    """
+
+    def _make_response(self, status: str) -> RenderJobStatusResponse:
+        return RenderJobStatusResponse(
+            job_id="test-job-1",
+            loop_id=1,
+            job_type="render_arrangement",
+            status=status,
+            created_at=datetime(2024, 1, 1),
+        )
+
+    def test_succeeded_normalised_to_completed(self):
+        """DB value 'succeeded' must be exposed as 'completed' via the API."""
+        response = self._make_response("succeeded")
+        assert response.status == "completed"
+
+    def test_completed_unchanged(self):
+        """'completed' passes through unchanged."""
+        response = self._make_response("completed")
+        assert response.status == "completed"
+
+    def test_failed_unchanged(self):
+        """'failed' passes through unchanged."""
+        response = self._make_response("failed")
+        assert response.status == "failed"
+
+    def test_queued_unchanged(self):
+        """'queued' passes through unchanged."""
+        response = self._make_response("queued")
+        assert response.status == "queued"
+
+    def test_processing_unchanged(self):
+        """'processing' passes through unchanged."""
+        response = self._make_response("processing")
+        assert response.status == "processing"
 
 
 if __name__ == "__main__":
