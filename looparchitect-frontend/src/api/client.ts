@@ -3,29 +3,36 @@
  *
  * Handles all communication with the backend API.
  *
- * Request routing:
- *   - In development (NEXT_PUBLIC_API_URL unset) all paths are sent as
- *     relative URLs (e.g. /api/v1/…) so Next.js's catch-all proxy at
- *     src/app/api/[...path]/route.ts forwards them to the FastAPI backend.
- *   - When NEXT_PUBLIC_API_URL is explicitly set (e.g. in production
- *     without a proxy), requests go directly to that origin.
+ * Request routing
+ * ───────────────
+ * LOCAL DEV (NEXT_PUBLIC_API_URL unset — recommended):
+ *   All paths are sent as relative URLs (e.g. /api/v1/…) so Next.js's
+ *   catch-all proxy at src/app/api/[...path]/route.ts forwards them to
+ *   the FastAPI backend at http://localhost:8000.
+ *   The browser never contacts the backend directly; CORS is not an issue.
  *
- * Upload flow:
+ * PRODUCTION (NEXT_PUBLIC_API_URL set):
+ *   Requests go directly from the browser to the configured backend origin.
+ *   The backend must include the frontend origin in its CORS allowlist.
+ *
+ * Upload flow (local dev):
  *   browser → POST /api/v1/loops/with-file (relative)
- *          → Next.js proxy (src/app/api/[...path]/route.ts)
- *          → FastAPI POST /api/v1/loops/with-file
+ *          → Next.js proxy (src/app/api/[...path]/route.ts, port 3000)
+ *          → FastAPI POST /api/v1/loops/with-file (port 8000)
  *
- * Polling for job status uses GET /api/v1/jobs/{job_id} — the real render-job
- * endpoint — rather than guessing state from the arrangements list.
+ * Polling for job status uses GET /api/v1/jobs/{job_id} — the real
+ * render-job endpoint — rather than guessing state from the arrangements list.
  */
 
 /**
  * Base URL for all API calls.
  *
- * If NEXT_PUBLIC_API_URL is set, requests go directly to that origin.
- * When it is empty / unset, the empty string causes fetch to send
- * relative URLs (e.g. /api/v1/…) which are handled by the Next.js
- * catch-all proxy and forwarded to the FastAPI backend.
+ * LOCAL DEV: Leave NEXT_PUBLIC_API_URL unset.  The empty string causes fetch
+ * to send relative URLs (e.g. /api/v1/…) which are forwarded to the FastAPI
+ * backend (http://localhost:8000) by the Next.js catch-all proxy.
+ *
+ * PRODUCTION: Set NEXT_PUBLIC_API_URL to the deployed backend origin so the
+ * browser contacts it directly (e.g. https://api-production-xxx.up.railway.app).
  */
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 

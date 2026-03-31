@@ -11,14 +11,19 @@
  *
  * Environment variables
  * ─────────────────────
- * BACKEND_ORIGIN   Server-side URL of the FastAPI service.
- *                  Defaults to http://localhost:8000.
- *                  Example (Railway): https://api-production-xxx.up.railway.app
+ * BACKEND_ORIGIN   Server-side URL of the FastAPI service (never sent to the
+ *                  browser).  Set this in .env.local for local development.
+ *
+ *                  Local dev default : http://localhost:8000
+ *                  Production example: https://api-production-xxx.up.railway.app
+ *
+ *                  Fallback chain: BACKEND_ORIGIN → NEXT_PUBLIC_API_URL → http://localhost:8000
+ *                  In local dev, only BACKEND_ORIGIN (or the built-in default) is needed.
  *
  * Final request path verified by this proxy:
  *   browser POST /api/v1/loops/with-file
- *        → proxy
- *        → FastAPI POST /api/v1/loops/with-file   ✅
+ *        → proxy (Next.js, port 3000)
+ *        → FastAPI POST /api/v1/loops/with-file (port 8000)  ✅
  */
 
 import { NextRequest, NextResponse } from "next/server";
