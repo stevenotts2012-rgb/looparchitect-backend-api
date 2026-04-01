@@ -5,6 +5,7 @@ import os
 import tempfile
 import traceback
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
@@ -23,6 +24,17 @@ from app.schemas.job import OutputFile
 from app.services.arrangement_jobs import _parse_stem_metadata_from_loop
 
 logger = logging.getLogger(__name__)
+
+# Cross-platform job timeout (seconds). Uses ThreadPoolExecutor instead of
+# signal.SIGALRM (unavailable on Windows) so this works on all platforms.
+try:
+    _JOB_TIMEOUT_SECONDS = int(settings.render_job_timeout_seconds or 900)
+except (TypeError, ValueError):
+    logger.warning(
+        "Invalid RENDER_JOB_TIMEOUT_SECONDS value %r; defaulting to 900s",
+        settings.render_job_timeout_seconds,
+    )
+    _JOB_TIMEOUT_SECONDS = 900
 
 # Job module imports
 MODELS_TO_REGISTER = [
@@ -97,6 +109,24 @@ def _ensure_db_models():
             logger.warning(f"Failed to import {module_name}: {e}")
     
     Base.metadata.create_all(bind=engine)
+
+
+def _run_with_timeout(fn, *args, timeout_seconds: int = _JOB_TIMEOUT_SECONDS, **kwargs):
+    """
+    Run *fn* in a ThreadPoolExecutor with a cross-platform wall-clock timeout.
+
+    Uses concurrent.futures instead of signal.SIGALRM so it works on Windows.
+    Raises concurrent.futures.TimeoutError if *fn* exceeds *timeout_seconds*.
+
+    Note: Python threads cannot be forcibly cancelled. If the timeout fires the
+    caller receives the TimeoutError promptly and can mark the job failed, but
+    the background thread may continue running until the current I/O or CPU
+    operation completes. This is acceptable because SimpleWorker processes one
+    job at a time, so the stale thread will not block new jobs.
+    """
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn, *args, **kwargs)
+        return future.result(timeout=timeout_seconds)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
@@ -280,7 +310,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 arrangement_id,
                 loop_id,
             )
-            run_arrangement_job(int(arrangement_id))
+            try:
+                _run_with_timeout(run_arrangement_job, int(arrangement_id))
+            except FuturesTimeoutError:
+                raise TimeoutError(
+                    f"Arrangement job {arrangement_id} exceeded timeout of {_JOB_TIMEOUT_SECONDS}s"
+                )
             logger.info(
                 "Arrangement-mode END run_arrangement_job: app_job_id=%s arrangement_id=%s loop_id=%s",
                 app_job_id,
@@ -456,12 +491,18 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
             filename = "arrangement.wav"
             output_path = temp_dir / filename
-            render_result = render_from_plan(
-                render_plan_json=render_plan_json,
-                audio_source=audio,
-                output_path=output_path,
-                stems=worker_stems,
-            )
+            try:
+                render_result = _run_with_timeout(
+                    render_from_plan,
+                    render_plan_json=render_plan_json,
+                    audio_source=audio,
+                    output_path=output_path,
+                    stems=worker_stems,
+                )
+            except FuturesTimeoutError:
+                raise TimeoutError(
+                    f"Render pipeline for job {app_job_id} exceeded timeout of {_JOB_TIMEOUT_SECONDS}s"
+                )
 
             timeline_json = render_result["timeline_json"]
             postprocess = render_result.get("postprocess") or {}

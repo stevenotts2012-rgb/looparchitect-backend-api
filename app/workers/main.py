@@ -30,14 +30,14 @@ def _run_rq_worker() -> None:
     queue_name = DEFAULT_RENDER_QUEUE_NAME
     queue = get_queue(redis_conn, name=queue_name)
 
-    from rq import Worker
+    from rq import SimpleWorker
 
     logger.info("Connected to Redis queue: %s", queue.name)
     logger.info("Listening on queue(s): %s", queue_name)
     
     
-    worker = Worker([queue], connection=redis_conn, log_job_description=True,
-                       default_result_ttl=500)
+    worker = SimpleWorker([queue], connection=redis_conn, log_job_description=True,
+                          default_result_ttl=500)
     logger.info("🚀 Worker starting to listen for jobs...")
     worker.work(with_scheduler=False)
 

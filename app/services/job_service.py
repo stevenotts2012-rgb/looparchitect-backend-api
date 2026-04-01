@@ -114,7 +114,10 @@ def create_render_job(
             loop_id,
             params,
             job_id=job_id,
-            job_timeout=max(60, int(settings.render_job_timeout_seconds or 900)),
+            # job_timeout=-1 disables RQ's signal.SIGALRM-based timeout, which
+            # is not available on Windows. Application-level timeout is enforced
+            # inside render_loop_worker via concurrent.futures.ThreadPoolExecutor.
+            job_timeout=-1,
         )
         logger.info(
             "Render job enqueued: app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s queue_name=%s function_name=%s",
