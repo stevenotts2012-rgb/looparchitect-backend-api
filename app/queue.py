@@ -1,7 +1,6 @@
 """Redis queue configuration and entrypoint."""
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
 import redis
@@ -17,7 +16,9 @@ DEFAULT_RENDER_QUEUE_NAME = "render"
 def is_redis_available() -> bool:
     """Check if Redis is available without raising exception."""
     try:
-        redis_url = os.getenv("REDIS_URL")
+        from app.config import settings
+
+        redis_url = settings.redis_url
         if not redis_url:
             logger.warning("⚠️  REDIS_URL not configured")
             return False

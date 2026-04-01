@@ -36,6 +36,9 @@ async def health_ready(db: Session = Depends(get_db)):
     ffmpeg_ok = False
     redis_required = settings.is_production
     active_storage_backend = settings.get_storage_backend()
+    redis_url_configured = bool(settings.redis_url)
+    db_url = settings.database_url
+    db_type = "sqlite" if db_url.startswith("sqlite") else "postgresql"
     s3_ok = active_storage_backend != "s3"
 
     try:
@@ -103,8 +106,10 @@ async def health_ready(db: Session = Depends(get_db)):
     payload = {
         "ok": bool(db_ok and (redis_ok or not redis_required) and s3_ok and ffmpeg_ok),
         "db_ok": db_ok,
+        "db_type": db_type,
         "redis_ok": redis_ok,
         "redis_required": redis_required,
+        "redis_url_configured": redis_url_configured,
         "s3_ok": s3_ok,
         "ffmpeg_ok": ffmpeg_ok,
         "storage_backend": active_storage_backend,

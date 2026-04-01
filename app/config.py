@@ -1,4 +1,3 @@
-import os
 from typing import Any
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -10,7 +9,9 @@ class Settings(BaseSettings):
     debug: bool = False
     environment: str = Field(default="development", validation_alias="ENVIRONMENT")
     storage_backend: str = Field(default="", validation_alias="STORAGE_BACKEND")
-    redis_url: str = Field(default="", validation_alias="REDIS_URL")
+    redis_url: str = Field(default="redis://127.0.0.1:6379/0", validation_alias="REDIS_URL")
+    enable_embedded_rq_worker: bool = Field(default=True, validation_alias="ENABLE_EMBEDDED_RQ_WORKER")
+    embedded_rq_worker_count: int = Field(default=2, validation_alias="EMBEDDED_RQ_WORKER_COUNT")
     aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str = Field(default="", validation_alias="AWS_SECRET_ACCESS_KEY")
     aws_region: str = Field(default="", validation_alias="AWS_REGION")
@@ -49,6 +50,21 @@ class Settings(BaseSettings):
     max_request_body_size_mb: int = Field(default=100, validation_alias="MAX_REQUEST_BODY_SIZE_MB")
     render_job_timeout_seconds: int = Field(default=900, validation_alias="RENDER_JOB_TIMEOUT_SECONDS")
 
+    @field_validator("enable_embedded_rq_worker", mode="before")
+    @classmethod
+    def convert_embedded_worker_bool(cls, v: Any) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+    @field_validator("embedded_rq_worker_count", mode="before")
+    @classmethod
+    def convert_worker_count(cls, v: Any) -> int:
+        try:
+            return max(1, int(v))
+        except (TypeError, ValueError):
+            return 2
+
     @field_validator(
         "feature_style_engine",
         "feature_style_sliders",
@@ -84,7 +100,7 @@ class Settings(BaseSettings):
           - http://127.0.0.1:5173  — Vite via numeric IP
 
         Production origins come from CORS_ALLOWED_ORIGINS or FRONTEND_ORIGIN env vars.
-        A Railway default is appended when neither is set.
+        A warning is logged in production when neither is configured.
         """
         origins: list[str] = [
             # Canonical local-dev frontend: http://localhost:3000
@@ -101,10 +117,13 @@ class Settings(BaseSettings):
                 normalized_origin = origin.strip().rstrip("/")
                 if normalized_origin and normalized_origin not in origins:
                     origins.append(normalized_origin)
-
-        default_origin = "https://frontend-production-f7fc.up.railway.app"
-        if default_origin not in origins:
-            origins.append(default_origin)
+        elif self.is_production:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "No CORS_ALLOWED_ORIGINS or FRONTEND_ORIGIN configured for production. "
+                "Cross-origin browser requests from the frontend will be blocked. "
+                "Set FRONTEND_ORIGIN or CORS_ALLOWED_ORIGINS to your deployed frontend URL."
+            )
 
         return origins
 
@@ -163,9 +182,9 @@ class Settings(BaseSettings):
         missing: list[str] = []
 
         if self.is_production:
-            if not os.getenv("DATABASE_URL"):
+            if not self.database_url or self.database_url == "sqlite:///./test.db":
                 missing.append("DATABASE_URL")
-            if not os.getenv("REDIS_URL"):
+            if not self.redis_url:
                 missing.append("REDIS_URL")
 
         if backend == "s3":
@@ -177,9 +196,8 @@ class Settings(BaseSettings):
                 missing.append("AWS_REGION")
             if not self.get_s3_bucket():
                 missing.append("AWS_S3_BUCKET or S3_BUCKET_NAME")
-
-        if self.get_s3_bucket() == "your-bucket-name":
-            missing.append("AWS_S3_BUCKET or S3_BUCKET_NAME")
+            if self.get_s3_bucket() == "your-bucket-name":
+                missing.append("AWS_S3_BUCKET or S3_BUCKET_NAME (placeholder value must be replaced)")
 
         if missing:
             unique_missing = sorted(set(missing))
