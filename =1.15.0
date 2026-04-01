@@ -1,0 +1,25 @@
+Collecting rq
+  Downloading rq-2.7.0-py3-none-any.whl.metadata (10 kB)
+Collecting click>=5 (from rq)
+  Downloading click-8.3.1-py3-none-any.whl.metadata (2.6 kB)
+Collecting croniter (from rq)
+  Downloading croniter-6.2.2-py3-none-any.whl.metadata (22 kB)
+Collecting redis!=6,>=3.5 (from rq)
+  Downloading redis-7.4.0-py3-none-any.whl.metadata (12 kB)
+Collecting python-dateutil (from croniter->rq)
+  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting six>=1.5 (from python-dateutil->croniter->rq)
+  Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Downloading rq-2.7.0-py3-none-any.whl (115 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 115.7/115.7 kB 32.6 MB/s eta 0:00:00
+Downloading click-8.3.1-py3-none-any.whl (108 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 108.3/108.3 kB 32.3 MB/s eta 0:00:00
+Downloading redis-7.4.0-py3-none-any.whl (409 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 409.8/409.8 kB 86.0 MB/s eta 0:00:00
+Downloading croniter-6.2.2-py3-none-any.whl (45 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.4/45.4 kB 12.5 MB/s eta 0:00:00
+Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 229.9/229.9 kB 62.1 MB/s eta 0:00:00
+Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
+Installing collected packages: six, redis, click, python-dateutil, croniter, rq
+Successfully installed click-8.3.1 croniter-6.2.2 python-dateutil-2.9.0.post0 redis-7.4.0 rq-2.7.0 six-1.17.0
