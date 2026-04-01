@@ -14,10 +14,10 @@
  * BACKEND_ORIGIN   Server-side URL of the FastAPI service (never sent to the
  *                  browser).  Set this in .env.local for local development.
  *
- *                  Local dev default : http://localhost:8000
+ *                  Local dev default : http://127.0.0.1:8000
  *                  Production example: https://api-production-xxx.up.railway.app
  *
- *                  Fallback chain: BACKEND_ORIGIN → NEXT_PUBLIC_API_URL → http://localhost:8000
+ *                  Fallback chain: BACKEND_ORIGIN → NEXT_PUBLIC_API_URL → http://127.0.0.1:8000
  *                  In local dev, only BACKEND_ORIGIN (or the built-in default) is needed.
  *
  * Final request path verified by this proxy:
@@ -32,7 +32,7 @@ import { NextRequest, NextResponse } from "next/server";
 const BACKEND_ORIGIN =
   process.env.BACKEND_ORIGIN ??
   process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
+  "http://127.0.0.1:8000";
 
 /** HTTP methods that Next.js App Router should handle. */
 export const dynamic = "force-dynamic";

@@ -8,7 +8,7 @@
  * LOCAL DEV (NEXT_PUBLIC_API_URL unset — recommended):
  *   All paths are sent as relative URLs (e.g. /api/v1/…) so Next.js's
  *   catch-all proxy at src/app/api/[...path]/route.ts forwards them to
- *   the FastAPI backend at http://localhost:8000.
+ *   the FastAPI backend at http://127.0.0.1:8000.
  *   The browser never contacts the backend directly; CORS is not an issue.
  *
  * PRODUCTION (NEXT_PUBLIC_API_URL set):
@@ -29,7 +29,7 @@
  *
  * LOCAL DEV: Leave NEXT_PUBLIC_API_URL unset.  The empty string causes fetch
  * to send relative URLs (e.g. /api/v1/…) which are forwarded to the FastAPI
- * backend (http://localhost:8000) by the Next.js catch-all proxy.
+ * backend (http://127.0.0.1:8000) by the Next.js catch-all proxy.
  *
  * PRODUCTION: Set NEXT_PUBLIC_API_URL to the deployed backend origin so the
  * browser contacts it directly (e.g. https://api-production-xxx.up.railway.app).
