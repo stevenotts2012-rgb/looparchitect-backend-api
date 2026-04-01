@@ -9,6 +9,7 @@ from app.config import settings
 from app.models.base import Base  # noqa: F401
 from app.models.loop import Loop  # noqa: F401 - register Loop with Base.metadata
 from app.models.arrangement import Arrangement  # noqa: F401 - register Arrangement with Base.metadata
+from app.models.job import RenderJob  # noqa: F401 - register RenderJob with Base.metadata so init_db() creates render_jobs
 
 logger = logging.getLogger(__name__)
 
