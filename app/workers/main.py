@@ -32,12 +32,40 @@ def _run_rq_worker() -> None:
 
     from rq import SimpleWorker
 
+    # Use a Windows-safe death-penalty class so the worker never touches
+    # signal.SIGALRM, which does not exist on Windows.
+    #
+    # Preference order:
+    #  1. rq.timeouts.TimerDeathPenalty  – available in RQ ≥ 1.16; uses a
+    #     threading.Timer, works on all platforms.
+    #  2. A local no-op subclass – silently disables RQ's timeout mechanism;
+    #     safe because application-level timeouts are already enforced inside
+    #     render_loop_worker via concurrent.futures.ThreadPoolExecutor
+    #     (_run_with_timeout).
+    try:
+        from rq.timeouts import TimerDeathPenalty as _SafeDeathPenalty
+    except ImportError:
+        from rq.timeouts import BaseDeathPenalty as _BaseDP  # type: ignore[assignment]
+
+        class _SafeDeathPenalty(_BaseDP):  # type: ignore[no-redef]
+            """No-op death penalty for environments where TimerDeathPenalty is
+            unavailable (older RQ).  Timeout is managed at the application
+            level via ThreadPoolExecutor in render_worker._run_with_timeout()."""
+
+            def setup_death_penalty(self) -> None:
+                pass
+
+            def cancel_death_penalty(self) -> None:
+                pass
+
     logger.info("Connected to Redis queue: %s", queue.name)
     logger.info("Listening on queue(s): %s", queue_name)
-    
-    
+
     worker = SimpleWorker([queue], connection=redis_conn, log_job_description=True,
                           default_result_ttl=500)
+    # Override at the instance level so the class-level default
+    # (UnixSignalDeathPenalty on older RQ) is never used.
+    worker.death_penalty_class = _SafeDeathPenalty
     logger.info("🚀 Worker starting to listen for jobs...")
     worker.work(with_scheduler=False)
 
