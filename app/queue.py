@@ -34,13 +34,21 @@ def get_redis_conn() -> redis.Redis:
     """Get or create redis connection.
 
     Uses ``settings.redis_url`` (populated from the ``REDIS_URL`` environment
-    variable via Pydantic Settings).  Falls back to ``redis://localhost:6379/0``
-    only when the variable is completely absent, which is the correct behaviour
-    for local development.
+    variable via Pydantic Settings, with a default of
+    ``redis://127.0.0.1:6379/0`` for local development).
+
+    Raises ``redis.exceptions.ConnectionError`` if the connection cannot be
+    established, so callers receive an actionable error rather than a silent
+    failure.
     """
     from app.config import settings
 
-    redis_url = settings.redis_url or "redis://localhost:6379/0"
+    redis_url = settings.redis_url
+    if not redis_url:
+        raise RuntimeError(
+            "REDIS_URL is not configured. Set REDIS_URL in your environment "
+            "(e.g. redis://127.0.0.1:6379/0 for local dev)."
+        )
     try:
         conn = redis.from_url(redis_url)
         conn.ping()

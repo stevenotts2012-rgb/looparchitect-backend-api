@@ -146,20 +146,37 @@ def _build_openapi_servers() -> list[dict[str, str]]:
 
 def create_tables_if_missing():
     """Create required tables if they don't exist in the database.
-    
-    This is a fallback approach when migrations are skipped (e.g., due to
-    existing table locking issues). Uses IF NOT EXISTS to safely handle
-    repeated calls.
+
+    For SQLite (local dev): delegates to SQLAlchemy's metadata-driven DDL
+    via ``init_db()``, which is DB-agnostic and handles all registered models
+    including ``render_jobs``.
+
+    For PostgreSQL (production): uses explicit ``CREATE TABLE IF NOT EXISTS``
+    and ``ALTER TABLE … ADD COLUMN IF NOT EXISTS`` DDL so that new columns are
+    added to existing production tables without requiring a full migration run.
+    Alembic migrations run afterward for any remaining schema changes.
     """
+    is_sqlite = settings.database_url.startswith("sqlite")
+
+    if is_sqlite:
+        # SQLite local-dev path: use SQLAlchemy's portable DDL.
+        # init_db() calls Base.metadata.create_all() which creates every
+        # table that has been imported and registered with Base, including
+        # RenderJob (imported in app/db/session.py).
+        from app.db import init_db
+        init_db()
+        logger.info("✅ SQLite tables initialized via SQLAlchemy metadata (init_db)")
+        return
+
+    # PostgreSQL production path: raw DDL guards for forward-compatibility.
     try:
         import sqlalchemy as sa
         from sqlalchemy import text
-        
-        # Create a connection to the database
+
         engine = sa.create_engine(settings.database_url)
-        
+
         with engine.begin() as connection:
-            # Create loops table with all required columns
+            # ── loops ────────────────────────────────────────────────────────
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS loops (
                     id SERIAL PRIMARY KEY,
@@ -176,7 +193,7 @@ def create_tables_if_missing():
                 )
             """))
 
-            # ADD COLUMN IF NOT EXISTS (PostgreSQL 9.6+) -- idempotent, no inspector needed
+            # ADD COLUMN IF NOT EXISTS (PostgreSQL 9.6+) -- idempotent
             for col_name, col_type in [
                 ("name",                 "VARCHAR"),
                 ("tempo",                "FLOAT"),
@@ -190,7 +207,6 @@ def create_tables_if_missing():
                 ("genre",                "VARCHAR"),
                 ("processed_file_url",   "VARCHAR"),
                 ("analysis_json",        "TEXT"),
-                ("created_at",           "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                 ("is_stem_pack",         "VARCHAR DEFAULT 'false'"),
                 ("stem_roles_json",      "TEXT"),
                 ("stem_files_json",      "TEXT"),
@@ -199,7 +215,7 @@ def create_tables_if_missing():
                 connection.execute(text(f"ALTER TABLE loops ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
             logger.info("✅ loops column guard complete")
 
-            # Create arrangements table with all required columns
+            # ── arrangements ─────────────────────────────────────────────────
             connection.execute(text("""
                 CREATE TABLE IF NOT EXISTS arrangements (
                     id SERIAL PRIMARY KEY,
@@ -218,7 +234,6 @@ def create_tables_if_missing():
                 )
             """))
 
-            # ADD COLUMN IF NOT EXISTS for arrangements -- idempotent
             for col_name, col_type in [
                 ("style_profile_json",        "TEXT"),
                 ("ai_parsing_used",           "BOOLEAN DEFAULT false"),
@@ -230,12 +245,42 @@ def create_tables_if_missing():
                 ("progress",                  "FLOAT DEFAULT 0.0"),
                 ("progress_message",          "VARCHAR(256)"),
                 ("output_s3_key",             "VARCHAR"),
-                ("output_url",               "VARCHAR"),
+                ("output_url",                "VARCHAR"),
             ]:
                 connection.execute(text(f"ALTER TABLE arrangements ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
             logger.info("✅ arrangements column guard complete")
 
-            # Indexes
+            # ── render_jobs ───────────────────────────────────────────────────
+            # This table backs the async render job pipeline.  Alembic migration
+            # 80dcd1ed7522 owns the canonical schema; this guard ensures the
+            # table exists even if migrations are skipped.
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS render_jobs (
+                    id VARCHAR(36) PRIMARY KEY,
+                    loop_id INTEGER NOT NULL,
+                    job_type VARCHAR(64) DEFAULT 'render_arrangement' NOT NULL,
+                    params_json TEXT,
+                    status VARCHAR(32) DEFAULT 'queued' NOT NULL,
+                    progress FLOAT DEFAULT 0.0,
+                    progress_message VARCHAR(256),
+                    output_files_json TEXT,
+                    error_message TEXT,
+                    retry_count INTEGER DEFAULT 0 NOT NULL,
+                    dedupe_hash VARCHAR(64),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    queued_at TIMESTAMP,
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    expires_at TIMESTAMP
+                )
+            """))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_loop_id ON render_jobs(loop_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_status ON render_jobs(status)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_created_at ON render_jobs(created_at)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_dedupe ON render_jobs(loop_id, dedupe_hash, created_at)"))
+            logger.info("✅ render_jobs column guard complete")
+
+            # ── indexes ───────────────────────────────────────────────────────
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_loops_id ON loops(id)"))
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_arrangements_id ON arrangements(id)"))
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_arrangements_loop_id ON arrangements(loop_id)"))
@@ -244,8 +289,8 @@ def create_tables_if_missing():
         engine.dispose()
         logger.info("✅ Database tables verified/created successfully")
 
-        # Foreign key runs in its own separate transaction.
-        # A duplicate-constraint error CANNOT roll back the column additions above.
+        # Foreign key constraint — separate transaction so a duplicate-constraint
+        # error cannot roll back the column additions above.
         try:
             fk_engine = sa.create_engine(settings.database_url)
             with fk_engine.begin() as fk_conn:
@@ -480,17 +525,26 @@ async def worker_health():
     }
 
 
-# Create uploads and renders directories if they don't exist
+# Create local directories for uploads and renders.
+# In production with S3 storage these directories are still created because
+# temporary files may be written during processing, but files are NOT served
+# from the local disk — S3 presigned URLs are used instead.
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("renders", exist_ok=True)
 os.makedirs("renders/arrangements", exist_ok=True)
 
-# Mount static files directory for uploads
+# Mount /uploads as a static file directory ONLY when using local storage.
+# In production (S3 backend) files live in S3; serving from local disk would
+# return stale or empty responses.
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
-UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
-app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+if settings.get_storage_backend() == "local":
+    UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
+    app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+    logger.info("Static file mount: /uploads → %s (local storage)", UPLOADS_DIR)
+else:
+    logger.info("Static file mount skipped: storage backend is '%s' (files served via presigned URLs)", settings.get_storage_backend())
 
 # Auto-discover and register all routers from app.routes
 register_routers(app)
