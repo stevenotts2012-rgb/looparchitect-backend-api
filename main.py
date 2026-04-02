@@ -76,23 +76,21 @@ def _start_embedded_rq_worker_if_enabled() -> None:
     logger.info("Embedded RQ workers active: count=%s", len(_embedded_worker_threads))
 
 def run_migrations():
-    """Run Alembic migrations to update database schema."""
-    try:
-        from alembic.config import Config
-        from alembic.runtime.migration import MigrationContext
-        from alembic.operations import Operations
-        import sys
-        
-        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
-        alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
-        
-        # Run migrations
-        from alembic import command
-        command.upgrade(alembic_cfg, "head")
-        logger.info("✅ Database migrations completed successfully")
-    except Exception as e:
-        logger.warning(f"⚠️  Migration warning (may be expected on first run): {e}")
-        # Don't fail startup if migrations have issues - the schema fix script handles it
+    """Run Alembic migrations (development/local convenience only).
+
+    In production, migrations are applied as a dedicated pre-start step via
+    the Procfile ``release`` phase (``alembic upgrade head``) so that all
+    replicas share a single atomic run and a bad migration aborts the deploy
+    rather than partially degrading live traffic.  This function must NOT be
+    called when ``settings.is_production`` is True.
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+    alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(alembic_cfg, "head")
+    logger.info("✅ Database migrations completed successfully")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -121,11 +119,32 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Redis connection status: unavailable (development mode, non-blocking)")
     
-    # Run migrations on startup
-    run_migrations()
-    
-    # Initialize database tables
-    init_db()
+    # Schema management strategy (matches app/main.py):
+    #
+    # Production: schema is owned exclusively by Alembic, applied before the
+    #   web process starts (Procfile `release` phase).  The web process
+    #   performs NO DDL so that all replicas share a single atomic migration
+    #   run and a bad migration aborts the deploy rather than partially
+    #   degrading live traffic.
+    #
+    # Development: run init_db() + Alembic migrations for a fast local loop.
+    if settings.is_production:
+        logger.info(
+            "Production mode: schema DDL is managed by Alembic pre-start "
+            "migrations (Procfile release phase). The web process will not "
+            "mutate the schema."
+        )
+    else:
+        # Local dev / test: bootstrap tables, then apply pending migrations.
+        try:
+            init_db()
+            logger.info("✅ Dev tables bootstrapped via SQLAlchemy metadata (init_db)")
+        except Exception as tbl_err:
+            logger.error("⚠️  Dev table-init error (non-fatal): %s", tbl_err)
+        try:
+            run_migrations()
+        except Exception as mig_err:
+            logger.error("⚠️  Dev migration error (non-fatal): %s", mig_err)
 
     # Start embedded queue workers so queued render jobs are processed
     _start_embedded_rq_worker_if_enabled()
