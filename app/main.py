@@ -144,183 +144,31 @@ def _build_openapi_servers() -> list[dict[str, str]]:
 
 
 
-def create_tables_if_missing():
-    """Create required tables if they don't exist in the database.
+def _run_dev_migrations() -> None:
+    """Run Alembic migrations in-process for local development convenience.
 
-    For SQLite (local dev): delegates to SQLAlchemy's metadata-driven DDL
-    via ``init_db()``, which is DB-agnostic and handles all registered models
-    including ``render_jobs``.
+    This is intentionally called only when ``settings.is_production`` is
+    ``False``.  In production, migrations MUST be applied as a dedicated
+    pre-start step (``alembic upgrade head`` in the ``release`` Procfile
+    phase or Dockerfile entrypoint) so that:
 
-    For PostgreSQL (production): uses explicit ``CREATE TABLE IF NOT EXISTS``
-    and ``ALTER TABLE … ADD COLUMN IF NOT EXISTS`` DDL so that new columns are
-    added to existing production tables without requiring a full migration run.
-    Alembic migrations run afterward for any remaining schema changes.
+    * All replicas share a single, atomic migration run.
+    * A bad migration fails the deploy rather than partially degrading live
+      traffic.
+    * The web process has no DDL authority at runtime.
     """
-    is_sqlite = settings.database_url.startswith("sqlite")
-
-    if is_sqlite:
-        # SQLite local-dev path: use SQLAlchemy's portable DDL.
-        # init_db() calls Base.metadata.create_all() which creates every
-        # table that has been imported and registered with Base, including
-        # RenderJob (imported in app/db/session.py).
-        from app.db import init_db
-        init_db()
-        logger.info("✅ SQLite tables initialized via SQLAlchemy metadata (init_db)")
-        return
-
-    # PostgreSQL production path: raw DDL guards for forward-compatibility.
-    try:
-        import sqlalchemy as sa
-        from sqlalchemy import text
-
-        engine = sa.create_engine(settings.database_url)
-
-        with engine.begin() as connection:
-            # ── loops ────────────────────────────────────────────────────────
-            connection.execute(text("""
-                CREATE TABLE IF NOT EXISTS loops (
-                    id SERIAL PRIMARY KEY,
-                    title VARCHAR NOT NULL,
-                    artist_name VARCHAR NOT NULL,
-                    duration_seconds FLOAT NOT NULL,
-                    file_path VARCHAR NOT NULL UNIQUE,
-                    s3_key VARCHAR,
-                    waveform_data TEXT,
-                    status VARCHAR DEFAULT 'pending',
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
-
-            # ADD COLUMN IF NOT EXISTS (PostgreSQL 9.6+) -- idempotent
-            for col_name, col_type in [
-                ("name",                 "VARCHAR"),
-                ("tempo",                "FLOAT"),
-                ("key",                  "VARCHAR"),
-                ("filename",             "VARCHAR"),
-                ("file_url",             "VARCHAR"),
-                ("file_key",             "VARCHAR"),
-                ("bpm",                  "INTEGER"),
-                ("bars",                 "INTEGER"),
-                ("musical_key",          "VARCHAR"),
-                ("genre",                "VARCHAR"),
-                ("processed_file_url",   "VARCHAR"),
-                ("analysis_json",        "TEXT"),
-                ("is_stem_pack",         "VARCHAR DEFAULT 'false'"),
-                ("stem_roles_json",      "TEXT"),
-                ("stem_files_json",      "TEXT"),
-                ("stem_validation_json", "TEXT"),
-            ]:
-                connection.execute(text(f"ALTER TABLE loops ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
-            logger.info("✅ loops column guard complete")
-
-            # ── arrangements ─────────────────────────────────────────────────
-            connection.execute(text("""
-                CREATE TABLE IF NOT EXISTS arrangements (
-                    id SERIAL PRIMARY KEY,
-                    loop_id INTEGER NOT NULL,
-                    status VARCHAR DEFAULT 'queued',
-                    target_seconds INTEGER NOT NULL,
-                    genre VARCHAR,
-                    intensity VARCHAR,
-                    include_stems BOOLEAN DEFAULT false,
-                    output_file_url VARCHAR,
-                    stems_zip_url VARCHAR,
-                    arrangement_json TEXT,
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
-
-            for col_name, col_type in [
-                ("style_profile_json",        "TEXT"),
-                ("ai_parsing_used",           "BOOLEAN DEFAULT false"),
-                ("producer_arrangement_json", "TEXT"),
-                ("render_plan_json",          "TEXT"),
-                ("stem_arrangement_json",     "TEXT"),
-                ("stem_render_path",          "VARCHAR"),
-                ("rendered_from_stems",       "BOOLEAN DEFAULT false"),
-                ("progress",                  "FLOAT DEFAULT 0.0"),
-                ("progress_message",          "VARCHAR(256)"),
-                ("output_s3_key",             "VARCHAR"),
-                ("output_url",                "VARCHAR"),
-            ]:
-                connection.execute(text(f"ALTER TABLE arrangements ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
-            logger.info("✅ arrangements column guard complete")
-
-            # ── render_jobs ───────────────────────────────────────────────────
-            # This table backs the async render job pipeline.  Alembic migration
-            # 80dcd1ed7522 owns the canonical schema; this guard ensures the
-            # table exists even if migrations are skipped.
-            connection.execute(text("""
-                CREATE TABLE IF NOT EXISTS render_jobs (
-                    id VARCHAR(36) PRIMARY KEY,
-                    loop_id INTEGER NOT NULL,
-                    job_type VARCHAR(64) DEFAULT 'render_arrangement' NOT NULL,
-                    params_json TEXT,
-                    status VARCHAR(32) DEFAULT 'queued' NOT NULL,
-                    progress FLOAT DEFAULT 0.0,
-                    progress_message VARCHAR(256),
-                    output_files_json TEXT,
-                    error_message TEXT,
-                    retry_count INTEGER DEFAULT 0 NOT NULL,
-                    dedupe_hash VARCHAR(64),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    queued_at TIMESTAMP,
-                    started_at TIMESTAMP,
-                    finished_at TIMESTAMP,
-                    expires_at TIMESTAMP
-                )
-            """))
-            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_loop_id ON render_jobs(loop_id)"))
-            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_status ON render_jobs(status)"))
-            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_created_at ON render_jobs(created_at)"))
-            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_render_jobs_dedupe ON render_jobs(loop_id, dedupe_hash, created_at)"))
-            logger.info("✅ render_jobs column guard complete")
-
-            # ── indexes ───────────────────────────────────────────────────────
-            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_loops_id ON loops(id)"))
-            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_arrangements_id ON arrangements(id)"))
-            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_arrangements_loop_id ON arrangements(loop_id)"))
-            connection.execute(text("CREATE INDEX IF NOT EXISTS idx_arrangement_loop_status ON arrangements(loop_id, status)"))
-
-        engine.dispose()
-        logger.info("✅ Database tables verified/created successfully")
-
-        # Foreign key constraint — separate transaction so a duplicate-constraint
-        # error cannot roll back the column additions above.
-        try:
-            fk_engine = sa.create_engine(settings.database_url)
-            with fk_engine.begin() as fk_conn:
-                fk_conn.execute(text("""
-                    ALTER TABLE arrangements
-                    ADD CONSTRAINT fk_arrangements_loop_id
-                    FOREIGN KEY (loop_id) REFERENCES loops(id)
-                """))
-            fk_engine.dispose()
-        except Exception:
-            pass  # Constraint already exists -- fine
-    except Exception as e:
-        logger.exception("❌ Failed to create database tables")
-        raise RuntimeError("Failed to create required database tables") from e
-
-
-def run_migrations():
-    """Run Alembic migrations to update database schema."""
     try:
         from alembic.config import Config
         from alembic import command
-        
+
         alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
         alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
-        
+
         command.upgrade(alembic_cfg, "head")
-        logger.info("✅ Database migrations completed successfully")
+        logger.info("✅ Dev database migrations applied successfully")
     except Exception as e:
-        logger.exception("❌ Database migrations failed during startup")
-        raise RuntimeError("Database migration failed during startup") from e
+        logger.exception("❌ Dev database migrations failed")
+        raise RuntimeError("Dev database migration failed") from e
 
 
 @asynccontextmanager
@@ -370,19 +218,33 @@ async def lifespan(app: FastAPI):
     
 
 
-    # Create tables if they don't exist (application-level fallback)
-    # Non-fatal: log errors but don't prevent the app from starting
-    try:
-        create_tables_if_missing()
-    except Exception as _tbl_err:
-        logger.error("⚠️  Startup table-init error (non-fatal): %s", _tbl_err)
+    # Schema management strategy:
+    #
+    # Production: schema is owned exclusively by Alembic, applied before
+    #   the web process starts (Procfile `release` phase / Dockerfile
+    #   entrypoint `scripts/prestart.sh`).  The web process performs NO DDL.
+    #
+    # Development (non-production / SQLite): run `init_db()` to create
+    #   tables from ORM metadata for a fast local-dev loop, then apply any
+    #   pending Alembic migrations for full fidelity.
+    if settings.is_production:
+        logger.info(
+            "Production mode: schema DDL is managed by Alembic pre-start migrations. "
+            "The web process will not mutate the schema."
+        )
+    else:
+        # Local dev / test: bootstrap schema, then bring it up to the latest
+        # Alembic revision so devs always work against a fully migrated schema.
+        try:
+            init_db()
+            logger.info("✅ Dev tables bootstrapped via SQLAlchemy metadata (init_db)")
+        except Exception as _tbl_err:
+            logger.error("⚠️  Dev table-init error (non-fatal): %s", _tbl_err)
 
-    # Run Alembic migrations to apply any pending schema changes (idempotent)
-    # Non-fatal: log errors but don't prevent the app from starting
-    try:
-        run_migrations()
-    except Exception as _mig_err:
-        logger.error("⚠️  Startup migration error (non-fatal): %s", _mig_err)
+        try:
+            _run_dev_migrations()
+        except Exception as _mig_err:
+            logger.error("⚠️  Dev migration error (non-fatal): %s", _mig_err)
 
     _start_embedded_rq_worker_if_enabled()
     

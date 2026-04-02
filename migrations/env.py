@@ -11,7 +11,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import settings
-from app.models.test_model import Base
+from app.models.base import Base
+
+# Import all models so their tables are registered with Base.metadata.
+# This is required for `alembic revision --autogenerate` to detect schema drift.
+from app.models.loop import Loop  # noqa: F401
+from app.models.arrangement import Arrangement  # noqa: F401
+from app.models.job import RenderJob  # noqa: F401
+from app.models.test_model import TestItem  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
