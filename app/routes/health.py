@@ -124,7 +124,17 @@ async def health_ready(db: Session = Depends(get_db)):
 # --- Worker Health Endpoint ---
 @router.get("/health/worker")
 async def health_worker():
-    """Check RQ worker status (running, idle, busy)."""
+    """Dedicated RQ worker health check.
+
+    Queries Redis for all registered RQ workers.  In the recommended
+    production topology a separate ``python -m app.workers.main`` process
+    registers itself here; this endpoint returns ``ok: true`` when at least
+    one such worker is connected and alive.
+
+    This endpoint checks *dedicated* worker processes — not embedded threads.
+    For embedded worker thread status see ``GET /health/worker`` (root path,
+    no ``/api/v1`` prefix).
+    """
     try:
         redis_conn = get_redis_conn()
         from rq import Worker

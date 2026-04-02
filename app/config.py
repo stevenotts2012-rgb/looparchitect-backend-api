@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", validation_alias="ENVIRONMENT")
     storage_backend: str = Field(default="", validation_alias="STORAGE_BACKEND")
     redis_url: Optional[str] = Field(default=None, validation_alias="REDIS_URL")
-    enable_embedded_rq_worker: bool = Field(default=True, validation_alias="ENABLE_EMBEDDED_RQ_WORKER")
+    enable_embedded_rq_worker: bool = Field(default=False, validation_alias="ENABLE_EMBEDDED_RQ_WORKER")
     embedded_rq_worker_count: int = Field(default=2, validation_alias="EMBEDDED_RQ_WORKER_COUNT")
     aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str = Field(default="", validation_alias="AWS_SECRET_ACCESS_KEY")

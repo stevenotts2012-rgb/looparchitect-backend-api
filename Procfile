@@ -5,15 +5,17 @@
 #   aborts the deploy so no live traffic is ever served against a stale schema.
 #   Alembic is the single source of truth for schema changes.
 #
-# Single-process (default, Dockerfile / Railway hobby):
-#   The web process starts uvicorn.  app.main enables embedded RQ workers
-#   via ENABLE_EMBEDDED_RQ_WORKER=true (default), so no separate worker
-#   process is needed.  The `worker` entry below is unused.
+# Production (recommended — dedicated worker):
+#   web:    uvicorn app.main:app  (ENABLE_EMBEDDED_RQ_WORKER defaults to false)
+#             → API only; no embedded workers in the web process.
+#   worker: python -m app.workers.main
+#             → Dedicated async job processor; connects to the same Redis.
+#   Both services share the same Redis and PostgreSQL instances.
 #
-# Two-process (Railway Pro / dedicated worker):
-#   Set ENABLE_EMBEDDED_RQ_WORKER=false on the web service so the web
-#   process does NOT run embedded workers.  Scale the `worker` service
-#   separately.  The web process no longer double-processes jobs.
+# Local dev / hobby (single-process, opt-in):
+#   Set ENABLE_EMBEDDED_RQ_WORKER=true in your .env to run embedded workers
+#   inside the web process.  No separate `worker` service is needed.
+#   This is NOT the default; it must be explicitly enabled.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 release: alembic upgrade head

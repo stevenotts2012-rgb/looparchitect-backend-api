@@ -29,25 +29,19 @@ _embedded_worker_threads: list[threading.Thread] = []
 def _start_embedded_rq_worker_if_enabled() -> None:
     """Start RQ worker in a daemon thread when enabled.
 
-    This is a deployment-safe fallback for environments that only launch the web process.
+    Embedded workers are opt-in (``ENABLE_EMBEDDED_RQ_WORKER=true``) and
+    intended for local development or single-process hobby deployments only.
+    Production deployments should run a dedicated ``python -m app.workers.main``
+    process and leave this setting at its default of ``false``.
     """
     global _embedded_worker_threads
 
-    enabled = os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not enabled:
-        logger.info("Embedded RQ worker disabled via ENABLE_EMBEDDED_RQ_WORKER")
+    if not settings.enable_embedded_rq_worker:
+        logger.info("Embedded RQ worker disabled (ENABLE_EMBEDDED_RQ_WORKER=false). "
+                    "Use a dedicated worker process in production.")
         return
 
-    worker_count_raw = os.getenv("EMBEDDED_RQ_WORKER_COUNT", "2").strip()
-    try:
-        worker_count = max(1, int(worker_count_raw))
-    except ValueError:
-        worker_count = 2
+    worker_count = settings.embedded_rq_worker_count
 
     alive_workers = [thread for thread in _embedded_worker_threads if thread.is_alive()]
     if len(alive_workers) >= worker_count:
@@ -365,25 +359,27 @@ async def root_health():
 
 @app.get("/health/worker")
 async def worker_health():
-    """Report embedded worker thread status for queue diagnostics."""
+    """Report embedded worker thread status.
+
+    This endpoint reflects only *embedded* worker threads running inside the
+    web process.  In the recommended production topology
+    (``ENABLE_EMBEDDED_RQ_WORKER=false``) it will always show zero active
+    embedded workers — that is the expected and correct result.
+
+    To check *dedicated* RQ worker health (actual background worker
+    processes connected via Redis) use ``GET /api/v1/health/worker``.
+    """
     alive_workers = [thread for thread in _embedded_worker_threads if thread.is_alive()]
-    enabled = os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    worker_count_raw = os.getenv("EMBEDDED_RQ_WORKER_COUNT", "2").strip()
-    try:
-        target_count = max(1, int(worker_count_raw))
-    except ValueError:
-        target_count = 2
 
     return {
-        "embedded_worker_enabled": enabled,
-        "target_worker_count": target_count,
+        "embedded_worker_enabled": settings.enable_embedded_rq_worker,
+        "target_worker_count": settings.embedded_rq_worker_count,
         "active_worker_count": len(alive_workers),
         "active_workers": [thread.name for thread in alive_workers],
+        "note": (
+            "Embedded workers are local-dev / single-process only. "
+            "For dedicated worker health see /api/v1/health/worker."
+        ),
     }
 
 
