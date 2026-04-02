@@ -129,8 +129,15 @@ def test_health_queue_debug_without_redis(client):
 
 
 def test_health_worker_endpoint(client):
-    """Test /health/worker endpoint returns worker info."""
-    response = client.get("/api/v1/health/worker")
+    """Test /health/worker endpoint returns worker info structure."""
+    mock_conn = MagicMock()
+
+    with patch("app.routes.health.get_redis_conn", return_value=mock_conn), patch(
+        "rq.Worker"
+    ) as mock_worker_class:
+        mock_worker_class.all.return_value = []
+        response = client.get("/api/v1/health/worker")
+
     assert response.status_code == 200
     data = response.json()
     assert "ok" in data
