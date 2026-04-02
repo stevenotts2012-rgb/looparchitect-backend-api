@@ -214,28 +214,25 @@ class TestQueueInitialization:
 
     @patch("app.queue.redis.from_url")
     def test_redis_connection_from_env(self, mock_redis_from_url):
-        """Test Redis connection uses environment variable."""
+        """Test Redis connection correctly reads REDIS_URL from settings singleton."""
         from app.queue import get_redis_conn
-        
-        mock_conn = MagicMock()
-        mock_redis_from_url.return_value = mock_conn
-        
-        with patch.dict("os.environ", {"REDIS_URL": "redis://localhost:6379/0"}):
-            conn = get_redis_conn()
-            mock_redis_from_url.assert_called_once_with("redis://localhost:6379/0")
 
-    @patch("app.queue.redis.from_url")
-    def test_redis_connection_default(self, mock_redis_from_url):
-        """Test Redis connection uses default when env var not set."""
-        from app.queue import get_redis_conn
-        
         mock_conn = MagicMock()
         mock_redis_from_url.return_value = mock_conn
-        
-        with patch.dict("os.environ", {}, clear=True):
+
+        with patch("app.config.settings") as mock_settings:
+            mock_settings.redis_url = "redis://127.0.0.1:6379/0"
             conn = get_redis_conn()
-            # Should use default redis://localhost:6379/0
-            assert mock_redis_from_url.called
+            mock_redis_from_url.assert_called_once_with("redis://127.0.0.1:6379/0")
+
+    def test_redis_connection_raises_when_redis_url_missing(self):
+        """Test Redis connection raises RuntimeError when REDIS_URL is not configured."""
+        from app.queue import get_redis_conn
+
+        with patch("app.config.settings") as mock_settings:
+            mock_settings.redis_url = None
+            with pytest.raises(RuntimeError, match="REDIS_URL is not configured"):
+                get_redis_conn()
 
 
 class TestRouteRegistration:

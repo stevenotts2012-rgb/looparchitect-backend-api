@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     debug: bool = False
     environment: str = Field(default="development", validation_alias="ENVIRONMENT")
     storage_backend: str = Field(default="", validation_alias="STORAGE_BACKEND")
-    redis_url: str = Field(default="redis://127.0.0.1:6379/0", validation_alias="REDIS_URL")
+    redis_url: Optional[str] = Field(default=None, validation_alias="REDIS_URL")
     enable_embedded_rq_worker: bool = Field(default=True, validation_alias="ENABLE_EMBEDDED_RQ_WORKER")
     embedded_rq_worker_count: int = Field(default=2, validation_alias="EMBEDDED_RQ_WORKER_COUNT")
     aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
@@ -175,6 +175,17 @@ class Settings(BaseSettings):
             return False
         return self.is_production
 
+    @staticmethod
+    def _redis_url_is_local(url: str) -> bool:
+        """Return True if *url* resolves to a loopback/localhost address."""
+        from urllib.parse import urlparse
+
+        try:
+            hostname = urlparse(url).hostname or ""
+        except Exception:
+            return False
+        return hostname in ("127.0.0.1", "::1", "localhost")
+
     def validate_startup(self) -> None:
         """Validate required environment variables for startup safety."""
         backend = self.get_storage_backend()
@@ -186,6 +197,13 @@ class Settings(BaseSettings):
                 missing.append("DATABASE_URL")
             if not self.redis_url:
                 missing.append("REDIS_URL")
+            elif self._redis_url_is_local(self.redis_url):
+                raise RuntimeError(
+                    "REDIS_URL points to localhost in production. "
+                    "Set REDIS_URL to the managed Redis URL provided by your platform "
+                    "(e.g., Railway/Render/Upstash). "
+                    "Production must not depend on a local Redis instance."
+                )
 
         if backend == "s3":
             if not self.aws_access_key_id:
