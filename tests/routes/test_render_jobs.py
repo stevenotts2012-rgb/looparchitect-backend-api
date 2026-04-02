@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 import app.db as db_module
 from app.models.job import RenderJob
 from app.models.loop import Loop
-from main import app
+from app.main import app
 
 
 pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")

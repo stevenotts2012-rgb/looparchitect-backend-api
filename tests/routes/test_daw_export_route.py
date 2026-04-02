@@ -10,7 +10,7 @@ from pydub.generators import Sine
 import app.db as db_module
 from app.models.arrangement import Arrangement
 from app.models.loop import Loop
-from main import app
+from app.main import app
 
 
 pytestmark = pytest.mark.usefixtures("fresh_sqlite_integration_db")

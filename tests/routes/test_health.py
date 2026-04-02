@@ -5,7 +5,7 @@ Tests for health check endpoints with FFmpeg validation.
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
-from main import app
+from app.main import app
 
 
 @pytest.fixture

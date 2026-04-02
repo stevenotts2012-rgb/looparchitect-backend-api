@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydub import AudioSegment
 
-from main import app
+from app.main import app
 from app.models.loop import Loop
 from app.db import get_db
 

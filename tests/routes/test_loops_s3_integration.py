@@ -11,7 +11,7 @@ import boto3
 import pytest
 from fastapi.testclient import TestClient
 
-from main import app
+from app.main import app
 from app.db import get_db
 from app.models.loop import Loop
 from app.models.base import Base
