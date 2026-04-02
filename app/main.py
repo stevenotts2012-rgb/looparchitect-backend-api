@@ -33,21 +33,12 @@ def _start_embedded_rq_worker_if_enabled() -> None:
     """
     global _embedded_worker_threads
 
-    enabled = os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    enabled = settings.enable_embedded_rq_worker
     if not enabled:
         logger.info("Embedded RQ worker disabled via ENABLE_EMBEDDED_RQ_WORKER")
         return
 
-    worker_count_raw = os.getenv("EMBEDDED_RQ_WORKER_COUNT", "2").strip()
-    try:
-        worker_count = max(1, int(worker_count_raw))
-    except ValueError:
-        worker_count = 2
+    worker_count = max(1, settings.embedded_rq_worker_count)
 
     alive_workers = [thread for thread in _embedded_worker_threads if thread.is_alive()]
     if len(alive_workers) >= worker_count:
@@ -367,17 +358,8 @@ async def root_health():
 async def worker_health():
     """Report embedded worker thread status for queue diagnostics."""
     alive_workers = [thread for thread in _embedded_worker_threads if thread.is_alive()]
-    enabled = os.getenv("ENABLE_EMBEDDED_RQ_WORKER", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    worker_count_raw = os.getenv("EMBEDDED_RQ_WORKER_COUNT", "2").strip()
-    try:
-        target_count = max(1, int(worker_count_raw))
-    except ValueError:
-        target_count = 2
+    enabled = settings.enable_embedded_rq_worker
+    target_count = max(1, settings.embedded_rq_worker_count)
 
     return {
         "embedded_worker_enabled": enabled,
