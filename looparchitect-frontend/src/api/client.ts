@@ -293,21 +293,54 @@ export async function uploadLoop(
 // ---------------------------------------------------------------------------
 
 /**
+ * Milliseconds before a download fetch is aborted and an error is shown.
+ * Large audio files can take time; 60 s is generous while still preventing
+ * an infinite spinner.
+ */
+export const DOWNLOAD_TIMEOUT_MS = 60_000;
+
+/**
  * Download the generated arrangement WAV as a Blob.
  *
  * Uses BACKEND_BASE_URL directly to bypass Vercel's 4.5 MB response-body
  * limit for large audio files.
+ *
+ * Enforces a 60-second timeout via AbortController so the loading state
+ * is always cleared even if the backend stalls.
  */
 export async function downloadArrangement(arrangementId: number): Promise<Blob> {
-  const response = await fetch(
-    `${BACKEND_BASE_URL}/api/v1/arrangements/${arrangementId}/download`
-  );
-  if (!response.ok) {
-    throw new Error(
-      `Download failed: ${response.status} ${response.statusText}`
-    );
+  const url = `${BACKEND_BASE_URL}/api/v1/arrangements/${arrangementId}/download`;
+  console.log("[download] endpoint called:", url);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.warn("[download] timeout reached – aborting fetch");
+    controller.abort();
+  }, DOWNLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    console.log("[download] response status:", response.status, response.statusText);
+
+    if (!response.ok) {
+      throw new Error(
+        `Download failed: ${response.status} ${response.statusText}`
+      );
+    }
+
+    const blob = await response.blob();
+    console.log("[download] blob received, size:", blob.size, "bytes");
+    return blob;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        "Download timed out after 60 seconds. Check your connection and try again."
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return response.blob();
 }
 
 // ---------------------------------------------------------------------------
@@ -361,15 +394,41 @@ export async function getDawExportInfo(
  * limit — the same reason uploads bypass the proxy).
  *
  * Always call getDawExportInfo() first so the backend generates the ZIP.
+ *
+ * Enforces a 60-second timeout via AbortController so the loading state
+ * is always cleared even if the backend stalls.
  */
 export async function downloadDawExport(arrangementId: number): Promise<Blob> {
-  const response = await fetch(
-    `${BACKEND_BASE_URL}/api/v1/arrangements/${arrangementId}/daw-export/download`
-  );
-  if (!response.ok) {
-    throw new Error(
-      `DAW export download failed: ${response.status} ${response.statusText}`
-    );
+  const url = `${BACKEND_BASE_URL}/api/v1/arrangements/${arrangementId}/daw-export/download`;
+  console.log("[daw-export] endpoint called:", url);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.warn("[daw-export] timeout reached – aborting fetch");
+    controller.abort();
+  }, DOWNLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    console.log("[daw-export] response status:", response.status, response.statusText);
+
+    if (!response.ok) {
+      throw new Error(
+        `DAW export download failed: ${response.status} ${response.statusText}`
+      );
+    }
+
+    const blob = await response.blob();
+    console.log("[daw-export] blob received, size:", blob.size, "bytes");
+    return blob;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        "DAW export download timed out after 60 seconds. Check your connection and try again."
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return response.blob();
 }

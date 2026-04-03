@@ -27,6 +27,7 @@ import {
   downloadDawExport,
   isTerminalJobStatus,
   BACKEND_BASE_URL,
+  DOWNLOAD_TIMEOUT_MS,
   type GenerateArrangementResponse,
   type JobStatus,
   type JobStatusResponse,
@@ -93,6 +94,10 @@ export default function GeneratePage() {
   // DAW export state
   const [isDawExporting, setIsDawExporting] = useState(false);
   const [dawExportError, setDawExportError] = useState<string | null>(null);
+
+  // WAV download state
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -197,19 +202,59 @@ export default function GeneratePage() {
 
   const handleDownload = async () => {
     if (!generateResponse?.arrangement_id) return;
+    // Prevent double-click / concurrent downloads
+    if (isDownloading) return;
+
+    console.log("[download] click – arrangement_id:", generateResponse.arrangement_id);
+    setIsDownloading(true);
+    setDownloadError(null);
+
+    const filename = `arrangement-${generateResponse.arrangement_id}.wav`;
+
     try {
+      // Prefer a pre-signed / public URL from the job-status output_files so
+      // the browser can download directly from storage without an extra blob
+      // round-trip through the backend.
+      const signedUrl = jobStatus?.output_files?.find(
+        (f) => f.content_type?.startsWith("audio") && f.signed_url
+      )?.signed_url;
+
+      if (signedUrl) {
+        const resolvedUrl = signedUrl.startsWith("http")
+          ? signedUrl
+          : `${BACKEND_BASE_URL}${signedUrl}`;
+
+        console.log("[download] using signed URL – redirecting browser:", resolvedUrl);
+
+        const a = document.createElement("a");
+        a.href = resolvedUrl;
+        a.download = filename;
+        a.click();
+
+        console.log("[download] browser download triggered via signed URL");
+        // Clear loading state immediately — the browser handles the rest
+        return;
+      }
+
+      // Fallback: fetch as Blob (e.g. local-storage backend without signed URLs)
+      console.log("[download] no signed URL – fetching blob from backend");
       const blob = await downloadArrangement(generateResponse.arrangement_id);
-      const url = URL.createObjectURL(blob);
+
+      const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = `arrangement-${generateResponse.arrangement_id}.wav`;
+      a.href = objectUrl;
+      a.download = filename;
       a.click();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(objectUrl);
+
+      console.log("[download] browser download triggered via blob");
     } catch (err) {
-      alert(
-        "Download failed: " +
-          (err instanceof Error ? err.message : String(err))
-      );
+      const message =
+        err instanceof Error ? err.message : "Download failed. Please try again.";
+      console.error("[download] failed:", message);
+      setDownloadError(message);
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -219,6 +264,9 @@ export default function GeneratePage() {
 
   const handleDawExport = async () => {
     if (!generateResponse?.arrangement_id) return;
+    if (isDawExporting) return;
+
+    console.log("[daw-export] click – arrangement_id:", generateResponse.arrangement_id);
     setIsDawExporting(true);
     setDawExportError(null);
     try {
@@ -229,18 +277,40 @@ export default function GeneratePage() {
           info.message ?? "Arrangement is not ready for DAW export."
         );
       }
-      // Download ZIP directly from Railway (bypasses Vercel 4.5 MB limit)
+
+      // If the backend returned an absolute download URL use it directly
+      if (info.download_url) {
+        const resolvedUrl = info.download_url.startsWith("http")
+          ? info.download_url
+          : `${BACKEND_BASE_URL}${info.download_url}`;
+
+        console.log("[daw-export] resolved download URL:", resolvedUrl);
+
+        const a = document.createElement("a");
+        a.href = resolvedUrl;
+        a.download = `arrangement-${generateResponse.arrangement_id}-daw-export.zip`;
+        a.click();
+
+        console.log("[daw-export] browser download triggered via URL");
+        return;
+      }
+
+      // Fallback: fetch ZIP as Blob
+      console.log("[daw-export] fetching blob from backend");
       const blob = await downloadDawExport(generateResponse.arrangement_id);
-      const url = URL.createObjectURL(blob);
+      const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
+      a.href = objectUrl;
       a.download = `arrangement-${generateResponse.arrangement_id}-daw-export.zip`;
       a.click();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(objectUrl);
+
+      console.log("[daw-export] browser download triggered via blob");
     } catch (err) {
-      setDawExportError(
-        err instanceof Error ? err.message : "Failed to download DAW export."
-      );
+      const message =
+        err instanceof Error ? err.message : "Failed to download DAW export.";
+      console.error("[daw-export] failed:", message);
+      setDawExportError(message);
     } finally {
       setIsDawExporting(false);
     }
@@ -442,10 +512,14 @@ export default function GeneratePage() {
           {/* WAV download */}
           <button
             onClick={handleDownload}
-            className="w-full bg-green-600 text-white py-2 rounded"
+            disabled={isDownloading}
+            className="w-full bg-green-600 text-white py-2 rounded disabled:opacity-50"
           >
-            Download Arrangement (WAV)
+            {isDownloading ? "Downloading…" : "Download Arrangement (WAV)"}
           </button>
+          {downloadError && (
+            <p className="text-sm text-red-600">{downloadError}</p>
+          )}
 
           {/* DAW export ZIP */}
           <button
