@@ -220,6 +220,7 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
 
         logger.info(f"Loop uploaded: {new_loop.id} - {file_key}")
         correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
+        # Single structured event covering both upload and loop creation for log aggregators.
         log_feature_event(
             logger,
             event="upload_success",
@@ -230,15 +231,6 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
             bars=new_loop.bars,
             key=new_loop.musical_key,
             duration_seconds=new_loop.duration_seconds,
-        )
-        log_feature_event(
-            logger,
-            event="loop_created",
-            correlation_id=correlation_id,
-            loop_id=new_loop.id,
-            bpm=new_loop.bpm,
-            bars=new_loop.bars,
-            key=new_loop.musical_key,
         )
         
         # Return endpoints instead of direct file URLs

@@ -39,7 +39,6 @@ def db():
 
 def _make_wav_bytes(duration_ms: int = 100) -> bytes:
     """Generate minimal valid WAV bytes (silent PCM) for upload tests."""
-    import struct
     import wave
 
     buf = io.BytesIO()
