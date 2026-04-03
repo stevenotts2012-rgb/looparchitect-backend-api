@@ -324,3 +324,116 @@ class TestArrangementRetrieval:
         data = response.json()
         assert len(data) == 1
         assert data[0]["loop_id"] == test_loop.id
+
+    def test_list_arrangements_returns_fresh_url_for_done_arrangement(self, test_loop, db, client):
+        """GET /arrangements list must regenerate a fresh presigned URL for done items.
+
+        Phase 1 + Phase 3 regression: list_arrangements must not return the
+        stale URL baked in at job-completion time.  Both output_url and
+        output_file_url must be non-null and point to the same fresh URL.
+        """
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            output_s3_key="arrangements/list_test.wav",
+            output_url="https://expired.example.com/stale-list-url",
+            is_saved=True,
+            saved_at=datetime.utcnow(),
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+
+        response = client.get(f"/api/v1/arrangements/?loop_id={test_loop.id}&include_unsaved=true")
+        assert response.status_code == 200
+        items = response.json()
+        done_items = [i for i in items if i["id"] == arrangement.id]
+        assert len(done_items) == 1
+        item = done_items[0]
+
+        assert item["output_url"] is not None
+        assert item["output_url"] != "https://expired.example.com/stale-list-url"
+        assert item["output_file_url"] == item["output_url"]
+
+    def test_get_processing_arrangement_has_null_audio_url(self, test_loop, db, client):
+        """GET /arrangements/{id} for a processing arrangement must return null audio URLs.
+
+        Phase 1 schema contract: output_url and output_file_url must be None
+        when the arrangement is still being processed — there is no audio to
+        play yet and the frontend must not attempt to load it.
+        """
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="processing",
+            target_seconds=60,
+            output_s3_key=None,
+            output_url=None,
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+
+        response = client.get(f"/api/v1/arrangements/{arrangement.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "processing"
+        assert data["output_url"] is None, "output_url must be null while processing"
+        assert data["output_file_url"] is None, "output_file_url must be null while processing"
+
+    def test_get_failed_arrangement_has_null_audio_url_and_error_message(self, test_loop, db, client):
+        """GET /arrangements/{id} for a failed arrangement must include error_message and null audio.
+
+        Phase 1 schema contract: failed arrangements expose error_message and
+        have null audio URL fields so the frontend can show an actionable error
+        instead of a broken player.
+        """
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="failed",
+            target_seconds=60,
+            output_s3_key=None,
+            output_url=None,
+            error_message="Render job timed out after 900s",
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+
+        response = client.get(f"/api/v1/arrangements/{arrangement.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "failed"
+        assert data["error_message"] is not None
+        assert "timed out" in data["error_message"]
+        assert data["output_url"] is None, "output_url must be null for failed arrangement"
+        assert data["output_file_url"] is None, "output_file_url must be null for failed arrangement"
+
+    def test_arrangement_response_schema_has_required_fields_for_all_statuses(self, test_loop, db, client):
+        """Arrangement GET response must include status, progress, progress_message for all states.
+
+        Phase 1 contract validation: the response schema must be consistent
+        regardless of whether the arrangement is queued, processing, done, or
+        failed.  The frontend relies on these fields to drive state transitions.
+        """
+        required_fields = {"id", "loop_id", "status", "progress", "progress_message",
+                           "error_message", "output_url", "output_file_url", "created_at", "updated_at"}
+
+        for arrangement_status in ("queued", "processing", "done", "failed"):
+            arrangement = Arrangement(
+                loop_id=test_loop.id,
+                status=arrangement_status,
+                target_seconds=60,
+                output_s3_key="arrangements/schema_test.wav" if arrangement_status == "done" else None,
+                output_url=None,
+                error_message="Schema test error" if arrangement_status == "failed" else None,
+            )
+            db.add(arrangement)
+            db.commit()
+            db.refresh(arrangement)
+
+            response = client.get(f"/api/v1/arrangements/{arrangement.id}")
+            assert response.status_code == 200, f"Expected 200 for status={arrangement_status}"
+            data = response.json()
+            for field in required_fields:
+                assert field in data, f"Missing field '{field}' for status={arrangement_status}"

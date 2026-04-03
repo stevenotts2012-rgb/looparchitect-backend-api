@@ -231,6 +231,66 @@ def _ensure_arrangements_schema(db: Session) -> None:
         logger.warning("Could not auto-reconcile arrangements schema on request path", exc_info=True)
 
 
+def _build_arrangement_response(arrangement: Arrangement) -> "ArrangementResponse":
+    """Build a normalized ArrangementResponse with a fresh presigned audio URL.
+
+    For arrangements in ``done`` status with a stable ``output_s3_key``, a
+    new short-lived access URL is derived from the permanent storage key on
+    every call.  This prevents the frontend from receiving an expired S3
+    presigned URL that would cause the audio player to show 0:00.
+
+    For arrangements in any other status (queued, processing, failed) the
+    audio URL fields are always ``None`` — there is no playable audio yet.
+
+    Both ``output_url`` and ``output_file_url`` are set to the same value so
+    that all frontend field names continue to work regardless of which alias
+    the frontend reads.
+
+    Phase 4 note: ``output_s3_key`` is the permanent, stable cache key.
+    ``output_url``/``output_file_url`` are ephemeral access URLs regenerated
+    on every read — never persisted as the canonical client-facing source of
+    truth.
+    """
+    response = ArrangementResponse.from_orm(arrangement)
+
+    if arrangement.status == "done" and arrangement.output_s3_key:
+        try:
+            fresh_url = storage.create_presigned_get_url(
+                arrangement.output_s3_key,
+                expires_seconds=3600,
+                download_filename=f"arrangement_{arrangement.id}.wav",
+            )
+            response = response.model_copy(
+                update={"output_url": fresh_url, "output_file_url": fresh_url}
+            )
+            logger.debug(
+                "_build_arrangement_response: arrangement_id=%s status=done fresh_url_generated=true",
+                arrangement.id,
+            )
+        except (S3StorageError, OSError):
+            logger.warning(
+                "_build_arrangement_response: presigned URL regeneration failed: "
+                "arrangement_id=%s output_s3_key=%s — falling back to stored url",
+                arrangement.id,
+                arrangement.output_s3_key,
+                exc_info=True,
+            )
+            # Fall back: ensure both aliases point to the same stored URL even
+            # if it may be expired, so the frontend has something to try.
+            if response.output_url:
+                response = response.model_copy(
+                    update={"output_file_url": response.output_url}
+                )
+    elif arrangement.status != "done":
+        # Explicitly clear audio URL fields for non-done arrangements so the
+        # frontend never tries to play a partial or missing file.
+        response = response.model_copy(
+            update={"output_url": None, "output_file_url": None}
+        )
+
+    return response
+
+
 def _extract_sections_for_export(arrangement: Arrangement) -> list[dict]:
     sections: list[dict] = []
 
@@ -500,7 +560,7 @@ def list_arrangements(
         else:
             synced_arrangements.append(arrangement)
     
-    return [ArrangementResponse.from_orm(item) for item in synced_arrangements]
+    return [_build_arrangement_response(item) for item in synced_arrangements]
 
 
 def _map_style_params_to_overrides(style_params: dict | None) -> StyleOverrides | None:
@@ -1154,44 +1214,14 @@ def get_arrangement(
 
     arrangement = _sync_arrangement_status_from_job(db, arrangement)
 
-    response = ArrangementResponse.from_orm(arrangement)
-
-    # Regenerate a fresh presigned URL on every read when the arrangement is done.
-    # The URL stored in arrangement.output_url at job-completion time expires after
-    # 3600 s. Returning a stale / expired URL causes the audio player to receive a
-    # 403 from S3 and display 0:00 / 0:00. We always derive a new URL from the
-    # permanent output_s3_key so the response is always browser-usable.
-    if arrangement.status == "done" and arrangement.output_s3_key:
-        try:
-            fresh_url = storage.create_presigned_get_url(
-                arrangement.output_s3_key,
-                expires_seconds=3600,
-                download_filename=f"arrangement_{arrangement_id}.wav",
-            )
-            response = response.model_copy(
-                update={"output_url": fresh_url, "output_file_url": fresh_url}
-            )
-            logger.info(
-                "GET arrangement: arrangement_id=%s status=done output_s3_key=%s "
-                "fresh_url_generated=true",
-                arrangement_id,
-                arrangement.output_s3_key,
-            )
-        except (S3StorageError, OSError):
-            logger.warning(
-                "GET arrangement: failed to regenerate presigned URL: "
-                "arrangement_id=%s output_s3_key=%s — returning stored url",
-                arrangement_id,
-                arrangement.output_s3_key,
-                exc_info=True,
-            )
-            # Fall back: copy the stale stored URL into output_file_url so both
-            # field names are populated even if the URL may be expired.
-            if response.output_url:
-                response = response.model_copy(
-                    update={"output_file_url": response.output_url}
-                )
-
+    response = _build_arrangement_response(arrangement)
+    logger.info(
+        "GET arrangement: arrangement_id=%s status=%s output_s3_key=%s audio_url_set=%s",
+        arrangement_id,
+        arrangement.status,
+        arrangement.output_s3_key,
+        response.output_url is not None,
+    )
     return response
 
 

@@ -29,6 +29,23 @@ def db():
 
 
 @pytest.fixture
+def test_loop_for_export(db):
+    """Minimal loop for DAW export endpoint tests that do not need a rendered file."""
+    loop = Loop(
+        name="DAW Export Minimal Loop",
+        file_key="uploads/minimal_loop.wav",
+        bpm=120.0,
+        musical_key="C",
+        genre="electronic",
+        duration_seconds=4.0,
+    )
+    db.add(loop)
+    db.commit()
+    db.refresh(loop)
+    return loop
+
+
+@pytest.fixture
 def completed_arrangement(db):
     uploads = Path("uploads")
     uploads.mkdir(exist_ok=True)
@@ -133,3 +150,88 @@ def test_daw_export_generates_zip_and_download_url(client, db, completed_arrange
 
     refreshed = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
     assert refreshed is not None
+
+
+def test_daw_export_reuses_cached_zip_on_second_call(client, db, completed_arrangement):
+    """Second call to /daw-export must reuse the cached ZIP, not regenerate it.
+
+    Phase 2 regression: the endpoint must be idempotent.  Calling it twice
+    should return the same download_url and not raise an error or produce a
+    different export_s3_key.
+    """
+    arrangement_id = completed_arrangement.id
+
+    first = client.get(f"/api/v1/arrangements/{arrangement_id}/daw-export")
+    assert first.status_code == 200
+    first_data = first.json()
+    assert first_data["ready_for_export"] is True
+
+    second = client.get(f"/api/v1/arrangements/{arrangement_id}/daw-export")
+    assert second.status_code == 200
+    second_data = second.json()
+
+    assert second_data["ready_for_export"] is True
+    assert second_data["download_url"] == first_data["download_url"]
+    assert second_data["export_s3_key"] == first_data["export_s3_key"]
+
+
+def test_daw_export_returns_not_ready_for_processing_arrangement(client, db, test_loop_for_export):
+    """GET /daw-export on a processing arrangement must return ready_for_export=false.
+
+    Phase 2 contract: the endpoint must not attempt ZIP generation when the
+    arrangement is still being processed.
+    """
+    arrangement = Arrangement(
+        loop_id=test_loop_for_export.id,
+        status="processing",
+        target_seconds=30,
+        output_s3_key=None,
+    )
+    db.add(arrangement)
+    db.commit()
+    db.refresh(arrangement)
+
+    response = client.get(f"/api/v1/arrangements/{arrangement.id}/daw-export")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ready_for_export"] is False
+    assert data["status"] == "processing"
+    assert "message" in data
+
+
+def test_daw_export_returns_404_when_arrangement_not_found(client):
+    """GET /daw-export for a non-existent arrangement_id must return 404.
+
+    Phase 2 contract: missing arrangement ID must not cause a 500.
+    """
+    response = client.get("/api/v1/arrangements/999999/daw-export")
+    assert response.status_code == 404
+
+
+def test_daw_export_download_returns_404_when_zip_not_generated(client, db, test_loop_for_export):
+    """GET /daw-export/download before ZIP is generated must return 404.
+
+    Phase 2 contract: the download endpoint must not silently return an empty
+    body when the ZIP has not been generated yet.
+    """
+    arrangement = Arrangement(
+        loop_id=test_loop_for_export.id,
+        status="done",
+        target_seconds=30,
+        output_s3_key=f"arrangements/{test_loop_for_export.id}_no_zip.wav",
+    )
+    db.add(arrangement)
+    db.commit()
+    db.refresh(arrangement)
+
+    response = client.get(f"/api/v1/arrangements/{arrangement.id}/daw-export/download")
+    assert response.status_code == 404
+    data = response.json()
+    assert "detail" in data
+
+
+def test_daw_export_download_returns_404_for_missing_arrangement(client):
+    """GET /daw-export/download for a non-existent arrangement_id must return 404."""
+    response = client.get("/api/v1/arrangements/999999/daw-export/download")
+    assert response.status_code == 404
+

@@ -914,14 +914,99 @@ Overall:
 
 ---
 
+## 5-Phase Production Hardening Regression Checklist
+
+*Added 2026-04-03 — covers all regression risks addressed across Phases 1–5.*
+
+### Phase 1 — Audio URL Stability
+
+| # | Scenario | Expected | Verified |
+|---|----------|----------|---------|
+| 1.1 | GET /arrangements/{id} with status=done | output_url and output_file_url are **non-null** and point to fresh presigned URL | ☐ |
+| 1.2 | GET /arrangements/{id} with status=done when stored output_url is expired | Fresh URL regenerated from output_s3_key; stale URL **never** returned | ☐ |
+| 1.3 | GET /arrangements/?loop_id=X includes a done arrangement | List item has **non-null** output_url derived fresh from output_s3_key | ☐ |
+| 1.4 | GET /arrangements/{id} with status=processing | output_url **is null**, progress_message is descriptive | ☐ |
+| 1.5 | GET /arrangements/{id} with status=failed | output_url **is null**, error_message is populated | ☐ |
+| 1.6 | GET /arrangements/{id} with status=queued | output_url **is null**, progress_message is set or null | ☐ |
+| 1.7 | Repeated GET /arrangements/{id} polls (10+) on done arrangement | Same non-null URL every time, player never resets to 0:00 | ☐ |
+| 1.8 | GET /health/ready with Redis down | Returns 503 with structured JSON; never crashes | ☐ |
+| 1.9 | GET /health/queue with Redis down | Returns 200 with redis_ok=false, error field populated | ☐ |
+| 1.10 | GET /health/worker with no workers registered | Returns 200 with ok=false, worker_count=0 | ☐ |
+
+### Phase 2 — DAW Export ZIP
+
+| # | Scenario | Expected | Verified |
+|---|----------|----------|---------|
+| 2.1 | GET /arrangements/{id}/daw-export on done arrangement | ready_for_export=true, download_url is populated, ZIP created | ☐ |
+| 2.2 | GET /arrangements/{id}/daw-export called twice | Second call reuses cached ZIP; same download_url returned | ☐ |
+| 2.3 | GET /arrangements/{id}/daw-export on processing arrangement | ready_for_export=false, message field explains why | ☐ |
+| 2.4 | GET /arrangements/{id}/daw-export on non-existent ID | 404 response | ☐ |
+| 2.5 | GET /arrangements/{id}/daw-export/download before ZIP generated | 404 response, not empty body | ☐ |
+| 2.6 | GET /arrangements/{id}/daw-export/download after ZIP generated | 200 with content-type: application/zip, non-empty body | ☐ |
+| 2.7 | Downloaded ZIP contains all required files | stems/kick.wav, stems/bass.wav, stems/snare.wav, stems/hats.wav, stems/melody.wav, stems/pads.wav, markers.csv, tempo_map.json, README.txt | ☐ |
+| 2.8 | All stem WAV files have identical duration | len(set(durations)) == 1 (DAW alignment requirement) | ☐ |
+| 2.9 | ZIP filename in Content-Disposition | `arrangement_{id}_daw_export.zip` | ☐ |
+
+### Phase 3 — Audio Preload Speed
+
+| # | Scenario | Expected | Verified |
+|---|----------|----------|---------|
+| 3.1 | Time from arrangement done → first GET returning audio_url | < 1 poll cycle (URL is returned in same response that shows status=done) | ☐ |
+| 3.2 | Frontend receives output_url immediately in done response | No second round-trip needed to get the audio URL | ☐ |
+| 3.3 | Worker sets progress_message at each stage | "Downloading audio" → "Loading audio" → "Rendering" → "Uploading" visible in polls | ☐ |
+
+### Phase 4 — Cache Safety (No Stale URL as Source of Truth)
+
+| # | Scenario | Expected | Verified |
+|---|----------|----------|---------|
+| 4.1 | Arrangement DB row has expired output_url, fresh output_s3_key | GET regenerates from output_s3_key; expired URL not surfaced | ☐ |
+| 4.2 | List endpoint for done arrangements | Each done item gets fresh URL (not DB-cached URL) | ☐ |
+| 4.3 | DAW export ZIP already in storage | Reused from storage key; no re-generation | ☐ |
+| 4.4 | DAW export ZIP missing from storage | Regenerated and stored; next call reuses | ☐ |
+| 4.5 | output_s3_key is null for a done arrangement | Graceful fallback; warning logged; does not 500 | ☐ |
+
+### Phase 5 — UX Progress Messages
+
+| # | Status | Expected progress_message | Verified |
+|---|--------|--------------------------|---------|
+| 5.1 | queued | null or "Queued" | ☐ |
+| 5.2 | processing (early) | "Worker accepted job" | ☐ |
+| 5.3 | processing (audio load) | "Loading audio" or "Downloading audio" | ☐ |
+| 5.4 | processing (render) | "Rendering" or "Rendering from render_plan_json" | ☐ |
+| 5.5 | processing (upload) | "Uploading" | ☐ |
+| 5.6 | done | "Arrangement job completed" | ☐ |
+| 5.7 | failed | "Worker failed" or specific timeout message | ☐ |
+
+---
+
+## Automated Regression Test Coverage
+
+Run the following test commands to verify regression coverage:
+
+```bash
+# Phase 1: Arrangement response contract
+python3 -m pytest tests/routes/test_arrangements.py -v
+
+# Phase 2: DAW export end-to-end
+python3 -m pytest tests/routes/test_daw_export_route.py -v
+
+# All route tests
+python3 -m pytest tests/routes/ --ignore=tests/routes/test_loops_s3_integration.py --ignore=tests/services/test_stem_engine.py -v
+```
+
+Expected: All tests pass. The `test_loops_s3_integration.py` requires `moto` (pip install moto).
+
+---
+
 ## Document History
 
 | Date | Version | Status | Notes |
 |------|---------|--------|-------|
 | 2026-03-08 | 1.0 | Complete | Initial production smoke test with unified executor |
+| 2026-04-03 | 2.0 | Updated | Added 5-phase regression checklist covering audio URL stability, DAW export, preload speed, cache safety, UX progress messages |
 
 ---
 
 **Created by:** GitHub Copilot  
-**Last Updated:** 2026-03-08  
-**Related Tickets:** P1-1 (DAW export), P1-2 (worker unification), P1-3 (FFmpeg readiness)
+**Last Updated:** 2026-04-03  
+**Related Tickets:** P1-1 (DAW export), P1-2 (worker unification), P1-3 (FFmpeg readiness), Phase 1–5 production hardening
