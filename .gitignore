@@ -100,3 +100,6 @@ dist/
 # Miscellaneous
 .dirlocals
 .projectlocals
+# Frontend
+looparchitect-frontend/node_modules/
+looparchitect-frontend/.next/
