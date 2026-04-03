@@ -233,13 +233,21 @@ class TestArrangementRetrieval:
     """Test arrangement GET endpoints."""
 
     def test_get_arrangement_returns_record(self, test_loop, db, client):
-        """GET /arrangements/{id} should return arrangement record."""
+        """GET /arrangements/{id} should return arrangement record.
+
+        When the arrangement is done and has an output_s3_key, the endpoint must
+        regenerate a fresh presigned URL (in local storage mode this is
+        /uploads/<filename>) rather than returning the stale URL that was baked
+        into output_url at completion time.  Both output_url and output_file_url
+        must be populated and non-null so the audio player can load the file.
+        """
         arrangement = Arrangement(
             loop_id=test_loop.id,
             status="done",
             target_seconds=180,
             output_s3_key="arrangements/1.wav",
-            output_url="https://example.com/arrangements/1.wav",
+            # This is the stale URL that was baked in at job-completion time.
+            output_url="https://expired-presigned-url.example.com/stale",
         )
         db.add(arrangement)
         db.commit()
@@ -252,7 +260,44 @@ class TestArrangementRetrieval:
         assert data["id"] == arrangement.id
         assert data["status"] == "done"
         assert data["output_s3_key"] == "arrangements/1.wav"
-        assert data["output_url"] == "https://example.com/arrangements/1.wav"
+        # The endpoint must return a *fresh* URL derived from output_s3_key, not
+        # the stale stored value.  In local mode the storage backend returns a
+        # /uploads/<filename> path.
+        assert data["output_url"] is not None
+        assert data["output_url"] != "https://expired-presigned-url.example.com/stale"
+        # output_file_url must mirror output_url so both field names work.
+        assert data["output_file_url"] == data["output_url"]
+
+    def test_get_done_arrangement_audio_url_is_not_null(self, test_loop, db, client):
+        """Completed arrangement response must include a playable audio URL.
+
+        This is the regression guard for the 0:00/0:00 preview bug: when status
+        is DONE, both output_url and output_file_url must be non-null so the
+        frontend audio player can load the file.
+        """
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            output_s3_key="arrangements/42.wav",
+            output_url=None,  # Simulate a row where the stored URL is missing/cleared
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+
+        response = client.get(f"/api/v1/arrangements/{arrangement.id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "done"
+        # Both audio URL fields must be non-null for a completed arrangement
+        assert data["output_url"] is not None, (
+            "output_url must not be null when status=done (frontend audio player field)"
+        )
+        assert data["output_file_url"] is not None, (
+            "output_file_url must not be null when status=done (frontend audio player alias)"
+        )
 
     def test_list_arrangements_filters_by_loop_id(self, test_loop, db, client):
         """GET /arrangements?loop_id should filter results."""

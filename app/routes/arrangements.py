@@ -50,7 +50,7 @@ from app.services.style_direction_engine import StyleDirectionEngine
 from app.services.render_plan import RenderPlanGenerator
 from app.services.arrangement_validator import ArrangementValidator
 from app.services.daw_export import DAWExporter
-from app.services.storage import storage
+from app.services.storage import storage, S3StorageError
 from app.services.arrangement_planner import (
     arrangement_planner_service,
     validate_arrangement_plan,
@@ -1154,7 +1154,45 @@ def get_arrangement(
 
     arrangement = _sync_arrangement_status_from_job(db, arrangement)
 
-    return ArrangementResponse.from_orm(arrangement)
+    response = ArrangementResponse.from_orm(arrangement)
+
+    # Regenerate a fresh presigned URL on every read when the arrangement is done.
+    # The URL stored in arrangement.output_url at job-completion time expires after
+    # 3600 s. Returning a stale / expired URL causes the audio player to receive a
+    # 403 from S3 and display 0:00 / 0:00. We always derive a new URL from the
+    # permanent output_s3_key so the response is always browser-usable.
+    if arrangement.status == "done" and arrangement.output_s3_key:
+        try:
+            fresh_url = storage.create_presigned_get_url(
+                arrangement.output_s3_key,
+                expires_seconds=3600,
+                download_filename=f"arrangement_{arrangement_id}.wav",
+            )
+            response = response.model_copy(
+                update={"output_url": fresh_url, "output_file_url": fresh_url}
+            )
+            logger.info(
+                "GET arrangement: arrangement_id=%s status=done output_s3_key=%s "
+                "fresh_url_generated=true",
+                arrangement_id,
+                arrangement.output_s3_key,
+            )
+        except (S3StorageError, OSError):
+            logger.warning(
+                "GET arrangement: failed to regenerate presigned URL: "
+                "arrangement_id=%s output_s3_key=%s — returning stored url",
+                arrangement_id,
+                arrangement.output_s3_key,
+                exc_info=True,
+            )
+            # Fall back: copy the stale stored URL into output_file_url so both
+            # field names are populated even if the URL may be expired.
+            if response.output_url:
+                response = response.model_copy(
+                    update={"output_file_url": response.output_url}
+                )
+
+    return response
 
 
 @router.get(

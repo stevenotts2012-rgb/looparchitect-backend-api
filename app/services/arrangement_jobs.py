@@ -2386,6 +2386,13 @@ def run_arrangement_job(arrangement_id: int):
         arrangement.error_message = None
         db.commit()
 
+        logger.info(
+            "ARRANGEMENT_DONE arrangement_id=%s loop_id=%s output_s3_key=%s "
+            "api_response_field=output_url",
+            arrangement_id,
+            arrangement.loop_id,
+            output_key,
+        )
         logger.info(f"Successfully completed arrangement {arrangement_id}")
         log_feature_event(
             logger,
