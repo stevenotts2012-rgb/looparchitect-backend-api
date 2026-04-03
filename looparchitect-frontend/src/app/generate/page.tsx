@@ -13,14 +13,20 @@
  *      completed   → "Completed"   (backend stores as "succeeded"; API normalises)
  *      failed      → "Failed"
  * 5. Stops polling automatically when status is "completed" or "failed"
+ * 6. Shows an audio preview player using the signed URL from output_files
+ * 7. Allows WAV and DAW export (ZIP) downloads when completed
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   generateArrangement,
   getJobStatus,
   downloadArrangement,
+  getDawExportInfo,
+  downloadDawExport,
   isTerminalJobStatus,
+  BACKEND_BASE_URL,
   type GenerateArrangementResponse,
   type JobStatus,
   type JobStatusResponse,
@@ -48,12 +54,27 @@ interface PageState {
 // ---------------------------------------------------------------------------
 
 export default function GeneratePage() {
+  const searchParams = useSearchParams();
+
   const [form, setForm] = useState<PageState>({
     loopId: "",
     targetSeconds: "60",
     genre: "Trap",
     styleText: "",
   });
+
+  // Pre-populate loopId from ?loopId= query parameter (set by upload page).
+  // The ref ensures we apply it only on the first render so the user can freely
+  // edit the field afterwards without it being reset on subsequent re-renders.
+  const appliedQueryLoopId = useRef(false);
+  useEffect(() => {
+    if (appliedQueryLoopId.current) return;
+    const qLoopId = searchParams.get("loopId");
+    if (qLoopId) {
+      setForm((f) => ({ ...f, loopId: qLoopId }));
+      appliedQueryLoopId.current = true;
+    }
+  }, [searchParams]);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
@@ -68,6 +89,10 @@ export default function GeneratePage() {
   // Current job status polled from GET /api/v1/jobs/{job_id}
   const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
+
+  // DAW export state
+  const [isDawExporting, setIsDawExporting] = useState(false);
+  const [dawExportError, setDawExportError] = useState<string | null>(null);
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -189,6 +214,39 @@ export default function GeneratePage() {
   };
 
   // ---------------------------------------------------------------------------
+  // DAW export handler
+  // ---------------------------------------------------------------------------
+
+  const handleDawExport = async () => {
+    if (!generateResponse?.arrangement_id) return;
+    setIsDawExporting(true);
+    setDawExportError(null);
+    try {
+      // Generate (or retrieve cached) ZIP on the backend
+      const info = await getDawExportInfo(generateResponse.arrangement_id);
+      if (!info.ready_for_export) {
+        throw new Error(
+          info.message ?? "Arrangement is not ready for DAW export."
+        );
+      }
+      // Download ZIP directly from Railway (bypasses Vercel 4.5 MB limit)
+      const blob = await downloadDawExport(generateResponse.arrangement_id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `arrangement-${generateResponse.arrangement_id}-daw-export.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setDawExportError(
+        err instanceof Error ? err.message : "Failed to download DAW export."
+      );
+    } finally {
+      setIsDawExporting(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
   // Derived UI state
   // ---------------------------------------------------------------------------
 
@@ -204,6 +262,26 @@ export default function GeneratePage() {
   const isFailed = currentStatus === "failed";
   const isInProgress =
     currentStatus === "queued" || currentStatus === "processing";
+
+  /**
+   * Audio preview URL — prefer the presigned URL from output_files (works for
+   * both S3 and local storage); fall back to the streaming download endpoint
+   * served directly from the Railway backend.
+   */
+  const audioSrc: string | null = (() => {
+    if (!isCompleted || !generateResponse?.arrangement_id) return null;
+    const signedUrl = jobStatus?.output_files?.find(
+      (f) => f.content_type?.startsWith("audio") && f.signed_url
+    )?.signed_url;
+    if (signedUrl) {
+      // Relative local-storage paths (/uploads/…) need the backend origin
+      return signedUrl.startsWith("http")
+        ? signedUrl
+        : `${BACKEND_BASE_URL}${signedUrl}`;
+    }
+    // Fallback: stream directly from backend (bypasses Vercel limit)
+    return `${BACKEND_BASE_URL}/api/v1/arrangements/${generateResponse.arrangement_id}/download`;
+  })();
 
   // ---------------------------------------------------------------------------
   // Render
@@ -345,13 +423,43 @@ export default function GeneratePage() {
 
       {/* Download — only shown when completed */}
       {isCompleted && generateResponse?.arrangement_id && (
-        <section>
+        <section className="space-y-3">
+          {/* Audio preview */}
+          {audioSrc && (
+            <div>
+              <p className="text-sm font-medium mb-1">Preview</p>
+              <audio
+                controls
+                src={audioSrc}
+                className="w-full"
+                preload="metadata"
+              >
+                Your browser does not support the audio element.
+              </audio>
+            </div>
+          )}
+
+          {/* WAV download */}
           <button
             onClick={handleDownload}
             className="w-full bg-green-600 text-white py-2 rounded"
           >
             Download Arrangement (WAV)
           </button>
+
+          {/* DAW export ZIP */}
+          <button
+            onClick={handleDawExport}
+            disabled={isDawExporting}
+            className="w-full bg-purple-600 text-white py-2 rounded disabled:opacity-50"
+          >
+            {isDawExporting
+              ? "Preparing DAW export…"
+              : "Download DAW Export (ZIP)"}
+          </button>
+          {dawExportError && (
+            <p className="text-sm text-red-600">{dawExportError}</p>
+          )}
         </section>
       )}
     </main>

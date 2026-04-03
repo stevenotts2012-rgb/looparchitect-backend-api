@@ -62,6 +62,15 @@ const UPLOAD_BACKEND_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   "https://web-production-3afc5.up.railway.app";
 
+/**
+ * Absolute backend URL used for large-body downloads (DAW export ZIP, audio
+ * files) that must bypass the Vercel 4.5 MB response-body limit.
+ *
+ * Same resolution order as UPLOAD_BACKEND_URL so both always point to the
+ * same Railway instance.
+ */
+export const BACKEND_BASE_URL: string = UPLOAD_BACKEND_URL;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -285,14 +294,81 @@ export async function uploadLoop(
 
 /**
  * Download the generated arrangement WAV as a Blob.
+ *
+ * Uses BACKEND_BASE_URL directly to bypass Vercel's 4.5 MB response-body
+ * limit for large audio files.
  */
 export async function downloadArrangement(arrangementId: number): Promise<Blob> {
   const response = await fetch(
-    `${API_BASE}/api/v1/arrangements/${arrangementId}/download`
+    `${BACKEND_BASE_URL}/api/v1/arrangements/${arrangementId}/download`
   );
   if (!response.ok) {
     throw new Error(
       `Download failed: ${response.status} ${response.statusText}`
+    );
+  }
+  return response.blob();
+}
+
+// ---------------------------------------------------------------------------
+// DAW export
+// ---------------------------------------------------------------------------
+
+/**
+ * Response from GET /api/v1/arrangements/{id}/daw-export
+ *
+ * When ready_for_export is true the ZIP has been generated (or was already
+ * cached) and download_url points to the download endpoint.
+ */
+export interface DawExportInfoResponse {
+  arrangement_id: number;
+  ready_for_export: boolean;
+  /** Present when arrangement is not yet done. */
+  status?: string;
+  message?: string;
+  supported_daws?: string[];
+  /** Relative path to the download endpoint, e.g. /api/v1/arrangements/1/daw-export/download */
+  download_url?: string;
+  export_s3_key?: string;
+  contents?: {
+    stems: string[];
+    midi: string[];
+    metadata: string[];
+  };
+  sections?: unknown[];
+  midi_note?: string;
+}
+
+/**
+ * Trigger DAW export ZIP generation and return metadata.
+ *
+ * Calling this endpoint causes the backend to build and cache the ZIP if it
+ * does not already exist.  Call downloadDawExport() afterwards to fetch the
+ * file.
+ */
+export async function getDawExportInfo(
+  arrangementId: number
+): Promise<DawExportInfoResponse> {
+  return apiFetch<DawExportInfoResponse>(
+    `/api/v1/arrangements/${arrangementId}/daw-export`
+  );
+}
+
+/**
+ * Download the DAW export ZIP as a Blob.
+ *
+ * Uses BACKEND_BASE_URL directly (bypasses Vercel's 4.5 MB response-body
+ * limit — the same reason uploads bypass the proxy).
+ *
+ * Always call getDawExportInfo() first so the backend generates the ZIP.
+ */
+export async function downloadDawExport(arrangementId: number): Promise<Blob> {
+  const response = await fetch(
+    `${BACKEND_BASE_URL}/api/v1/arrangements/${arrangementId}/daw-export/download`
+  );
+  if (!response.ok) {
+    throw new Error(
+      `DAW export download failed: ${response.status} ${response.statusText}`
     );
   }
   return response.blob();
