@@ -1430,31 +1430,46 @@ def get_daw_export_info(
 
     export_key = f"exports/{arrangement.id}.zip"
     if not storage.file_exists(export_key):
-        full_mix_audio = _load_output_audio_segment(arrangement)
-        loop = db.query(Loop).filter(Loop.id == arrangement.loop_id).first()
-        tempo = float(loop.bpm) if loop and loop.bpm else 120.0
-        musical_key = loop.musical_key if loop and loop.musical_key else "C"
-        sections = _extract_sections_for_export(arrangement)
-        midi_artifacts = _collect_existing_midi_artifacts(arrangement.id)
+        logger.info("DAW export: generating ZIP for arrangement %s (key=%s)", arrangement.id, export_key)
+        try:
+            full_mix_audio = _load_output_audio_segment(arrangement)
+            loop = db.query(Loop).filter(Loop.id == arrangement.loop_id).first()
+            tempo = float(loop.bpm) if loop and loop.bpm else 120.0
+            musical_key = loop.musical_key if loop and loop.musical_key else "C"
+            sections = _extract_sections_for_export(arrangement)
+            midi_artifacts = _collect_existing_midi_artifacts(arrangement.id)
 
-        zip_bytes, contents = DAWExporter.build_export_zip(
-            arrangement_id=arrangement.id,
-            full_mix=full_mix_audio,
-            bpm=tempo,
-            musical_key=musical_key,
-            sections=sections,
-            midi_files=midi_artifacts,
-        )
+            zip_bytes, contents = DAWExporter.build_export_zip(
+                arrangement_id=arrangement.id,
+                full_mix=full_mix_audio,
+                bpm=tempo,
+                musical_key=musical_key,
+                sections=sections,
+                midi_files=midi_artifacts,
+            )
 
-        storage.upload_file(
-            file_bytes=zip_bytes,
-            content_type="application/zip",
-            key=export_key,
-        )
+            logger.info(
+                "DAW export: ZIP generated for arrangement %s (size=%d bytes), uploading to key=%s",
+                arrangement.id,
+                len(zip_bytes),
+                export_key,
+            )
+            storage.upload_file(
+                file_bytes=zip_bytes,
+                content_type="application/zip",
+                key=export_key,
+            )
+        except Exception:
+            logger.exception("DAW export: failed to generate/upload ZIP for arrangement %s", arrangement.id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate DAW export ZIP.",
+            )
         arrangement.stems_zip_url = f"/api/v1/arrangements/{arrangement.id}/daw-export/download"
         db.commit()
         db.refresh(arrangement)
     else:
+        logger.info("DAW export: cached ZIP found for arrangement %s (key=%s)", arrangement.id, export_key)
         sections = _extract_sections_for_export(arrangement)
         contents = {
             "stems": [
@@ -1475,6 +1490,7 @@ def get_daw_export_info(
         db.refresh(arrangement)
 
     download_url = arrangement.stems_zip_url or f"/api/v1/arrangements/{arrangement.id}/daw-export/download"
+    logger.info("DAW export: returning download_url=%s for arrangement %s", download_url, arrangement.id)
 
     return {
         "arrangement_id": arrangement.id,
@@ -1507,10 +1523,13 @@ def download_daw_export(
 
     export_key = f"exports/{arrangement.id}.zip"
     if not storage.file_exists(export_key):
+        logger.warning("DAW export download: ZIP not found for arrangement %s (key=%s)", arrangement_id, export_key)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="DAW export ZIP has not been generated yet.",
+            detail="DAW export ZIP has not been generated yet. Call GET /daw-export first.",
         )
+
+    logger.info("DAW export download: serving %s for arrangement %s", export_key, arrangement_id)
 
     storage_backend = settings.get_storage_backend()
     download_filename = f"arrangement_{arrangement_id}_daw_export.zip"
