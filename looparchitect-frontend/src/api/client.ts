@@ -6,35 +6,61 @@
  * Request routing
  * ───────────────
  * LOCAL DEV (NEXT_PUBLIC_API_URL unset — recommended):
- *   All paths are sent as relative URLs (e.g. /api/v1/…) so Next.js's
- *   catch-all proxy at src/app/api/[...path]/route.ts forwards them to
- *   the FastAPI backend at http://127.0.0.1:8000.
+ *   All non-upload paths are sent as relative URLs (e.g. /api/v1/…) so
+ *   Next.js's catch-all proxy at src/app/api/[...path]/route.ts forwards them
+ *   to the FastAPI backend at http://127.0.0.1:8000.
  *   The browser never contacts the backend directly; CORS is not an issue.
  *
  * PRODUCTION (NEXT_PUBLIC_API_URL set):
  *   Requests go directly from the browser to the configured backend origin.
  *   The backend must include the frontend origin in its CORS allowlist.
  *
- * Upload flow (local dev):
- *   browser → POST /api/v1/loops/with-file (relative)
- *          → Next.js proxy (src/app/api/[...path]/route.ts, port 3000)
- *          → FastAPI POST /api/v1/loops/with-file (port 8000)
+ * Upload flow:
+ *   Multipart file uploads ALWAYS go directly to the Railway backend to avoid
+ *   Vercel's 4.5 MB body-size limit (HTTP 413 Content Too Large).
+ *   browser → POST https://web-production-3afc5.up.railway.app/api/v1/loops/with-file
+ *          → FastAPI POST /api/v1/loops/with-file
  *
  * Polling for job status uses GET /api/v1/jobs/{job_id} — the real
  * render-job endpoint — rather than guessing state from the arrangements list.
  */
 
 /**
- * Base URL for all API calls.
+ * Base URL for all non-file API calls.
  *
  * LOCAL DEV: Leave NEXT_PUBLIC_API_URL unset.  The empty string causes fetch
  * to send relative URLs (e.g. /api/v1/…) which are forwarded to the FastAPI
  * backend (http://127.0.0.1:8000) by the Next.js catch-all proxy.
  *
  * PRODUCTION: Set NEXT_PUBLIC_API_URL to the deployed backend origin so the
- * browser contacts it directly (e.g. https://api-production-xxx.up.railway.app).
+ * browser contacts it directly (e.g. https://web-production-3afc5.up.railway.app).
  */
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+
+/**
+ * Base URL used exclusively for multipart file uploads.
+ *
+ * File uploads must bypass the Vercel deployment to avoid the 4.5 MB
+ * request-body limit (HTTP 413 Content Too Large).  This constant always
+ * resolves to an absolute backend origin so the browser sends the multipart
+ * POST directly to Railway.
+ *
+ * Resolution order (first non-empty value wins):
+ *   1. NEXT_PUBLIC_UPLOAD_URL  — dedicated upload override (recommended for
+ *      production; set to https://web-production-3afc5.up.railway.app)
+ *   2. NEXT_PUBLIC_API_URL     — shared backend origin (also works)
+ *   3. "https://web-production-3afc5.up.railway.app"  — hard-coded fallback
+ *      so uploads work even when neither env var is set in the Vercel build.
+ *
+ * Note: In local development where both env vars are unset, uploads will go
+ * directly to the Railway backend (not through the Next.js proxy).  Set
+ * NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 in .env.local to route local
+ * uploads to your local FastAPI instance instead.
+ */
+const UPLOAD_BACKEND_URL =
+  process.env.NEXT_PUBLIC_UPLOAD_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://web-production-3afc5.up.railway.app";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -216,10 +242,12 @@ export function isTerminalJobStatus(status: JobStatus): boolean {
 /**
  * Upload an audio file and create a Loop record.
  *
- * Sends a multipart/form-data POST to POST /api/v1/loops/with-file.
+ * Sends a multipart/form-data POST directly to the Railway backend.
+ * The request bypasses the Vercel/Next.js proxy to avoid the 4.5 MB
+ * body-size limit (HTTP 413 Content Too Large).
  *
- * Request path: browser → Next.js proxy (/api/v1/loops/with-file)
- *               → FastAPI POST /api/v1/loops/with-file
+ * Request path: browser → POST https://web-production-3afc5.up.railway.app/api/v1/loops/with-file
+ *                       → FastAPI POST /api/v1/loops/with-file
  *
  * The `Content-Type` header is intentionally omitted so the browser
  * can set the correct multipart boundary automatically.
@@ -236,7 +264,7 @@ export async function uploadLoop(
   formData.append("file", file);
   formData.append("loop_in", JSON.stringify(metadata));
 
-  const response = await fetch(`${API_BASE}/api/v1/loops/with-file`, {
+  const response = await fetch(`${UPLOAD_BACKEND_URL}/api/v1/loops/with-file`, {
     method: "POST",
     body: formData,
     // Do NOT set Content-Type — the browser sets it automatically,
