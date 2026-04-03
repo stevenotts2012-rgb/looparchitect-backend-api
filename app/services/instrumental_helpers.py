@@ -1,5 +1,10 @@
 """Helpers for instrumental_renderer - copied/adapted from arrangement_jobs.py"""
 
+import io
+
+from pydub import AudioSegment
+
+
 def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
     """Load audio bytes multi-format fallback."""
     if not wav_bytes or len(wav_bytes) < 44:
