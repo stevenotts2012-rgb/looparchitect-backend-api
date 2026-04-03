@@ -3,6 +3,18 @@ AWS S3 Storage Service for Audio Files
 
 Provides S3 upload, deletion, and presigned URL generation.
 Falls back to local storage in development when S3 is not configured.
+
+Presigned URL contract:
+- ``output_s3_key`` (e.g. ``arrangements/<id>.wav``) is the permanent, stable
+  object key stored in the database.  It never changes after the render job
+  completes.
+- ``create_presigned_get_url(key)`` generates a short-lived access URL on
+  demand.  These URLs expire (default 3600 s) and must never be persisted as
+  the canonical client-facing audio URL — they are regenerated on every GET
+  request by the arrangement endpoint.
+- In local-storage mode (development) a ``/uploads/<filename>`` path is
+  returned instead; it has the same ephemeral semantics from the caller's
+  perspective.
 """
 
 import logging
@@ -11,6 +23,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from app.config import settings
+from app.services.audit_logging import log_feature_event
 
 logger = logging.getLogger(__name__)
 
@@ -258,21 +271,50 @@ class S3Storage:
             )
             
             logger.info(f"🔗 Generated presigned URL for: {key} (expires in {expires_seconds}s)")
+            log_feature_event(
+                logger,
+                event="presigned_url_generated",
+                key=key,
+                expires_seconds=expires_seconds,
+                backend="s3",
+            )
             return url
         except self.ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_msg = e.response.get('Error', {}).get('Message', str(e))
             logger.error(f"Presigned URL generation failed [{error_code}]: {error_msg}")
+            log_feature_event(
+                logger,
+                event="presigned_url_failed",
+                key=key,
+                backend="s3",
+                error_code=error_code,
+                error=error_msg,
+            )
             raise S3StorageError(f"Failed to generate presigned URL: {error_msg}") from e
         except Exception as e:
             logger.error(f"Unexpected error generating presigned URL: {e}")
+            log_feature_event(
+                logger,
+                event="presigned_url_failed",
+                key=key,
+                backend="s3",
+                error=str(e),
+            )
             raise S3StorageError(f"Presigned URL generation failed: {e}") from e
     
     def _generate_local_url(self, key: str) -> str:
         """Generate local file URL (development fallback)."""
         # Extract filename from key
         filename = key.split("/")[-1]
-        return f"/uploads/{filename}"
+        local_url = f"/uploads/{filename}"
+        log_feature_event(
+            logger,
+            event="presigned_url_generated",
+            key=key,
+            backend="local",
+        )
+        return local_url
     
     def file_exists(self, key: str) -> bool:
         """

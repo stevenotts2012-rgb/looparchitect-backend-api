@@ -1,4 +1,20 @@
-"""Async render worker: pulls jobs from Redis queue and processes them."""
+"""Async render worker: pulls jobs from Redis queue and processes them.
+
+Worker topology (production):
+- A dedicated ``python -m app.workers.main`` process connects to Redis and
+  runs ``rq.SimpleWorker`` on the ``render`` queue.
+- RQ dequeues a job and calls ``render_loop_worker(job_id, loop_id, params)``.
+- The worker resolves the app-level job ID (handles RQ vs app ID mismatch),
+  marks the arrangement row as ``processing``, then calls
+  ``run_arrangement_job`` via a ThreadPoolExecutor timeout wrapper so that
+  stuck renders cannot block new work indefinitely.
+- On completion the arrangement row transitions to ``done`` and the job to
+  ``succeeded``.  On any exception both are marked ``failed`` and the error
+  message is persisted for the polling endpoint to surface.
+- ``output_s3_key`` written during ``run_arrangement_job`` is the stable
+  permanent object key.  The presigned ``output_url`` is regenerated on every
+  GET — never relied upon as a durable store.
+"""
 
 import logging
 import os
@@ -22,6 +38,7 @@ from app.services.render_executor import render_from_plan
 from app.services.storage import storage
 from app.schemas.job import OutputFile
 from app.services.arrangement_jobs import _parse_stem_metadata_from_loop
+from app.services.audit_logging import log_feature_event
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +274,15 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             arrangement_id,
             loop_id,
         )
+        # Structured pickup event — machine-parseable record that the worker
+        # dequeued this job.  Consumed by log aggregators for latency metrics.
+        log_feature_event(
+            logger,
+            event="worker_pickup",
+            app_job_id=app_job_id,
+            arrangement_id=arrangement_id,
+            loop_id=loop_id,
+        )
 
         if arrangement_id is not None:
             from app.models.arrangement import Arrangement
@@ -345,6 +371,13 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     loop_id,
                     arrangement_row.status,
                 )
+                log_feature_event(
+                    logger,
+                    event="worker_complete",
+                    app_job_id=app_job_id,
+                    arrangement_id=arrangement_id,
+                    loop_id=loop_id,
+                )
                 return
 
             if arrangement_row and arrangement_row.status == "failed":
@@ -361,6 +394,15 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     loop_id,
                     arrangement_row.status,
                     arrangement_row.error_message,
+                )
+                log_feature_event(
+                    logger,
+                    event="worker_failure",
+                    app_job_id=app_job_id,
+                    arrangement_id=arrangement_id,
+                    loop_id=loop_id,
+                    reason="arrangement_failed",
+                    error=arrangement_row.error_message,
                 )
                 return
 
