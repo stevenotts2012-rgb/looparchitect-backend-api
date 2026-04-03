@@ -10,7 +10,7 @@
  * the Generate Arrangement page (/generate).
  *
  * Request path:
- *   browser → POST /api/v1/loops/with-file (Next.js proxy)
+ *   browser → POST https://web-production-3afc5.up.railway.app/api/v1/loops/with-file (direct, bypasses Vercel)
  *          → FastAPI POST /api/v1/loops/with-file   ✅
  */
 
