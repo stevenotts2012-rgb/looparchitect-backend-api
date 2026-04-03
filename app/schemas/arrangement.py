@@ -326,6 +326,11 @@ class ArrangementResponse(BaseModel):
     error_message: Optional[str] = None
     output_s3_key: Optional[str] = None
     output_url: Optional[str] = None
+    # output_file_url is an alias for output_url populated at response time with a fresh presigned URL
+    output_file_url: Optional[str] = Field(
+        default=None,
+        description="URL to stream/download the generated audio (alias of output_url, always fresh)",
+    )
     stems_zip_url: Optional[str] = None
     mastering_metadata: Optional[dict] = None
     arrangement_json: Optional[str] = Field(default=None, description="JSON timeline with sections")
