@@ -99,14 +99,26 @@ def _extract_detected_roles(stem_metadata: dict | None) -> list[str]:
 @router.post("/loops/upload", status_code=201)
 async def upload_audio(file: UploadFile = File(...), request: Request = None, db: Session = Depends(get_db)):
     """Upload a WAV or MP3 audio file to S3.
-    
+
+    Routing assumptions (production):
+    - File is written to S3 via ``loop_service.upload_loop_file`` which uses
+      the configured storage backend (``S3`` in production, ``local`` in dev).
+    - The returned ``file_key`` (e.g. ``uploads/<uuid>.wav``) is the stable
+      permanent object key stored in the DB.  It never changes after upload.
+    - ``file_url`` is an ephemeral access URL (presigned or local path) only
+      used for the immediate response; the DB row stores only the ``file_key``.
+    - Audio analysis (BPM, key, bars) is performed asynchronously after the
+      file is stored; failures are non-fatal and the Loop row is still created.
+    - Stem separation is kicked off in ``_build_stem_analysis_json`` when the
+      ``FEATURE_STEM_SEPARATION`` flag is enabled; again non-fatal.
+
     Args:
         file: Audio file (WAV or MP3)
         db: Database session
-        
+
     Returns:
         dict: Contains loop_id, play_url, and download_url
-        
+
     Raises:
         HTTPException: If file type invalid or upload fails
     """
@@ -128,6 +140,15 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
     )
     
     if not is_valid:
+        correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
+        log_feature_event(
+            logger,
+            event="upload_failure",
+            correlation_id=correlation_id,
+            reason="validation_failed",
+            detail=error_msg,
+            filename=safe_filename,
+        )
         raise HTTPException(status_code=400, detail=error_msg)
     
     try:
@@ -140,6 +161,15 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
         if not isinstance(file_url, str) or not file_url:
             file_url = f"/uploads/{file_key.split('/')[-1]}"
     except Exception as e:
+        correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
+        log_feature_event(
+            logger,
+            event="upload_failure",
+            correlation_id=correlation_id,
+            reason="storage_error",
+            error=str(e),
+            filename=safe_filename,
+        )
         logger.exception("Failed to upload file")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
     
@@ -192,6 +222,17 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
         correlation_id = getattr(request.state, "correlation_id", None) if request is not None else None
         log_feature_event(
             logger,
+            event="upload_success",
+            correlation_id=correlation_id,
+            loop_id=new_loop.id,
+            file_key=file_key,
+            bpm=new_loop.bpm,
+            bars=new_loop.bars,
+            key=new_loop.musical_key,
+            duration_seconds=new_loop.duration_seconds,
+        )
+        log_feature_event(
+            logger,
             event="loop_created",
             correlation_id=correlation_id,
             loop_id=new_loop.id,
@@ -209,6 +250,14 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
         }
     except Exception as e:
         db.rollback()
+        log_feature_event(
+            logger,
+            event="upload_failure",
+            correlation_id=getattr(request.state, "correlation_id", None) if request is not None else None,
+            reason="db_error",
+            error=str(e),
+            filename=safe_filename,
+        )
         logger.exception("Failed to save loop record")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 

@@ -1,8 +1,8 @@
 # LoopArchitect Production Smoke Test Checklist
 
-**Date:** 2026-03-08  
-**Pipeline Status:** Unified Render Executor (P1-1, P1-2, P1-3 Complete)  
-**Scope:** End-to-end verification of unified rendering pipeline with DAW export and health checks  
+**Date:** 2026-04-03
+**Pipeline Status:** Production-hardened — regression tests, structured logs, code comments added
+**Scope:** End-to-end verification of unified rendering pipeline with DAW export and health checks
 
 ---
 
@@ -990,6 +990,9 @@ python3 -m pytest tests/routes/test_arrangements.py -v
 # Phase 2: DAW export end-to-end
 python3 -m pytest tests/routes/test_daw_export_route.py -v
 
+# Phase 3: Upload endpoint regression (success, validation failure, storage failure)
+python3 -m pytest tests/routes/test_upload_regression.py -v
+
 # All route tests
 python3 -m pytest tests/routes/ --ignore=tests/routes/test_loops_s3_integration.py --ignore=tests/services/test_stem_engine.py -v
 ```
@@ -1004,6 +1007,7 @@ Expected: All tests pass. The `test_loops_s3_integration.py` requires `moto` (pi
 |------|---------|--------|-------|
 | 2026-03-08 | 1.0 | Complete | Initial production smoke test with unified executor |
 | 2026-04-03 | 2.0 | Updated | Added 5-phase regression checklist covering audio URL stability, DAW export, preload speed, cache safety, UX progress messages |
+| 2026-04-03 | 2.1 | Updated | Production hardening: upload regression tests, structured log events (upload_success/failure, worker_pickup/complete/failure, presigned_url_generated/failed), code comments for critical paths |
 
 ---
 
