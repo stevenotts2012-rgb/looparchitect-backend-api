@@ -11,6 +11,8 @@
 #   CMD ["sh", "scripts/prestart.sh"]
 set -e
 
+echo "==> Reconciling Alembic migration state..."
+python scripts/reconcile_db.py
 echo "==> Running Alembic migrations..."
 alembic upgrade head
 echo "==> Migrations complete. Starting web server..."
