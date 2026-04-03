@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.loop import Loop
 from app.services.arranger import create_arrangement
-from app.services.instrumental_renderer import render_and_export_instrumental
 from app.services.render_service import render_loop as render_loop_async
 from app.services.storage import storage
 from app.services.job_service import create_render_job, get_job_status, list_loop_jobs
@@ -570,6 +569,7 @@ def render_loop_simulated(
     target_length_seconds = 180
     
     # Step 6: Call the upgraded instrumental renderer service
+    from app.services.instrumental_renderer import render_and_export_instrumental  # lazy import
     audio_source = _get_loop_audio_source(loop)
     audio_path = _resolve_audio_file_path(audio_source)
     resolved_source = str(audio_path) if audio_path else audio_source
@@ -733,54 +733,52 @@ def download_render(filename: str):
 
 
 
-    @router.get("/renders/s3/{job_id}/{filename}")
-    def download_s3_render(job_id: str, filename: str):
-        """
-        Download a render file from S3 via presigned URL redirect.
-    
-        This endpoint generates a temporary signed URL for S3 access
-        and redirects the client to download directly from S3.
-    
-        Args:
-            job_id: The render job UUID
-            filename: The output file name
-    
-        Returns:
-            RedirectResponse to S3 presigned URL
-    
-        Raises:
-            HTTPException 400: If filename contains invalid characters
-            HTTPException 404: If S3 key not found
-        """
-        # Security: Prevent path traversal
-        if ".." in filename or "/" in filename or "\\" in filename:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid filename: path traversal not allowed"
-            )
-        if ".." in job_id or "/" in job_id or "\\" in job_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid job_id format"
-            )
-    
-        # Construct S3 key
-        s3_key = f"renders/{job_id}/{filename}"
-    
-        try:
-            # Generate presigned URL (1 hour expiry)
-            signed_url = storage.create_presigned_get_url(
-                key=s3_key,
-                expires_seconds=3600,
-                download_filename=filename,
-            )
-            # Redirect client to S3
-            return RedirectResponse(url=signed_url, status_code=302)
-        except Exception as e:
-            logger.error(f"Failed to generate presigned URL for {s3_key}: {e}")
-            raise HTTPException(
-                status_code=404,
-                detail=f"Render file not found in S3: {filename}"
-            )
+@router.get("/renders/s3/{job_id}/{filename}")
+def download_s3_render(job_id: str, filename: str):
+    """
+    Download a render file from S3 via presigned URL redirect.
 
+    This endpoint generates a temporary signed URL for S3 access
+    and redirects the client to download directly from S3.
 
+    Args:
+        job_id: The render job UUID
+        filename: The output file name
+
+    Returns:
+        RedirectResponse to S3 presigned URL
+
+    Raises:
+        HTTPException 400: If filename contains invalid characters
+        HTTPException 404: If S3 key not found
+    """
+    # Security: Prevent path traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid filename: path traversal not allowed"
+        )
+    if ".." in job_id or "/" in job_id or "\\" in job_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid job_id format"
+        )
+
+    # Construct S3 key
+    s3_key = f"renders/{job_id}/{filename}"
+
+    try:
+        # Generate presigned URL (1 hour expiry)
+        signed_url = storage.create_presigned_get_url(
+            key=s3_key,
+            expires_seconds=3600,
+            download_filename=filename,
+        )
+        # Redirect client to S3
+        return RedirectResponse(url=signed_url, status_code=302)
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for {s3_key}: {e}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Render file not found in S3: {filename}"
+        )
