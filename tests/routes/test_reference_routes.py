@@ -341,7 +341,7 @@ class TestReferenceAnalysisResponseSchema:
             ReferenceAdaptationStrength,
             ReferenceStructure,
         )
-        from datetime import datetime
+        from datetime import datetime, timezone
         response = ReferenceAnalysisResponse(
             analysis_id="test-id",
             structure=ReferenceStructure(
@@ -354,7 +354,7 @@ class TestReferenceAnalysisResponseSchema:
             ),
             guidance_mode=ReferenceGuidanceMode.STRUCTURE_AND_ENERGY,
             adaptation_strength=ReferenceAdaptationStrength.MEDIUM,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         assert len(response.legal_disclaimer) > 0
         # Disclaimer must NOT imply musical content copying

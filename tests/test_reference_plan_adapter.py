@@ -343,7 +343,9 @@ class TestReferencePlanAdapter:
             adaptation_strength=ReferenceAdaptationStrength.MEDIUM,
         )
         assert len(guidance.legal_note) > 0
-        assert "musical content" not in guidance.legal_note.lower() or "not" in guidance.legal_note.lower()
+        # Legal note must explicitly state content is NOT copied
+        legal_lower = guidance.legal_note.lower()
+        assert "blueprint" in legal_lower or "source material" in legal_lower
 
 
 # ---------------------------------------------------------------------------

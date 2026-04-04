@@ -211,6 +211,8 @@ class TestScoreConfidence:
         warnings: List[str] = []
         score, quality = ReferenceAnalyzer._score_confidence(sections, energy_curve, 60.0, warnings)
         assert any("flat" in w.lower() or "dynamics" in w.lower() for w in warnings)
+        # Flat energy should result in lower confidence score
+        assert score < 0.45
 
 
 class TestSegmentSections:

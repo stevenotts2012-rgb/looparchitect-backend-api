@@ -1145,7 +1145,7 @@ async def generate_arrangement(
     reference_summary: str | None = None
     reference_structure_summary: dict | None = None
     reference_adaptation_mode: str | None = None
-    reference_adaptation_str: str | None = None
+    reference_adaptation_strength_used: str | None = None
     reference_analysis_confidence: float | None = None
 
     if settings.feature_reference_guided_arrangement and request.reference_analysis_id:
@@ -1179,7 +1179,7 @@ async def generate_arrangement(
                     or stored.get("guidance_mode", "structure_and_energy")
                 )
                 raw_strength = (
-                    request.reference_adaptation_strength
+                    request.reference_adaptation_strength_usedength
                     or stored.get("adaptation_strength", "medium")
                 )
                 try:
@@ -1225,7 +1225,7 @@ async def generate_arrangement(
                     "legal_note": guidance.legal_note,
                 }
                 reference_adaptation_mode = guidance.adaptation_mode
-                reference_adaptation_str = guidance.adaptation_strength
+                reference_adaptation_strength_used = guidance.adaptation_strength
                 reference_analysis_confidence = guidance.reference_confidence
 
                 # Inject reference guidance into producer_arrangement_json
@@ -1476,7 +1476,7 @@ async def generate_arrangement(
         reference_summary=reference_summary,
         reference_structure_summary=reference_structure_summary,
         adaptation_mode=reference_adaptation_mode,
-        adaptation_strength=reference_adaptation_str,
+        adaptation_strength=reference_adaptation_strength_used,
         reference_analysis_confidence=reference_analysis_confidence,
     )
 

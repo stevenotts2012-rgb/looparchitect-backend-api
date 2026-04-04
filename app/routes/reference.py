@@ -120,14 +120,23 @@ def _store_analysis(analysis_id: str, payload: dict) -> str:
 
 
 def _load_analysis(analysis_id: str) -> Optional[dict]:
-    """Load a previously stored analysis by its ID."""
-    key = f"reference_analyses/{analysis_id}.json"
+    """Load a previously stored analysis by its ID.
+
+    The analysis_id is validated as a UUID to prevent path traversal attacks.
+    """
+    # Sanitize: only allow valid UUID-format IDs to prevent path traversal
+    try:
+        import uuid as _uuid_mod
+        # Validate and normalize as UUID string — raises ValueError on invalid input
+        safe_id = str(_uuid_mod.UUID(analysis_id))
+    except (ValueError, AttributeError):
+        logger.warning("Invalid analysis_id format (not a UUID): %s", analysis_id)
+        return None
+
+    key = f"reference_analyses/{safe_id}.json"
 
     # Try storage service first
     try:
-        from app.services.storage import storage as _storage
-        import io as _io
-        # If S3, use get_object; if local, read file directly
         backend = settings.get_storage_backend()
         if backend == "s3":
             import boto3  # type: ignore
@@ -140,12 +149,19 @@ def _load_analysis(analysis_id: str) -> Optional[dict]:
             obj = s3.get_object(Bucket=settings.get_s3_bucket(), Key=key)
             return json.loads(obj["Body"].read())
         else:
-            filename = key.split("/")[-1]
-            local_path = Path("uploads/reference_analyses") / filename
+            # Local storage: construct safe path and verify it stays within expected directory
+            base_dir = Path("uploads/reference_analyses").resolve()
+            local_path = (base_dir / f"{safe_id}.json").resolve()
+            # Guard against path traversal: ensure resolved path stays inside base_dir
+            if not str(local_path).startswith(str(base_dir)):
+                logger.warning(
+                    "Path traversal attempt blocked for analysis_id=%s", safe_id
+                )
+                return None
             if local_path.exists():
                 return json.loads(local_path.read_bytes())
     except Exception as exc:
-        logger.warning("Could not load reference analysis %s: %s", analysis_id, exc)
+        logger.warning("Could not load reference analysis %s: %s", safe_id, exc)
 
     return None
 
