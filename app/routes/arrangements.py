@@ -56,6 +56,15 @@ from app.services.arrangement_planner import (
     validate_arrangement_plan,
     plan_to_producer_arrangement,
 )
+from app.services.producer_plan_builder import ProducerPlanBuilderV2
+from app.services.producer_rules_engine import ProducerRulesEngine
+from app.services.render_qa import RenderQAService
+from app.schemas.arrangement import (
+    ProducerPlanV2,
+    ProducerSectionSummaryItem,
+    ProducerDecisionLogEntry,
+    QualityScoreSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -964,6 +973,167 @@ async def generate_arrangement(
             logger.warning(f"Metadata analysis failed: {metadata_error}", exc_info=True)
             # Continue without metadata-based generation
 
+    # -------------------------------------------------------------------------
+    # PRODUCER ENGINE V2 — deterministic section planning with decision log
+    # Controlled by PRODUCER_ENGINE_V2 feature flag.
+    # Runs on top of / instead of the legacy producer_arrangement_json path.
+    # -------------------------------------------------------------------------
+    producer_plan_v2: "ProducerPlanV2 | None" = None
+    quality_score_v2: "QualityScoreSchema | None" = None
+    section_summary_v2: list = []
+    decision_log_v2: list = []
+    producer_notes_v2: list[str] = []
+
+    if settings.feature_producer_engine_v2:
+        try:
+            # Extract available roles from loop stem metadata
+            v2_available_roles: list[str] = []
+            loop_stem_meta = loop.stem_metadata or {}
+            if isinstance(loop_stem_meta, dict):
+                v2_available_roles = [
+                    str(r) for r in (loop_stem_meta.get("roles_detected") or []) if r
+                ]
+
+            # Determine genre from request / prior parsing
+            v2_genre = request.genre or "generic"
+            if style_profile_json:
+                try:
+                    _sp_dict = json.loads(style_profile_json)
+                    v2_genre = (
+                        _sp_dict.get("resolved_preset")
+                        or _sp_dict.get("genre")
+                        or v2_genre
+                    )
+                except Exception:
+                    pass
+
+            bpm_for_v2 = float(loop.bpm or loop.tempo or 120.0)
+            bars_for_v2 = max(8, int(round(effective_target_seconds / ((60.0 / bpm_for_v2) * 4))))
+
+            v2_source_type = "stem_pack" if v2_available_roles else "loop"
+
+            builder = ProducerPlanBuilderV2(
+                available_roles=v2_available_roles,
+                genre=v2_genre,
+                tempo=bpm_for_v2,
+                target_bars=bars_for_v2,
+                source_type=v2_source_type,
+                structure_template="standard",
+            )
+            raw_plan = builder.build()
+
+            # Apply rules engine
+            rules_result = ProducerRulesEngine.apply(raw_plan)
+            refined_plan = rules_result.plan
+
+            # Quality scoring
+            qa_result = RenderQAService.score_plan(refined_plan)
+
+            # Build API-friendly objects
+            section_summary_v2 = [
+                ProducerSectionSummaryItem(
+                    index=s.index,
+                    section_type=s.section_type.value,
+                    label=s.label,
+                    start_bar=s.start_bar,
+                    length_bars=s.length_bars,
+                    target_energy=s.target_energy.value,
+                    density=s.density.value,
+                    active_roles=s.active_roles,
+                    muted_roles=s.muted_roles,
+                    variation_strategy=s.variation_strategy.value,
+                    transition_in=s.transition_in.value,
+                    transition_out=s.transition_out.value,
+                    notes=s.notes,
+                    rationale=s.rationale,
+                )
+                for s in refined_plan.sections
+            ]
+
+            decision_log_v2 = [
+                ProducerDecisionLogEntry(
+                    section_index=e.section_index,
+                    section_label=e.section_label,
+                    decision=e.decision,
+                    reason=e.reason,
+                    flag=e.flag,
+                )
+                for e in refined_plan.decision_log
+            ]
+
+            producer_notes_v2 = [e.decision for e in refined_plan.decision_log]
+
+            quality_score_v2 = QualityScoreSchema(
+                structure_score=qa_result.score.structure_score,
+                transition_score=qa_result.score.transition_score,
+                audio_quality_score=qa_result.score.audio_quality_score,
+                overall_score=qa_result.score.overall_score,
+                flags=qa_result.score.flags,
+                warnings=qa_result.score.warnings,
+            )
+
+            producer_plan_v2 = ProducerPlanV2(
+                builder_version=refined_plan.builder_version,
+                genre=refined_plan.genre,
+                style_tags=refined_plan.style_tags,
+                tempo=refined_plan.tempo,
+                total_bars=refined_plan.total_bars,
+                source_type=refined_plan.source_type,
+                available_roles=refined_plan.available_roles,
+                rules_applied=refined_plan.rules_applied,
+                sections=section_summary_v2,
+                decision_log=decision_log_v2,
+            )
+
+            # Enrich producer_arrangement_json with V2 data
+            v2_payload = refined_plan.to_dict()
+            if producer_arrangement_json:
+                try:
+                    existing_payload = json.loads(producer_arrangement_json)
+                    existing_payload["producer_plan_v2"] = v2_payload
+                    existing_payload["quality_score"] = quality_score_v2.model_dump()
+                    producer_arrangement_json = json.dumps(existing_payload, default=str)
+                except Exception:
+                    pass
+            else:
+                producer_arrangement_json = json.dumps(
+                    {
+                        "version": "2.1",
+                        "producer_plan_v2": v2_payload,
+                        "quality_score": quality_score_v2.model_dump(),
+                        "correlation_id": correlation_id,
+                    },
+                    default=str,
+                )
+
+            log_feature_event(
+                logger,
+                event="producer_engine_v2_plan_built",
+                correlation_id=correlation_id,
+                sections_count=len(section_summary_v2),
+                total_bars=refined_plan.total_bars,
+                rules_applied=refined_plan.rules_applied,
+                quality_overall=qa_result.score.overall_score,
+                violations_count=len(rules_result.violations),
+                flag_producer_engine_v2=True,
+            )
+
+            logger.info(
+                "ProducerEngineV2: %d sections, %d bars, quality=%.1f, %d rules applied",
+                len(refined_plan.sections),
+                refined_plan.total_bars,
+                qa_result.score.overall_score,
+                len(refined_plan.rules_applied),
+            )
+
+        except Exception as v2_error:
+            logger.warning(
+                "ProducerEngineV2 plan building failed — continuing without V2 plan: %s",
+                v2_error,
+                exc_info=True,
+            )
+            # Graceful fallback: legacy engine remains intact
+
     # Create arrangement record(s)
     _ensure_arrangements_schema(db)
     logger.info(
@@ -1132,6 +1302,12 @@ async def generate_arrangement(
         style_profile=json.loads(style_profile_json) if style_profile_json else None,
         structure_preview=structure_preview,
         candidates=candidates,
+        # Phase 5: backward-compatible producer intelligence fields
+        producer_plan=producer_plan_v2,
+        producer_notes=producer_notes_v2,
+        quality_score=quality_score_v2,
+        section_summary=section_summary_v2,
+        decision_log=decision_log_v2,
     )
 
 
