@@ -1007,16 +1007,16 @@ async def generate_arrangement(
                 except Exception:
                     pass
 
-            bpm_for_v2 = float(loop.bpm or loop.tempo or 120.0)
-            bars_for_v2 = max(8, int(round(effective_target_seconds / ((60.0 / bpm_for_v2) * 4))))
+            plan_tempo_bpm = float(loop.bpm or loop.tempo or 120.0)
+            calculated_target_bars = max(8, int(round(effective_target_seconds / ((60.0 / plan_tempo_bpm) * 4))))
 
             v2_source_type = "stem_pack" if v2_available_roles else "loop"
 
             builder = ProducerPlanBuilderV2(
                 available_roles=v2_available_roles,
                 genre=v2_genre,
-                tempo=bpm_for_v2,
-                target_bars=bars_for_v2,
+                tempo=plan_tempo_bpm,
+                target_bars=calculated_target_bars,
                 source_type=v2_source_type,
                 structure_template="standard",
             )

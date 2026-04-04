@@ -164,10 +164,9 @@ class ProducerRulesEngine:
                 )
             )
 
-        if rule_name not in plan.rules_applied:
-            for rn in rules_run:
-                if rn not in plan.rules_applied:
-                    plan.rules_applied.append(rn)
+        for rn in rules_run:
+            if rn not in plan.rules_applied:
+                plan.rules_applied.append(rn)
 
         logger.info(
             "ProducerRulesEngine: %d violations found, %d auto-repaired across %d rules",
