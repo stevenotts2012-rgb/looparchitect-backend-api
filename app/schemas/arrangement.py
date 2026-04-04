@@ -303,6 +303,32 @@ class AudioArrangementGenerateRequest(BaseModel):
         default=False,
         description="Whether generated arrangements should be persisted to user history immediately",
     )
+
+    # ---- Reference-Guided Arrangement Mode (Phase 4, feature-flagged) ----
+    reference_analysis_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional: ID returned by POST /api/v1/reference/analyze. "
+            "When provided (and REFERENCE_GUIDED_ARRANGEMENT=true), the analyzed "
+            "reference structure is used as a structural blueprint for section ordering, "
+            "energy curve, and density progression. "
+            "Musical content is NOT copied from the reference."
+        ),
+    )
+    reference_guidance_mode: Optional[str] = Field(
+        default=None,
+        description=(
+            "Override the guidance mode from the reference analysis: "
+            "structure_only | energy_only | structure_and_energy"
+        ),
+    )
+    reference_adaptation_strength: Optional[str] = Field(
+        default=None,
+        description=(
+            "Override the adaptation strength from the reference analysis: "
+            "loose | medium | close"
+        ),
+    )
     
     @model_validator(mode='after')
     def validate_duration_params(self):
@@ -380,6 +406,36 @@ class AudioArrangementGenerateResponse(BaseModel):
     decision_log: List[ProducerDecisionLogEntry] = Field(
         default_factory=list,
         description="Producer decision log explaining why each section was planned as-is",
+    )
+
+    # ---- Reference-Guided Arrangement Mode fields (backward-compatible, all optional) ----
+    reference_guided: bool = Field(
+        default=False,
+        description="True when a reference analysis was applied to guide this arrangement",
+    )
+    reference_summary: Optional[str] = Field(
+        default=None,
+        description="Human-readable summary of the detected reference structure",
+    )
+    reference_structure_summary: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Condensed reference structure: section count, tempo estimate, energy arc. "
+            "Reference audio is used for structural guidance only — "
+            "musical content is not copied."
+        ),
+    )
+    adaptation_mode: Optional[str] = Field(
+        default=None,
+        description="Reference guidance mode used: structure_only | energy_only | structure_and_energy",
+    )
+    adaptation_strength: Optional[str] = Field(
+        default=None,
+        description="Adaptation strength applied: loose | medium | close",
+    )
+    reference_analysis_confidence: Optional[float] = Field(
+        default=None,
+        description="Confidence score of the reference analysis (0–1)",
     )
 
     class Config:

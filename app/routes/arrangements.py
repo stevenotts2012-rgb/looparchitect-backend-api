@@ -1134,6 +1134,169 @@ async def generate_arrangement(
             )
             # Graceful fallback: legacy engine remains intact
 
+    # -------------------------------------------------------------------------
+    # REFERENCE-GUIDED ARRANGEMENT — Phase 4
+    # Controlled by REFERENCE_GUIDED_ARRANGEMENT feature flag.
+    # Loads a previously analyzed reference structure and adapts the producer
+    # plan to follow its structural blueprint.
+    # Musical content is NEVER copied from the reference.
+    # -------------------------------------------------------------------------
+    reference_guided = False
+    reference_summary: str | None = None
+    reference_structure_summary: dict | None = None
+    reference_adaptation_mode: str | None = None
+    reference_adaptation_strength_used: str | None = None
+    reference_analysis_confidence: float | None = None
+
+    if settings.feature_reference_guided_arrangement and request.reference_analysis_id:
+        try:
+            from app.routes.reference import _load_analysis
+            from app.schemas.reference_arrangement import (
+                ReferenceAdaptationStrength,
+                ReferenceGuidanceMode,
+                ReferenceStructure,
+            )
+            from app.services.reference_plan_adapter import reference_plan_adapter
+
+            stored = _load_analysis(request.reference_analysis_id)
+            if stored is None:
+                logger.warning(
+                    "Reference analysis ID not found: %s — skipping reference guidance",
+                    request.reference_analysis_id,
+                )
+                log_feature_event(
+                    logger,
+                    event="reference_analysis_not_found",
+                    correlation_id=correlation_id,
+                    analysis_id=request.reference_analysis_id,
+                )
+            else:
+                ref_structure = ReferenceStructure(**stored["structure"])
+
+                # Resolve guidance mode and adaptation strength
+                raw_mode = (
+                    request.reference_guidance_mode
+                    or stored.get("guidance_mode", "structure_and_energy")
+                )
+                raw_strength = (
+                    request.reference_adaptation_strength_usedength
+                    or stored.get("adaptation_strength", "medium")
+                )
+                try:
+                    guidance_mode = ReferenceGuidanceMode(raw_mode)
+                except ValueError:
+                    guidance_mode = ReferenceGuidanceMode.STRUCTURE_AND_ENERGY
+
+                try:
+                    adaptation_strength = ReferenceAdaptationStrength(raw_strength)
+                except ValueError:
+                    adaptation_strength = ReferenceAdaptationStrength.MEDIUM
+
+                # Extract available roles
+                ref_available_roles: list[str] = []
+                loop_stem_meta_ref = loop.stem_metadata or {}
+                if isinstance(loop_stem_meta_ref, dict):
+                    ref_available_roles = [
+                        str(r) for r in (loop_stem_meta_ref.get("roles_detected") or []) if r
+                    ]
+
+                ref_tempo = float(loop.bpm or loop.tempo or 120.0)
+                ref_target_bars = max(
+                    8, int(round(effective_target_seconds / ((60.0 / ref_tempo) * 4)))
+                ) if effective_target_seconds else None
+
+                guidance = reference_plan_adapter.adapt(
+                    structure=ref_structure,
+                    guidance_mode=guidance_mode,
+                    adaptation_strength=adaptation_strength,
+                    available_roles=ref_available_roles,
+                    user_tempo_bpm=ref_tempo,
+                    user_target_bars=ref_target_bars,
+                )
+
+                reference_guided = True
+                reference_summary = ref_structure.summary
+                reference_structure_summary = {
+                    "total_duration_sec": ref_structure.total_duration_sec,
+                    "section_count": len(ref_structure.sections),
+                    "tempo_estimate": ref_structure.tempo_estimate,
+                    "analysis_quality": ref_structure.analysis_quality,
+                    "energy_arc": guidance.energy_arc_summary,
+                    "legal_note": guidance.legal_note,
+                }
+                reference_adaptation_mode = guidance.adaptation_mode
+                reference_adaptation_strength_used = guidance.adaptation_strength
+                reference_analysis_confidence = guidance.reference_confidence
+
+                # Inject reference guidance into producer_arrangement_json
+                ref_payload = {
+                    "reference_analysis_id": request.reference_analysis_id,
+                    "guidance_mode": guidance_mode.value,
+                    "adaptation_strength": adaptation_strength.value,
+                    "reference_confidence": guidance.reference_confidence,
+                    "section_guidance": [g.model_dump() for g in guidance.section_guidance],
+                    "suggested_total_bars": guidance.suggested_total_bars,
+                    "energy_arc_summary": guidance.energy_arc_summary,
+                    "adapter_decision_log": guidance.decision_log,
+                    "legal_note": guidance.legal_note,
+                }
+                if producer_arrangement_json:
+                    try:
+                        existing_payload = json.loads(producer_arrangement_json)
+                        existing_payload["reference_guidance"] = ref_payload
+                        producer_arrangement_json = json.dumps(existing_payload, default=str)
+                    except Exception:
+                        pass
+                else:
+                    producer_arrangement_json = json.dumps(
+                        {
+                            "version": "2.1",
+                            "reference_guidance": ref_payload,
+                            "correlation_id": correlation_id,
+                        },
+                        default=str,
+                    )
+
+                # Extend producer_notes with reference adapter log
+                if guidance.decision_log:
+                    producer_notes_v2 = list(producer_notes_v2) + guidance.decision_log
+
+                log_feature_event(
+                    logger,
+                    event="reference_guidance_applied",
+                    correlation_id=correlation_id,
+                    analysis_id=request.reference_analysis_id,
+                    guidance_mode=guidance_mode.value,
+                    adaptation_strength=adaptation_strength.value,
+                    section_count=len(guidance.section_guidance),
+                    reference_confidence=guidance.reference_confidence,
+                    flag_reference_guided_arrangement=True,
+                )
+
+                logger.info(
+                    "Reference guidance applied: analysis_id=%s sections=%d confidence=%.2f",
+                    request.reference_analysis_id,
+                    len(guidance.section_guidance),
+                    guidance.reference_confidence,
+                )
+
+        except (HTTPException, ImportError):
+            raise
+        except Exception as ref_error:
+            # Graceful fallback: continue with standard generation
+            logger.warning(
+                "Reference guidance failed — falling back to standard generation: %s",
+                ref_error,
+                exc_info=True,
+            )
+            log_feature_event(
+                logger,
+                event="reference_guidance_fallback",
+                correlation_id=correlation_id,
+                analysis_id=request.reference_analysis_id,
+                error=str(ref_error),
+            )
+
     # Create arrangement record(s)
     _ensure_arrangements_schema(db)
     logger.info(
@@ -1308,6 +1471,13 @@ async def generate_arrangement(
         quality_score=quality_score_v2,
         section_summary=section_summary_v2,
         decision_log=decision_log_v2,
+        # Reference-Guided Arrangement Mode fields (Phase 4)
+        reference_guided=reference_guided,
+        reference_summary=reference_summary,
+        reference_structure_summary=reference_structure_summary,
+        adaptation_mode=reference_adaptation_mode,
+        adaptation_strength=reference_adaptation_strength_used,
+        reference_analysis_confidence=reference_analysis_confidence,
     )
 
 
