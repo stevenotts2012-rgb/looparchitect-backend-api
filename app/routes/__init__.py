@@ -21,6 +21,7 @@ ROUTE_CONFIG = {
     "render_jobs": {"prefix": "/api/v1", "tags": ["jobs"]},
     "arrange": {"prefix": "/api/v1", "tags": ["arrange"]},
     "arrangements": {"prefix": "/api/v1/arrangements", "tags": ["arrangements"]},
+    "reference": {"prefix": "/api/v1/reference", "tags": ["reference"]},
     "styles": {"prefix": "/api/v1", "tags": ["styles"]},
 }
 

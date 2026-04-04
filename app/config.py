@@ -50,6 +50,19 @@ class Settings(BaseSettings):
 
     # AI Style Interpretation — style-specific AI reasoning layer
     feature_ai_style_interpretation: bool = Field(default=False, validation_alias="AI_STYLE_INTERPRETATION")
+
+    # Reference-Guided Arrangement Mode — use an uploaded reference track as a structural blueprint
+    # Musical content is NEVER copied; only structure/energy guidance is extracted.
+    feature_reference_guided_arrangement: bool = Field(
+        default=False,
+        validation_alias="REFERENCE_GUIDED_ARRANGEMENT",
+    )
+
+    # Reference Section Analysis — enables the reference audio analysis endpoint and analyzer service
+    feature_reference_section_analysis: bool = Field(
+        default=False,
+        validation_alias="REFERENCE_SECTION_ANALYSIS",
+    )
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -90,6 +103,8 @@ class Settings(BaseSettings):
         "feature_producer_engine_v2",
         "feature_ai_producer_assist",
         "feature_ai_style_interpretation",
+        "feature_reference_guided_arrangement",
+        "feature_reference_section_analysis",
         mode="before",
     )
     @classmethod
