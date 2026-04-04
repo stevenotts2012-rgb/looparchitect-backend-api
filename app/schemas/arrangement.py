@@ -6,6 +6,71 @@ from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+# ============================================================================
+# Producer Engine V2 schemas (Phase 1 + Phase 5)
+# ============================================================================
+
+
+class ProducerSectionSummaryItem(BaseModel):
+    """Lightweight per-section summary for API responses."""
+
+    index: int = Field(..., description="0-based section index")
+    section_type: str = Field(..., description="Section type: intro, verse, hook, etc.")
+    label: str = Field(..., description="Human-readable label, e.g. 'Hook 1'")
+    start_bar: int
+    length_bars: int
+    target_energy: int = Field(..., description="Energy level 1–5")
+    density: str = Field(..., description="sparse | medium | full")
+    active_roles: List[str] = Field(default_factory=list)
+    muted_roles: List[str] = Field(default_factory=list)
+    variation_strategy: str = ""
+    transition_in: str = ""
+    transition_out: str = ""
+    notes: str = ""
+    rationale: str = ""
+
+
+class ProducerDecisionLogEntry(BaseModel):
+    """Single entry in the producer decision log."""
+
+    section_index: int
+    section_label: str
+    decision: str
+    reason: str
+    flag: str = ""
+
+
+class ProducerPlanV2(BaseModel):
+    """
+    Full V2 producer plan exposed in API responses.
+
+    Present only when PRODUCER_ENGINE_V2=true.  Old fields remain unchanged.
+    """
+
+    builder_version: str = "2.0"
+    genre: str = ""
+    style_tags: List[str] = Field(default_factory=list)
+    tempo: float = 120.0
+    total_bars: int = 0
+    source_type: str = "loop"
+    available_roles: List[str] = Field(default_factory=list)
+    rules_applied: List[str] = Field(default_factory=list)
+    sections: List[ProducerSectionSummaryItem] = Field(default_factory=list)
+    decision_log: List[ProducerDecisionLogEntry] = Field(default_factory=list)
+
+
+class QualityScoreSchema(BaseModel):
+    """Heuristic quality score for an arrangement plan."""
+
+    structure_score: float = Field(default=100.0, description="0–100")
+    transition_score: float = Field(default=100.0, description="0–100")
+    audio_quality_score: float = Field(default=100.0, description="0–100")
+    overall_score: float = Field(default=100.0, description="Weighted composite 0–100")
+    flags: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+
 class ArrangementSection(BaseModel):
     """A single section of an arrangement."""
 
@@ -295,6 +360,28 @@ class AudioArrangementGenerateResponse(BaseModel):
         description="Generated preview candidates. Save one explicitly to add to history.",
     )
 
+    # ---- Phase 5: Producer intelligence fields (backward-compatible, all optional) ----
+    producer_plan: Optional[ProducerPlanV2] = Field(
+        default=None,
+        description="V2 producer plan (present when PRODUCER_ENGINE_V2=true)",
+    )
+    producer_notes: List[str] = Field(
+        default_factory=list,
+        description="Human-readable producer decision notes from the V2 plan",
+    )
+    quality_score: Optional[QualityScoreSchema] = Field(
+        default=None,
+        description="Heuristic quality score for the generated arrangement plan",
+    )
+    section_summary: List[ProducerSectionSummaryItem] = Field(
+        default_factory=list,
+        description="Section-by-section summary from the V2 producer plan",
+    )
+    decision_log: List[ProducerDecisionLogEntry] = Field(
+        default_factory=list,
+        description="Producer decision log explaining why each section was planned as-is",
+    )
+
     class Config:
         from_attributes = True
 
@@ -336,6 +423,24 @@ class ArrangementResponse(BaseModel):
     arrangement_json: Optional[str] = Field(default=None, description="JSON timeline with sections")
     created_at: datetime
     updated_at: datetime
+
+    # ---- Phase 5: Producer intelligence fields (backward-compatible, all optional) ----
+    producer_plan: Optional[ProducerPlanV2] = Field(
+        default=None,
+        description="V2 producer plan (present when PRODUCER_ENGINE_V2=true)",
+    )
+    quality_score: Optional[QualityScoreSchema] = Field(
+        default=None,
+        description="Heuristic quality score for the generated arrangement plan",
+    )
+    section_summary: List[ProducerSectionSummaryItem] = Field(
+        default_factory=list,
+        description="Section-by-section summary from the V2 producer plan",
+    )
+    decision_log: List[ProducerDecisionLogEntry] = Field(
+        default_factory=list,
+        description="Producer decision log explaining why each section was planned as-is",
+    )
 
     class Config:
         from_attributes = True

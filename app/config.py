@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     openai_timeout: int = Field(default=30, validation_alias="OPENAI_TIMEOUT")
     openai_max_retries: int = Field(default=3, validation_alias="OPENAI_MAX_RETRIES")
     feature_llm_style_parsing: bool = Field(default=False, validation_alias="FEATURE_LLM_STYLE_PARSING")
+
+    # Producer Engine V2 — deterministic section planning with decision log
+    feature_producer_engine_v2: bool = Field(default=False, validation_alias="PRODUCER_ENGINE_V2")
+
+    # AI Co-Producer Assist — AI proposes, rules validate, engine executes
+    feature_ai_producer_assist: bool = Field(default=False, validation_alias="AI_PRODUCER_ASSIST")
+
+    # AI Style Interpretation — style-specific AI reasoning layer
+    feature_ai_style_interpretation: bool = Field(default=False, validation_alias="AI_STYLE_INTERPRETATION")
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -78,6 +87,9 @@ class Settings(BaseSettings):
         "feature_mastering_stage",
         "dev_fallback_loop_only",
         "feature_llm_style_parsing",
+        "feature_producer_engine_v2",
+        "feature_ai_producer_assist",
+        "feature_ai_style_interpretation",
         mode="before",
     )
     @classmethod
@@ -230,6 +242,15 @@ class Settings(BaseSettings):
             logger.warning(
                 "FEATURE_LLM_STYLE_PARSING is enabled but OPENAI_API_KEY is not configured. "
                 "LLM-powered style parsing will fail. Set OPENAI_API_KEY to enable this feature."
+            )
+
+        # Warn if AI producer assist is enabled but API key not configured
+        if self.feature_ai_producer_assist and not self.openai_api_key:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "AI_PRODUCER_ASSIST is enabled but OPENAI_API_KEY is not configured. "
+                "AI co-producer assist will fall back to rules-only mode."
             )
 
     model_config = {
