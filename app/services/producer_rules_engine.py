@@ -562,11 +562,10 @@ class ProducerRulesEngine:
             )
             roles_to_remove = ordered_by_priority[cap:]
             s.active_roles = [r for r in s.active_roles if r not in roles_to_remove]
-            if s.active_roles != s.muted_roles:
-                # Extend muted_roles to include the removed roles
-                for r in roles_to_remove:
-                    if r not in s.muted_roles:
-                        s.muted_roles.append(r)
+            # Always extend muted_roles with removed roles to prevent duplicates
+            for r in roles_to_remove:
+                if r not in s.muted_roles:
+                    s.muted_roles.append(r)
 
             violations.append(RuleViolation(
                 rule_name="anti_mud_melodic_density",

@@ -49,7 +49,7 @@ class QualityScore:
     # Anti-mud / mix-clarity supplemental scores (informational; not factored into overall_score)
     clarity_score: float = 100.0        # 0–100: absence of muddy role stacking
     density_balance_score: float = 100.0  # 0–100: density varies meaningfully across sections
-    hook_impact_score: float = 100.0    # 0–100: hooks are perceptibly louder/denser than verses
+    hook_impact_score: float = 100.0    # 0–100: hooks are perceptibly denser than verses
 
     # Human-readable pass/fail flags
     flags: List[str] = field(default_factory=list)

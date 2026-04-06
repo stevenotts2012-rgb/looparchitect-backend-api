@@ -15,7 +15,6 @@ Covers:
 import pytest
 from app.services.stem_arrangement_engine import (
     StemArrangementEngine,
-    StemArrangementEngine as SAE,
     StemRole,
     StemState,
     SectionConfig,
