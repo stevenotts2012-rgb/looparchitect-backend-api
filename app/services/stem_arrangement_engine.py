@@ -321,7 +321,7 @@ class StemArrangementEngine:
             # VERSE: rhythm + low_end + reduced lead
             add_group("rhythm")
             add_group("low_end")
-            if energy_level > 0.5:
+            if energy_level >= 0.5:
                 add_group("lead")
 
         elif section_type == "hook":
@@ -331,9 +331,9 @@ class StemArrangementEngine:
             add_group("lead")
             if energy_level > 0.70:
                 add_group("harmonic")
-            if energy_level > 0.82:
+            if energy_level > 0.85:
                 add_group("texture")
-            if energy_level > 0.88:
+            if energy_level > 0.90:
                 add_group("transition")
 
         elif section_type == "bridge":

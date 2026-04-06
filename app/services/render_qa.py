@@ -46,6 +46,11 @@ class QualityScore:
     audio_quality_score: float = 100.0  # 0–100: render hygiene
     overall_score: float = 100.0        # weighted composite
 
+    # Anti-mud / mix-clarity supplemental scores (informational; not factored into overall_score)
+    clarity_score: float = 100.0        # 0–100: absence of muddy role stacking
+    density_balance_score: float = 100.0  # 0–100: density varies meaningfully across sections
+    hook_impact_score: float = 100.0    # 0–100: hooks are perceptibly louder/denser than verses
+
     # Human-readable pass/fail flags
     flags: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -70,6 +75,9 @@ class QualityScore:
             "transition_score": self.transition_score,
             "audio_quality_score": self.audio_quality_score,
             "overall_score": self.overall_score,
+            "clarity_score": self.clarity_score,
+            "density_balance_score": self.density_balance_score,
+            "hook_impact_score": self.hook_impact_score,
             "flags": self.flags,
             "warnings": self.warnings,
         }
@@ -147,6 +155,23 @@ class RenderQAService:
         "all_sections_identical_roles": 15,
     }
 
+    # Penalty values for the anti-mud / supplemental score dimensions
+    _CLARITY_PENALTIES = {
+        "melodic_overload":           20,   # 3+ melodic roles in non-payoff section
+        "sustained_wash":             15,   # 3+ sustained roles in non-payoff section
+    }
+
+    _DENSITY_BALANCE_PENALTIES = {
+        "no_density_variety":         25,   # all sections have the same density level
+        "intro_denser_than_hook":     20,   # intro density >= hook density (inverted structure)
+        "outro_denser_than_hook":     15,
+    }
+
+    _HOOK_IMPACT_PENALTIES = {
+        "hook_not_denser_than_verse": 25,   # hook density <= verse density
+        "hook_not_more_roles":        20,   # hook has same number of roles as adjacent verse
+    }
+
     @classmethod
     def score_plan(cls, plan: ProducerArrangementPlanV2) -> RenderQAResult:
         """Score an arrangement plan. Returns RenderQAResult."""
@@ -156,6 +181,9 @@ class RenderQAService:
         cls._check_structure(plan, score, checks_run)
         cls._check_transitions(plan, score, checks_run)
         cls._check_audio_hygiene(plan, score, checks_run)
+        cls._check_clarity(plan, score, checks_run)
+        cls._check_density_balance(plan, score, checks_run)
+        cls._check_hook_impact(plan, score, checks_run)
 
         score.recompute_overall()
 
@@ -166,11 +194,15 @@ class RenderQAService:
         )
 
         logger.info(
-            "RenderQAService: overall=%.1f structure=%.1f transition=%.1f audio=%.1f passed=%s",
+            "RenderQAService: overall=%.1f structure=%.1f transition=%.1f audio=%.1f "
+            "clarity=%.1f density_balance=%.1f hook_impact=%.1f passed=%s",
             score.overall_score,
             score.structure_score,
             score.transition_score,
             score.audio_quality_score,
+            score.clarity_score,
+            score.density_balance_score,
+            score.hook_impact_score,
             result.passed,
         )
 
@@ -383,3 +415,157 @@ class RenderQAService:
                 )
 
         score.audio_quality_score = max(0.0, score.audio_quality_score)
+
+    # ------------------------------------------------------------------
+    # Anti-mud / clarity checks (supplemental scores — informational)
+    # ------------------------------------------------------------------
+
+    # Roles that carry tonal / melodic content and crowd the mix when stacked
+    _MELODIC_ROLES: frozenset[str] = frozenset({"melody", "harmony", "pads", "vocals", "vocal"})
+    # Roles that produce sustained (long-decay) audio
+    _SUSTAINED_ROLES: frozenset[str] = frozenset({"pads", "harmony", "vocals", "vocal"})
+    # Payoff section types that are allowed higher density
+    _PAYOFF_KINDS: frozenset[SectionKind] = frozenset({SectionKind.HOOK, SectionKind.PRE_HOOK})
+
+    @classmethod
+    def _check_clarity(
+        cls, plan: ProducerArrangementPlanV2, score: QualityScore, checks_run: list[str]
+    ) -> None:
+        """Score melodic / sustained stacking against anti-mud thresholds.
+
+        These are informational penalties on ``clarity_score``.  They do **not**
+        affect ``structure_score`` or ``overall_score``.
+        """
+        sections = plan.sections
+
+        # --- melodic_overload ---
+        checks_run.append("melodic_overload")
+        for s in sections:
+            cap = 3 if s.section_type in cls._PAYOFF_KINDS else 2
+            melodic_count = sum(1 for r in s.active_roles if r in cls._MELODIC_ROLES)
+            if melodic_count > cap:
+                score.clarity_score -= cls._CLARITY_PENALTIES["melodic_overload"]
+                score.warnings.append(
+                    f"melodic_overload: {s.label} has {melodic_count} melodic roles active "
+                    f"(cap={cap}) — risk of harmonic muddiness"
+                )
+
+        # --- sustained_wash ---
+        checks_run.append("sustained_wash")
+        for s in sections:
+            cap = 3 if s.section_type in cls._PAYOFF_KINDS else 2
+            sustained_count = sum(1 for r in s.active_roles if r in cls._SUSTAINED_ROLES)
+            if sustained_count > cap:
+                score.clarity_score -= cls._CLARITY_PENALTIES["sustained_wash"]
+                score.warnings.append(
+                    f"sustained_wash: {s.label} has {sustained_count} sustained sources active "
+                    f"(cap={cap}) — risk of washy mix"
+                )
+
+        score.clarity_score = max(0.0, score.clarity_score)
+
+    @classmethod
+    def _check_density_balance(
+        cls, plan: ProducerArrangementPlanV2, score: QualityScore, checks_run: list[str]
+    ) -> None:
+        """Score how well density varies across sections.
+
+        These are informational penalties on ``density_balance_score``.
+        """
+        sections = plan.sections
+        if not sections:
+            return
+
+        density_order = [DensityLevel.SPARSE, DensityLevel.MEDIUM, DensityLevel.FULL]
+
+        def _density_val(s: "ProducerSectionPlan") -> int:
+            try:
+                return density_order.index(s.density)
+            except ValueError:
+                return 1  # default: medium
+
+        density_values = [_density_val(s) for s in sections]
+
+        # --- no_density_variety ---
+        checks_run.append("no_density_variety")
+        if len(set(density_values)) == 1:
+            score.density_balance_score -= cls._DENSITY_BALANCE_PENALTIES["no_density_variety"]
+            score.warnings.append(
+                "no_density_variety: all sections have the same density — arrangement lacks dynamic contrast"
+            )
+
+        # --- intro_denser_than_hook ---
+        checks_run.append("intro_denser_than_hook")
+        intros = [s for s in sections if s.section_type == SectionKind.INTRO]
+        hooks = [s for s in sections if s.section_type == SectionKind.HOOK]
+        if intros and hooks:
+            max_intro_density = max(_density_val(s) for s in intros)
+            max_hook_density = max(_density_val(s) for s in hooks)
+            if max_intro_density >= max_hook_density:
+                score.density_balance_score -= cls._DENSITY_BALANCE_PENALTIES["intro_denser_than_hook"]
+                score.warnings.append(
+                    "intro_denser_than_hook: intro density >= hook density — structural inversion"
+                )
+
+        # --- outro_denser_than_hook ---
+        checks_run.append("outro_denser_than_hook")
+        outros = [s for s in sections if s.section_type == SectionKind.OUTRO]
+        if outros and hooks:
+            max_outro_density = max(_density_val(s) for s in outros)
+            max_hook_density = max(_density_val(s) for s in hooks)
+            if max_outro_density >= max_hook_density:
+                score.density_balance_score -= cls._DENSITY_BALANCE_PENALTIES["outro_denser_than_hook"]
+                score.warnings.append(
+                    "outro_denser_than_hook: outro density >= hook density — outro should wind down"
+                )
+
+        score.density_balance_score = max(0.0, score.density_balance_score)
+
+    @classmethod
+    def _check_hook_impact(
+        cls, plan: ProducerArrangementPlanV2, score: QualityScore, checks_run: list[str]
+    ) -> None:
+        """Score whether hooks are perceptibly bigger than verses.
+
+        These are informational penalties on ``hook_impact_score``.
+        """
+        sections = plan.sections
+        hooks = [s for s in sections if s.section_type == SectionKind.HOOK]
+        verses = [s for s in sections if s.section_type == SectionKind.VERSE]
+
+        if not hooks or not verses:
+            return
+
+        density_order = [DensityLevel.SPARSE, DensityLevel.MEDIUM, DensityLevel.FULL]
+
+        def _density_val(s: "ProducerSectionPlan") -> int:
+            try:
+                return density_order.index(s.density)
+            except ValueError:
+                return 1
+
+        # --- hook_not_denser_than_verse ---
+        checks_run.append("hook_not_denser_than_verse")
+        max_verse_density = max(_density_val(s) for s in verses)
+        for hook in hooks:
+            if _density_val(hook) <= max_verse_density:
+                score.hook_impact_score -= cls._HOOK_IMPACT_PENALTIES["hook_not_denser_than_verse"]
+                score.warnings.append(
+                    f"hook_not_denser_than_verse: {hook.label} density ({hook.density.value}) "
+                    f"not greater than verse density — hook will not feel bigger"
+                )
+                break  # one penalty per arrangement, not per hook
+
+        # --- hook_not_more_roles ---
+        checks_run.append("hook_not_more_roles")
+        avg_verse_roles = sum(len(s.active_roles) for s in verses) / max(1, len(verses))
+        for hook in hooks:
+            if len(hook.active_roles) <= avg_verse_roles:
+                score.hook_impact_score -= cls._HOOK_IMPACT_PENALTIES["hook_not_more_roles"]
+                score.warnings.append(
+                    f"hook_not_more_roles: {hook.label} has {len(hook.active_roles)} roles "
+                    f"(verse avg={avg_verse_roles:.1f}) — hooks should carry more layers"
+                )
+                break  # one penalty per arrangement
+
+        score.hook_impact_score = max(0.0, score.hook_impact_score)

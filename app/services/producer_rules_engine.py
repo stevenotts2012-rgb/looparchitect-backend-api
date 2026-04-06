@@ -40,6 +40,23 @@ from app.services.producer_plan_builder import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Role taxonomy used by anti-mud rules
+# ---------------------------------------------------------------------------
+
+# Roles that occupy the melodic / tonal frequency range and can cause muddiness
+# when too many are stacked simultaneously.
+_MELODIC_ROLES: frozenset[str] = frozenset({"melody", "harmony", "pads", "vocals", "vocal"})
+
+# Roles that occupy the bass / low-frequency range.  Only one should play at a time.
+_BASS_ROLES: frozenset[str] = frozenset({"bass"})
+
+# Roles that produce sustained (long-decay) audio — can cloud the mix.
+_SUSTAINED_ROLES: frozenset[str] = frozenset({"pads", "harmony", "vocals", "vocal"})
+
+# Section types that ARE payoff moments and may carry slightly more density
+_PAYOFF_SECTIONS: frozenset[SectionKind] = frozenset({SectionKind.HOOK, SectionKind.PRE_HOOK})
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -126,8 +143,20 @@ class ProducerRulesEngine:
     _HOOK_ENERGY_ADVANTAGE = 1   # hooks must be at least N levels above adjacent verses
 
     @classmethod
-    def apply(cls, plan: ProducerArrangementPlanV2) -> RulesEngineResult:
-        """Run all rules over *plan* and return a (repaired) result."""
+    def apply(cls, plan: ProducerArrangementPlanV2, *, strict: bool = False) -> RulesEngineResult:
+        """Run all rules over *plan* and return a (repaired) result.
+
+        Args:
+            plan:   The arrangement plan to evaluate.
+            strict: When True, also runs the three additional anti-mud / density
+                    guardrail rules (anti_mud_melodic_density, low_frequency_crowding,
+                    sustained_source_limit).  These are also enabled automatically
+                    when the PRODUCER_ENGINE_STRICT_RULES environment flag is set.
+        """
+        from app.config import settings  # local import to avoid circular deps at module level
+
+        run_strict = strict or getattr(settings, "feature_producer_engine_strict_rules", False)
+
         violations: list[RuleViolation] = []
         rules_run: list[str] = []
         repair_count = 0
@@ -143,6 +172,13 @@ class ProducerRulesEngine:
             ("role_aware_adaptation",cls._rule_role_aware_adaptation),
             ("quality_guards",       cls._rule_quality_guards),
         ]
+
+        if run_strict:
+            rules += [
+                ("anti_mud_melodic_density",  cls._rule_anti_mud_melodic_density),
+                ("low_frequency_crowding",    cls._rule_low_frequency_crowding),
+                ("sustained_source_limit",    cls._rule_sustained_source_limit),
+            ]
 
         for rule_name, rule_fn in rules:
             rule_violations = rule_fn(plan)
@@ -169,10 +205,11 @@ class ProducerRulesEngine:
                 plan.rules_applied.append(rn)
 
         logger.info(
-            "ProducerRulesEngine: %d violations found, %d auto-repaired across %d rules",
+            "ProducerRulesEngine: %d violations found, %d auto-repaired across %d rules (strict=%s)",
             len(violations),
             repair_count,
             len(rules_run),
+            run_strict,
         )
 
         return RulesEngineResult(
@@ -489,5 +526,157 @@ class ProducerRulesEngine:
                     auto_repaired=False,
                     repair_description="",
                 ))
+
+        return violations
+
+    # ------------------------------------------------------------------
+    # Anti-mud / density guardrail rules (strict mode)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _rule_anti_mud_melodic_density(cls, plan: ProducerArrangementPlanV2) -> list[RuleViolation]:
+        """Cap simultaneous melodic roles to prevent harmonic mud.
+
+        Allowed melodic-role limits per section type
+        --------------------------------------------
+        Payoff sections (HOOK, PRE_HOOK): max 3 melodic roles (melody + harmony + pads is fine)
+        All other sections:               max 2 melodic roles
+
+        When a section exceeds the cap, the lowest-priority melodic roles are
+        removed from ``active_roles`` in-place until the cap is satisfied.
+        Priority ordering (highest → lowest): melody > vocals > harmony > pads
+        """
+        _MELODIC_PRIORITY = ["melody", "vocals", "vocal", "harmony", "pads"]
+        violations: list[RuleViolation] = []
+
+        for s in plan.sections:
+            cap = 3 if s.section_type in _PAYOFF_SECTIONS else 2
+            melodic_active = [r for r in s.active_roles if r in _MELODIC_ROLES]
+            if len(melodic_active) <= cap:
+                continue
+
+            # Remove lowest-priority melodic roles until at cap
+            ordered_by_priority = sorted(
+                melodic_active,
+                key=lambda r: _MELODIC_PRIORITY.index(r) if r in _MELODIC_PRIORITY else 99,
+            )
+            roles_to_remove = ordered_by_priority[cap:]
+            s.active_roles = [r for r in s.active_roles if r not in roles_to_remove]
+            if s.active_roles != s.muted_roles:
+                # Extend muted_roles to include the removed roles
+                for r in roles_to_remove:
+                    if r not in s.muted_roles:
+                        s.muted_roles.append(r)
+
+            violations.append(RuleViolation(
+                rule_name="anti_mud_melodic_density",
+                section_index=s.index,
+                section_label=s.label,
+                description=(
+                    f"{s.label} had {len(melodic_active)} melodic roles active simultaneously "
+                    f"({', '.join(melodic_active)}) — cap for this section type is {cap}"
+                ),
+                severity="error",
+                auto_repaired=True,
+                repair_description=(
+                    f"Removed melodic roles: {', '.join(roles_to_remove)}; "
+                    f"kept: {', '.join(r for r in melodic_active if r not in roles_to_remove)}"
+                ),
+            ))
+
+        return violations
+
+    @classmethod
+    def _rule_low_frequency_crowding(cls, plan: ProducerArrangementPlanV2) -> list[RuleViolation]:
+        """Prevent multiple bass-frequency roles from playing simultaneously.
+
+        Only one bass-register role (``bass``) should be active per section.
+        If multiple bass roles are present, only the first (in active_roles order)
+        is kept; the rest are muted.
+
+        This rule is intentionally narrow — it targets the most common
+        low-frequency crowding pattern rather than trying to model every
+        possible bass-register instrument.
+        """
+        violations: list[RuleViolation] = []
+
+        for s in plan.sections:
+            bass_active = [r for r in s.active_roles if r in _BASS_ROLES]
+            if len(bass_active) <= 1:
+                continue
+
+            # Keep only the first bass role; remove the rest
+            to_keep = bass_active[0]
+            to_remove = bass_active[1:]
+            s.active_roles = [r for r in s.active_roles if r not in to_remove]
+            for r in to_remove:
+                if r not in s.muted_roles:
+                    s.muted_roles.append(r)
+
+            violations.append(RuleViolation(
+                rule_name="low_frequency_crowding",
+                section_index=s.index,
+                section_label=s.label,
+                description=(
+                    f"{s.label} has {len(bass_active)} bass-frequency roles active "
+                    f"({', '.join(bass_active)}) — stacked low-end causes muddiness"
+                ),
+                severity="error",
+                auto_repaired=True,
+                repair_description=(
+                    f"Kept '{to_keep}'; removed: {', '.join(to_remove)}"
+                ),
+            ))
+
+        return violations
+
+    @classmethod
+    def _rule_sustained_source_limit(cls, plan: ProducerArrangementPlanV2) -> list[RuleViolation]:
+        """Cap simultaneous sustained-decay sources to prevent wash / muddiness.
+
+        Sustained sources (pads, harmony, vocals/vocal) create long tails that
+        stack into a wash when more than two play together.
+
+        Payoff sections (HOOK, PRE_HOOK): up to 3 sustained roles allowed.
+        All other sections:               max 2 sustained roles.
+
+        Removal priority (lowest priority removed first): pads > harmony > vocals
+        """
+        _SUSTAINED_PRIORITY = ["vocals", "vocal", "harmony", "pads"]
+        violations: list[RuleViolation] = []
+
+        for s in plan.sections:
+            cap = 3 if s.section_type in _PAYOFF_SECTIONS else 2
+            sustained_active = [r for r in s.active_roles if r in _SUSTAINED_ROLES]
+            if len(sustained_active) <= cap:
+                continue
+
+            # Sort by ascending priority (lowest-priority first → remove first)
+            ordered_by_priority = sorted(
+                sustained_active,
+                key=lambda r: _SUSTAINED_PRIORITY.index(r) if r in _SUSTAINED_PRIORITY else 0,
+                reverse=True,  # highest index = lowest priority, removed first
+            )
+            roles_to_remove = ordered_by_priority[cap:]
+            s.active_roles = [r for r in s.active_roles if r not in roles_to_remove]
+            for r in roles_to_remove:
+                if r not in s.muted_roles:
+                    s.muted_roles.append(r)
+
+            violations.append(RuleViolation(
+                rule_name="sustained_source_limit",
+                section_index=s.index,
+                section_label=s.label,
+                description=(
+                    f"{s.label} has {len(sustained_active)} sustained sources active "
+                    f"({', '.join(sustained_active)}) — too many long-decay sources cause wash; "
+                    f"cap for this section type is {cap}"
+                ),
+                severity="error",
+                auto_repaired=True,
+                repair_description=(
+                    f"Removed sustained roles: {', '.join(roles_to_remove)}"
+                ),
+            ))
 
         return violations
