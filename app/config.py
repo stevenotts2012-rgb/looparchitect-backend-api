@@ -136,6 +136,8 @@ class Settings(BaseSettings):
             # Vite alternative
             "http://localhost:5173",
             "http://127.0.0.1:5173",
+            # Vercel production frontend (also covered by allow_origin_regex in cors middleware)
+            "https://looparchitect-frontend.vercel.app",
         ]
 
         configured_origins = (self.cors_allowed_origins or self.frontend_origin).strip()
