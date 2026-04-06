@@ -266,11 +266,18 @@ app = FastAPI(
 _cors_origins = settings.allowed_origins
 logger.info(f"📋 CORS allowed origins: {_cors_origins}")
 
-# Add CORS middleware FIRST and BEFORE all other middleware
+# Add CORS middleware FIRST and BEFORE all other middleware.
+#
+# allow_credentials=False is required when using allow_origin_regex; it also
+# matches the upload workflow which does not rely on browser cookies/sessions.
+#
+# allow_origin_regex covers every Vercel preview deployment subdomain so that
+# PRs and staging environments work without updating the explicit origins list.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

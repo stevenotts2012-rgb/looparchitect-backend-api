@@ -6,11 +6,12 @@ Verifies that:
 - Vercel preview deployment subdomains receive CORS headers
 - localhost development origins receive CORS headers
 - OPTIONS preflight requests are handled correctly
+- The upload route (/api/v1/loops/with-file) returns CORS headers
 """
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
+from app.main import app
 
 
 @pytest.fixture
@@ -113,3 +114,37 @@ def test_preflight_allows_content_type_header(client):
     response = _preflight(client, origin)
     allowed_headers = response.headers.get("access-control-allow-headers", "")
     assert "content-type" in allowed_headers.lower() or "*" in allowed_headers
+
+
+# ---------------------------------------------------------------------------
+# Upload route (/api/v1/loops/with-file) — CORS preflight
+# ---------------------------------------------------------------------------
+
+UPLOAD_PATH = "/api/v1/loops/with-file"
+
+UPLOAD_ORIGINS = [
+    "https://looparchitect-frontend.vercel.app",
+    "https://looparchitect-frontend-git-main-abc123.vercel.app",
+    "http://localhost:3000",
+]
+
+
+def _upload_preflight(client: TestClient, origin: str) -> object:
+    return client.options(
+        UPLOAD_PATH,
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type",
+        },
+    )
+
+
+@pytest.mark.parametrize("origin", UPLOAD_ORIGINS)
+def test_upload_route_preflight_allowed_origins(client, origin):
+    """OPTIONS preflight to the upload route must return ACAO header for allowed origins."""
+    response = _upload_preflight(client, origin)
+    acao = response.headers.get("access-control-allow-origin", "")
+    assert acao in (origin, "*"), (
+        f"Expected ACAO header for upload route origin {origin!r}, got: {dict(response.headers)}"
+    )
