@@ -242,3 +242,156 @@ class TestRegressionValidOutputsNotRejected:
         assert result.passed, (
             f"Stem pack plan should pass QA. score={result.score.overall_score}"
         )
+
+
+# ---------------------------------------------------------------------------
+# New quality score dimensions (clarity / density_balance / hook_impact)
+# ---------------------------------------------------------------------------
+
+
+class TestQualityScoreNewDimensions:
+    """Tests for the clarity_score, density_balance_score, and hook_impact_score fields."""
+
+    def test_quality_score_has_new_fields(self):
+        score = QualityScore()
+        assert hasattr(score, "clarity_score")
+        assert hasattr(score, "density_balance_score")
+        assert hasattr(score, "hook_impact_score")
+
+    def test_new_fields_default_to_100(self):
+        score = QualityScore()
+        assert score.clarity_score == 100.0
+        assert score.density_balance_score == 100.0
+        assert score.hook_impact_score == 100.0
+
+    def test_to_dict_includes_new_fields(self):
+        score = QualityScore()
+        d = score.to_dict()
+        assert "clarity_score" in d
+        assert "density_balance_score" in d
+        assert "hook_impact_score" in d
+
+    def test_good_plan_has_high_clarity_score(self):
+        plan = _make_good_plan(roles=["drums", "bass", "melody"])
+        result = RenderQAService.score_plan(plan)
+        assert result.score.clarity_score >= 80.0, (
+            f"A plan with only melody (no melodic stacking) should have high clarity. "
+            f"Got: {result.score.clarity_score}"
+        )
+
+    def test_melodic_overload_reduces_clarity_score(self):
+        plan = _make_good_plan(roles=["drums", "bass", "melody", "harmony", "pads"])
+        # Force every non-hook section to stack 3 melodic roles
+        for s in plan.sections:
+            if s.section_type not in (SectionKind.HOOK,):
+                s.active_roles = ["melody", "harmony", "pads", "drums"]
+        result = RenderQAService.score_plan(plan)
+        assert result.score.clarity_score < 100.0, (
+            "Melodic overload should reduce clarity_score"
+        )
+
+    def test_sustained_wash_reduces_clarity_score(self):
+        plan = _make_good_plan(roles=["drums", "bass", "melody", "harmony", "pads"])
+        for s in plan.sections:
+            if s.section_type not in (SectionKind.HOOK,):
+                s.active_roles = ["pads", "harmony", "vocals", "drums"]
+        result = RenderQAService.score_plan(plan)
+        assert result.score.clarity_score < 100.0, (
+            "Sustained wash should reduce clarity_score"
+        )
+
+    def test_no_density_variety_reduces_density_balance_score(self):
+        plan = _make_good_plan()
+        # Force all sections to MEDIUM density
+        for s in plan.sections:
+            s.density = DensityLevel.MEDIUM
+        result = RenderQAService.score_plan(plan)
+        assert result.score.density_balance_score < 100.0, (
+            "All-same density should reduce density_balance_score"
+        )
+
+    def test_good_density_variation_has_high_density_balance(self):
+        plan = _make_good_plan(roles=["drums", "bass", "melody"])
+        # Ensure intro=SPARSE, verse=MEDIUM, hook=FULL (natural variation)
+        for s in plan.sections:
+            if s.section_type == SectionKind.INTRO:
+                s.density = DensityLevel.SPARSE
+            elif s.section_type == SectionKind.VERSE:
+                s.density = DensityLevel.MEDIUM
+            elif s.section_type == SectionKind.HOOK:
+                s.density = DensityLevel.FULL
+        result = RenderQAService.score_plan(plan)
+        assert result.score.density_balance_score >= 80.0, (
+            f"Natural SPARSE→MEDIUM→FULL density progression should have high density balance. "
+            f"Got: {result.score.density_balance_score}"
+        )
+
+    def test_hook_not_denser_than_verse_reduces_hook_impact(self):
+        plan = _make_good_plan(roles=["drums", "bass", "melody"])
+        # Set all hooks to SPARSE and verses to FULL
+        for s in plan.sections:
+            if s.section_type == SectionKind.HOOK:
+                s.density = DensityLevel.SPARSE
+                s.active_roles = ["melody"]
+            elif s.section_type == SectionKind.VERSE:
+                s.density = DensityLevel.FULL
+                s.active_roles = ["drums", "bass", "melody", "harmony", "pads"]
+        result = RenderQAService.score_plan(plan)
+        assert result.score.hook_impact_score < 100.0, (
+            "Hooks sparser than verses should reduce hook_impact_score"
+        )
+
+    def test_hooks_clearly_bigger_than_verses_has_high_impact(self):
+        plan = _make_good_plan(roles=["drums", "bass", "melody"])
+        for s in plan.sections:
+            if s.section_type == SectionKind.HOOK:
+                s.density = DensityLevel.FULL
+                s.active_roles = ["drums", "bass", "melody", "harmony", "pads"]
+            elif s.section_type == SectionKind.VERSE:
+                s.density = DensityLevel.MEDIUM
+                s.active_roles = ["drums", "bass"]
+        result = RenderQAService.score_plan(plan)
+        assert result.score.hook_impact_score >= 80.0, (
+            f"Hooks clearly denser than verses should have high hook_impact_score. "
+            f"Got: {result.score.hook_impact_score}"
+        )
+
+    def test_score_plan_includes_new_checks_in_checks_run(self):
+        plan = _make_good_plan()
+        result = RenderQAService.score_plan(plan)
+        checks = result.checks_run
+        assert "melodic_overload" in checks
+        assert "sustained_wash" in checks
+        assert "no_density_variety" in checks
+        assert "hook_not_denser_than_verse" in checks
+        assert "hook_not_more_roles" in checks
+
+    def test_recompute_overall_unchanged_with_new_fields(self):
+        """overall_score must still be the weighted composite of the original 3 scores."""
+        score = QualityScore(
+            structure_score=80.0,
+            transition_score=60.0,
+            audio_quality_score=100.0,
+            clarity_score=50.0,         # should NOT affect overall
+            density_balance_score=30.0,  # should NOT affect overall
+            hook_impact_score=10.0,      # should NOT affect overall
+        )
+        score.recompute_overall(
+            structure_weight=0.40,
+            transition_weight=0.30,
+            audio_weight=0.30,
+        )
+        expected = 0.40 * 80.0 + 0.30 * 60.0 + 0.30 * 100.0
+        assert abs(score.overall_score - expected) < 0.1, (
+            f"New supplemental scores must not influence overall_score. "
+            f"Expected {expected}, got {score.overall_score}"
+        )
+
+    def test_empty_plan_does_not_crash_new_checks(self):
+        plan = _make_good_plan()
+        plan.sections = []
+        result = RenderQAService.score_plan(plan)
+        assert result is not None
+        assert result.score.clarity_score >= 0.0
+        assert result.score.density_balance_score >= 0.0
+        assert result.score.hook_impact_score >= 0.0

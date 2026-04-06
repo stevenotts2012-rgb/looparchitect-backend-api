@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     # AI Style Interpretation — style-specific AI reasoning layer
     feature_ai_style_interpretation: bool = Field(default=False, validation_alias="AI_STYLE_INTERPRETATION")
 
+    # Producer Engine Strict Rules — enables additional anti-mud / density guardrails
+    # (melodic density cap, low-frequency crowding prevention, sustained source limit).
+    # Defaults to False for safe staged rollout; enable with PRODUCER_ENGINE_STRICT_RULES=true.
+    feature_producer_engine_strict_rules: bool = Field(
+        default=False,
+        validation_alias="PRODUCER_ENGINE_STRICT_RULES",
+    )
+
     # Reference-Guided Arrangement Mode — use an uploaded reference track as a structural blueprint
     # Musical content is NEVER copied; only structure/energy guidance is extracted.
     feature_reference_guided_arrangement: bool = Field(
@@ -103,6 +111,7 @@ class Settings(BaseSettings):
         "feature_producer_engine_v2",
         "feature_ai_producer_assist",
         "feature_ai_style_interpretation",
+        "feature_producer_engine_strict_rules",
         "feature_reference_guided_arrangement",
         "feature_reference_section_analysis",
         mode="before",
