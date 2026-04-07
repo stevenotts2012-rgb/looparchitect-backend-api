@@ -1391,6 +1391,9 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     - How many phrase splits were executed
     - Which hook stages were rendered
     - Total applied transition/event count
+    - The actual render path used (stems / loop_variations / stereo_fallback)
+    - unique_render_signature_count — definitive measure of audible variety
+    - unique_phrase_signature_count — number of sections with distinct phrase splits
 
     Parameters
     ----------
@@ -1407,13 +1410,23 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     hook_stages: list[str] = []
     transition_event_count = 0
     section_role_rows: list[dict] = []
+    render_signatures: list[str] = []
+    phrase_signatures: list[tuple] = []
 
     for section in timeline_sections:
         stems_used = frozenset(section.get("runtime_active_stems") or section.get("active_stem_roles") or [])
         stem_sets.append(stems_used)
 
+        # Collect hard-truth render signature (what was ACTUALLY built).
+        sig = str(section.get("actual_render_signature") or "")
+        render_signatures.append(sig)
+
         if section.get("phrase_plan_used"):
             phrase_split_count += 1
+            pp = section.get("phrase_plan") or {}
+            first = tuple(sorted(pp.get("first_phrase_roles") or []))
+            second = tuple(sorted(pp.get("second_phrase_roles") or []))
+            phrase_signatures.append((first, second))
 
         hook_ev = section.get("hook_evolution")
         if isinstance(hook_ev, dict) and hook_ev.get("stage"):
@@ -1425,6 +1438,7 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
             "section_index": len(section_role_rows),
             "section_type": section.get("type", ""),
             "stems": sorted(stems_used),
+            "actual_render_signature": sig,
             "phrase_split": bool(section.get("phrase_plan_used")),
             "hook_stage": (hook_ev or {}).get("stage") if isinstance(hook_ev, dict) else None,
             "first_phrase_roles": (section.get("phrase_plan") or {}).get("first_phrase_roles"),
@@ -1439,6 +1453,33 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     most_common_entry = stem_set_counts.most_common(1)
     most_reused = most_common_entry[0][1] if most_common_entry else 0
 
+    # --- unique_render_signature_count ---
+    # Counts distinct actual_render_signature values — the most honest measure of audible
+    # variety.  If this equals 1, every section produced identical audio regardless of planned
+    # roles.  A value >= 2 proves different audio was actually assembled per section.
+    unique_render_sigs = set(s for s in render_signatures if s)
+    unique_render_signature_count = len(unique_render_sigs)
+
+    # --- unique_phrase_signature_count ---
+    # Number of distinct (first_roles, second_roles) phrase-split combinations used.
+    unique_phrase_signature_count = len(set(phrase_signatures))
+
+    # --- render_path_used ---
+    # Determine the dominant render path across all sections.
+    if render_signatures:
+        if all(s.startswith("stem") for s in render_signatures if s):
+            render_path_used = "stems"
+        elif all(s.startswith("stereo") for s in render_signatures if s):
+            render_path_used = "stereo_fallback"
+        elif any(s.startswith("loop_variant") for s in render_signatures if s):
+            render_path_used = "loop_variations"
+        else:
+            render_path_used = "mixed"
+    else:
+        render_path_used = "unknown"
+
+    is_stereo_fallback = render_path_used == "stereo_fallback"
+
     return {
         "sections_count": len(timeline_sections),
         "distinct_stem_set_count": distinct_count,
@@ -1447,6 +1488,12 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         "hook_stages": hook_stages,
         "transition_event_count": transition_event_count,
         "section_role_map": section_role_rows,
+        # --- Phase 2 / Phase 6 hard-truth metrics ---
+        "unique_render_signature_count": unique_render_signature_count,
+        "unique_phrase_signature_count": unique_phrase_signature_count,
+        "render_path_used": render_path_used,
+        "is_stereo_fallback": is_stereo_fallback,
+        "render_signatures": sorted(unique_render_sigs),
     }
 
 
@@ -1540,16 +1587,34 @@ def _render_producer_arrangement(
         if use_stems:
             # STEM MODE: Mix only the stems specified in section instruments list
             from app.services.stem_loader import map_instruments_to_stems
+            from app.services.section_identity_engine import SECTION_PROFILES, _FALLBACK_PROFILE as _SIE_FALLBACK
 
             section_instruments = section.get("instruments", [])
             enabled_stems = map_instruments_to_stems(section_instruments, stems)
 
             if not enabled_stems:
-                logger.warning(
-                    f"No stems matched instruments {section_instruments}, "
-                    f"using all {list(stems.keys())}"
-                )
-                enabled_stems = stems
+                # Fallback: exclude stems that correspond to forbidden roles for this section type
+                # so that bridge/intro/breakdown never silently reactivate drums or bass.
+                _sie_profile = SECTION_PROFILES.get(section_type, _SIE_FALLBACK)
+                forbidden_stem_names = set(_sie_profile.forbidden_roles)
+                fallback_stems = {k: v for k, v in stems.items() if k not in forbidden_stem_names}
+                if fallback_stems:
+                    logger.warning(
+                        "STEM_FALLBACK section='%s' type=%s instruments=%s "
+                        "no-match — using role-filtered fallback %s (excluded forbidden: %s)",
+                        section_name, section_type, section_instruments,
+                        sorted(fallback_stems.keys()),
+                        sorted(forbidden_stem_names & set(stems.keys())),
+                    )
+                    enabled_stems = fallback_stems
+                else:
+                    # All stems are forbidden (e.g. source material is drums-only) — accept all
+                    logger.warning(
+                        "STEM_FALLBACK section='%s' type=%s instruments=%s "
+                        "no-match and all stems are forbidden — using all stems as last resort",
+                        section_name, section_type, section_instruments,
+                    )
+                    enabled_stems = stems
 
             logger.info(
                 "STEM_SECTION_RENDER section='%s' type=%s requested=%s active=%s full_mix_active=%s",
@@ -1600,6 +1665,12 @@ def _render_producer_arrangement(
                 section_audio = (first_audio + second_audio)[:section_ms]
                 # Track both phrase role sets for diagnostics.
                 active_role_snapshot = list(dict.fromkeys(list(first_roles) + list(second_roles)))
+                # Render signature captures both phrase halves so phrase-split sections
+                # with different role pairs produce distinct signatures.
+                actual_render_signature = (
+                    f"stem_phrase:{','.join(sorted(first_stems.keys()))}"
+                    f"|{','.join(sorted(second_stems.keys()))}"
+                )
                 logger.info(
                     "PHRASE_SPLIT section='%s' split_bar=%d first=%s second=%s desc='%s'",
                     section_name, split_bar, first_roles, second_roles,
@@ -1613,6 +1684,7 @@ def _render_producer_arrangement(
                     section_idx=section_idx,
                 )[:section_ms]
                 active_role_snapshot = list(enabled_stems.keys())
+                actual_render_signature = f"stem:{','.join(sorted(enabled_stems.keys()))}"
 
         elif use_loop_variations and section_loop_variant in (loop_variations or {}):
             variation_source = (loop_variations or {})[section_loop_variant]
@@ -1652,17 +1724,55 @@ def _render_producer_arrangement(
                 variation_intensity,
             )
             active_role_snapshot = list(section.get("instruments") or section.get("active_stem_roles") or [])
+            actual_render_signature = f"loop_variant:{section_loop_variant}:{section_type}"
         else:
-            # STEREO FALLBACK MODE: Use full loop with DSP variation
-            section_audio = _build_varied_section_audio(
-                loop_audio=loop_audio,
-                section_bars=section_bars,
-                bar_duration_ms=bar_duration_ms,
-                section_idx=section_idx,
-                section_type=section_type,
-            )[:section_ms]
+            # STEREO FALLBACK MODE: Use full loop with DSP variation.
+            # Apply phrase variation even here so the two halves of a section
+            # receive audibly different DSP treatment rather than a flat repeat.
+            phrase_plan = section.get("phrase_plan") if isinstance(section.get("phrase_plan"), dict) else None
+            if phrase_plan and section_bars > 4:
+                split_bar = int(phrase_plan.get("split_bar", section_bars // 2) or (section_bars // 2))
+                split_bar = max(1, min(section_bars - 1, split_bar))
+                split_ms = split_bar * bar_duration_ms
+                remaining_bars = section_bars - split_bar
+
+                # First half: more filtered/restrained
+                first_audio = _build_varied_section_audio(
+                    loop_audio=loop_audio,
+                    section_bars=split_bar,
+                    bar_duration_ms=bar_duration_ms,
+                    section_idx=section_idx,
+                    section_type=section_type,
+                )[:split_ms]
+                first_audio = first_audio.low_pass_filter(3200) - 2
+
+                # Second half: full DSP path with an offset index so the two halves
+                # start from different loop positions and receive different per-bar processing
+                second_audio = _build_varied_section_audio(
+                    loop_audio=loop_audio,
+                    section_bars=remaining_bars,
+                    bar_duration_ms=bar_duration_ms,
+                    section_idx=section_idx + _PHRASE_SPLIT_SECTION_IDX_OFFSET,
+                    section_type=section_type,
+                )[:remaining_bars * bar_duration_ms]
+
+                section_audio = (first_audio + second_audio)[:section_ms]
+                actual_render_signature = f"stereo_phrase:{section_type}:{split_bar}"
+                logger.info(
+                    "STEREO_PHRASE_SPLIT section='%s' split_bar=%d desc='%s'",
+                    section_name, split_bar, phrase_plan.get("description", ""),
+                )
+            else:
+                section_audio = _build_varied_section_audio(
+                    loop_audio=loop_audio,
+                    section_bars=section_bars,
+                    bar_duration_ms=bar_duration_ms,
+                    section_idx=section_idx,
+                    section_type=section_type,
+                )[:section_ms]
+                actual_render_signature = f"stereo_fallback:{section_type}"
             active_role_snapshot = list(section.get("instruments") or section.get("active_stem_roles") or [])
-        
+
         logger.info(
             f"Processing section [{section_idx}] {section_name}: type={section_type} (raw={section.get('section_type') or section.get('type')}), bars={section_bars}, energy={section_energy}"
         )
@@ -1958,6 +2068,9 @@ def _render_producer_arrangement(
             "phrase_plan_used": bool(section.get("phrase_plan") and section_bars > 4),
             "phrase_plan": section.get("phrase_plan"),
             "choreography": section.get("choreography"),
+            # Hard-truth render signature — encodes what was ACTUALLY used to build audio,
+            # not just what was planned.  Distinct values prove audibly different output.
+            "actual_render_signature": actual_render_signature,
         })
 
         difference_reasons: list[str] = []
@@ -1991,6 +2104,7 @@ def _render_producer_arrangement(
                 "section_name": section_name,
                 "section_type": section_type,
                 "active_stems": active_role_snapshot,
+                "actual_render_signature": actual_render_signature,
                 "transition_events_inserted": sorted(set(section_applied_events)),
                 "difference_from_previous": difference_reasons,
             }
@@ -2015,13 +2129,31 @@ def _render_producer_arrangement(
     render_spec_summary = _build_render_spec_summary(timeline_sections)
     logger.info(
         "RENDER_SPEC_SUMMARY sections=%d phrase_splits=%d distinct_stem_sets=%d "
-        "hook_stages=%s transition_events=%d",
+        "unique_render_signatures=%d unique_phrase_signatures=%d render_path=%s "
+        "is_stereo_fallback=%s hook_stages=%s transition_events=%d",
         render_spec_summary["sections_count"],
         render_spec_summary["phrase_split_count"],
         render_spec_summary["distinct_stem_set_count"],
+        render_spec_summary["unique_render_signature_count"],
+        render_spec_summary["unique_phrase_signature_count"],
+        render_spec_summary["render_path_used"],
+        render_spec_summary["is_stereo_fallback"],
         render_spec_summary["hook_stages"],
         render_spec_summary["transition_event_count"],
     )
+    if render_spec_summary["is_stereo_fallback"]:
+        logger.warning(
+            "STEREO_FALLBACK_USED arrangement rendered without real stems — "
+            "section differences are DSP-only, not stem-layer based. "
+            "Provide stem-separated audio for true audible section contrast."
+        )
+    if render_spec_summary["unique_render_signature_count"] <= 1 and render_spec_summary["sections_count"] > 1:
+        logger.warning(
+            "unique_render_signature_count=%d for %d sections — "
+            "all sections produced identical audio (density-only syndrome).",
+            render_spec_summary["unique_render_signature_count"],
+            render_spec_summary["sections_count"],
+        )
 
     # Build timeline JSON
     timeline_json = json.dumps({
@@ -2765,20 +2897,40 @@ def run_arrangement_job(arrangement_id: int):
         arrangement.error_message = None
         db.commit()
 
+        # Extract render-spec summary from timeline JSON for the ARRANGEMENT_DONE log.
+        try:
+            _tl = json.loads(timeline_json) if timeline_json else {}
+            _rss = _tl.get("render_spec_summary") or {}
+        except Exception:
+            _rss = {}
+
         logger.info(
             "ARRANGEMENT_DONE arrangement_id=%s loop_id=%s output_s3_key=%s "
+            "render_path=%s unique_render_signatures=%s is_stereo_fallback=%s "
             "api_response_field=output_url",
             arrangement_id,
             arrangement.loop_id,
             output_key,
+            _rss.get("render_path_used", "unknown"),
+            _rss.get("unique_render_signature_count", "?"),
+            _rss.get("is_stereo_fallback", "?"),
         )
-        logger.info(f"Successfully completed arrangement {arrangement_id}")
+        if _rss.get("is_stereo_fallback"):
+            logger.warning(
+                "SOURCE_MATERIAL_LIMITATION arrangement_id=%s — no stems available; "
+                "sections differentiated by DSP only. Upload a loop with stem-separated files "
+                "to unlock true layer-based section contrast.",
+                arrangement_id,
+            )
         log_feature_event(
             logger,
             event="render_finished",
             correlation_id=correlation_id,
             arrangement_id=arrangement_id,
             duration_sec=round(time.time() - started_at, 3),
+            render_path=_rss.get("render_path_used", "unknown"),
+            unique_render_signatures=_rss.get("unique_render_signature_count"),
+            is_stereo_fallback=_rss.get("is_stereo_fallback"),
         )
 
     except Exception as e:
