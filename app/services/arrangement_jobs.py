@@ -405,6 +405,46 @@ def debug_render_report(arrangement_id: int) -> list[dict]:
     return report
 
 
+def get_render_spec_summary(arrangement_id: int) -> dict:
+    """Return the render-spec summary stored inside an arrangement's timeline JSON.
+
+    This is the Phase 6 production-safe debug entry point.  The summary is built
+    by ``_build_render_spec_summary()`` at render time and persisted inside
+    ``arrangement.arrangement_json``.
+
+    Returns a dict with keys:
+      - sections_count
+      - distinct_stem_set_count  — 1 means every section used the same stems (bad)
+      - most_reused_stem_set_count
+      - phrase_split_count        — how many sections had intra-section phrase splits
+      - hook_stages               — list of hook stage strings rendered
+      - transition_event_count
+      - section_role_map          — per-section role/phrase detail
+
+    Raises ``ValueError`` if arrangement not found or has no timeline data.
+    """
+    from app.db import SessionLocal
+    from app.models.arrangement import Arrangement
+
+    db = SessionLocal()
+    try:
+        arrangement = db.query(Arrangement).filter(Arrangement.id == arrangement_id).first()
+        if not arrangement:
+            raise ValueError(f"Arrangement {arrangement_id} not found")
+        if not arrangement.arrangement_json:
+            raise ValueError(f"Arrangement {arrangement_id} has no timeline data yet")
+        timeline = json.loads(arrangement.arrangement_json)
+        summary = timeline.get("render_spec_summary")
+        if not summary:
+            raise ValueError(
+                f"Arrangement {arrangement_id} timeline has no render_spec_summary "
+                "(was rendered before this feature was added)"
+            )
+        return summary
+    finally:
+        db.close()
+
+
 def _parse_style_sections(raw_json: str | None) -> list[dict] | None:
     """
     Parse style sections from arrangement_json.
@@ -1343,6 +1383,72 @@ def _build_section_audio_from_stems(
     return _apply_headroom_ceiling(mixed, target_peak_dbfs=-6.0)
 
 
+def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
+    """Build a production-safe inspectable summary of what the renderer actually did.
+
+    This is persisted in the timeline_json so post-render audits can confirm:
+    - How many distinct stem sets were used (if this equals 1, sections sounded identical)
+    - How many phrase splits were executed
+    - Which hook stages were rendered
+    - Total applied transition/event count
+
+    Parameters
+    ----------
+    timeline_sections:
+        List of section dicts as populated by ``_render_producer_arrangement``.
+
+    Returns
+    -------
+    dict
+        Compact summary suitable for logging and API exposure.
+    """
+    stem_sets: list[frozenset] = []
+    phrase_split_count = 0
+    hook_stages: list[str] = []
+    transition_event_count = 0
+    section_role_rows: list[dict] = []
+
+    for section in timeline_sections:
+        stems_used = frozenset(section.get("runtime_active_stems") or section.get("active_stem_roles") or [])
+        stem_sets.append(stems_used)
+
+        if section.get("phrase_plan_used"):
+            phrase_split_count += 1
+
+        hook_ev = section.get("hook_evolution")
+        if isinstance(hook_ev, dict) and hook_ev.get("stage"):
+            hook_stages.append(str(hook_ev["stage"]))
+
+        transition_event_count += len(section.get("applied_events") or [])
+
+        section_role_rows.append({
+            "section_index": len(section_role_rows),
+            "section_type": section.get("type", ""),
+            "stems": sorted(stems_used),
+            "phrase_split": bool(section.get("phrase_plan_used")),
+            "hook_stage": (hook_ev or {}).get("stage") if isinstance(hook_ev, dict) else None,
+            "first_phrase_roles": (section.get("phrase_plan") or {}).get("first_phrase_roles"),
+            "second_phrase_roles": (section.get("phrase_plan") or {}).get("second_phrase_roles"),
+            "boundary_event_count": len(section.get("boundary_events") or []),
+        })
+
+    # Count stem sets that appear more than once to flag identical-render syndrome.
+    from collections import Counter
+    stem_set_counts = Counter(stem_sets)
+    distinct_count = len(stem_set_counts)
+    most_reused = stem_set_counts.most_common(1)[0][1] if stem_set_counts else 0
+
+    return {
+        "sections_count": len(timeline_sections),
+        "distinct_stem_set_count": distinct_count,
+        "most_reused_stem_set_count": most_reused,
+        "phrase_split_count": phrase_split_count,
+        "hook_stages": hook_stages,
+        "transition_event_count": transition_event_count,
+        "section_role_map": section_role_rows,
+    }
+
+
 def _render_producer_arrangement(
     loop_audio: AudioSegment,
     producer_arrangement: dict,
@@ -1667,9 +1773,11 @@ def _render_producer_arrangement(
         # ====================================================================
         section_applied_events: list[str] = []
         
-        render_profile = producer_arrangement.get("render_profile") or {}
-        stem_meta = producer_arrangement.get("stem_separation") or render_profile.get("stem_separation") or {}
-        stem_available = bool(stem_meta.get("enabled") and stem_meta.get("succeeded"))
+        # stem_available drives DSP intensity in producer-move effects.
+        # Derive from the actual stems argument (use_stems), not only from render
+        # profile metadata — so that when real stems are passed the effects are
+        # at full strength even when metadata is missing.
+        stem_available = use_stems
 
         variations = section.get("variations", [])
         if not variations and isinstance(producer_arrangement.get("all_variations"), list):
@@ -1845,6 +1953,10 @@ def _render_producer_arrangement(
             "end_bar": bar_end,
             "start_seconds": round(start_seconds, 3),
             "end_seconds": round(end_seconds, 3),
+            # Render-spec fields for Phase 6 debug visibility.
+            "phrase_plan_used": bool(section.get("phrase_plan") and section_bars > 4),
+            "phrase_plan": section.get("phrase_plan"),
+            "choreography": section.get("choreography"),
         })
 
         difference_reasons: list[str] = []
@@ -1897,7 +2009,19 @@ def _render_producer_arrangement(
             "time_seconds": round(start_seconds, 3),
             "energy": section_energy,
         })
-    
+
+    # Build render-spec summary (Phase 6 — production-safe debug inspection).
+    render_spec_summary = _build_render_spec_summary(timeline_sections)
+    logger.info(
+        "RENDER_SPEC_SUMMARY sections=%d phrase_splits=%d distinct_stem_sets=%d "
+        "hook_stages=%s transition_events=%d",
+        render_spec_summary["sections_count"],
+        render_spec_summary["phrase_split_count"],
+        render_spec_summary["distinct_stem_set_count"],
+        render_spec_summary["hook_stages"],
+        render_spec_summary["transition_event_count"],
+    )
+
     # Build timeline JSON
     timeline_json = json.dumps({
         "bpm": bpm,
@@ -1911,6 +2035,7 @@ def _render_producer_arrangement(
         "events": timeline_events,
         "section_boundaries": producer_arrangement.get("section_boundaries") or [],
         "producer_debug_report": producer_debug_report,
+        "render_spec_summary": render_spec_summary,
         "metadata": {
             "total_bars": total_bars,
             "key": producer_arrangement.get("key", "C"),

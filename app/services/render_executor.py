@@ -112,8 +112,16 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
             "instruments": raw_section.get("instruments") or [],
             "loop_variant": raw_section.get("loop_variant"),
             "loop_variant_file": raw_section.get("loop_variant_file"),
-            "variations": [],
+            # Seed from section-level variations so bridge_strip, outro_strip_down, etc.
+            # survive the JSON round-trip.  Event-based variations are appended below.
+            "variations": list(raw_section.get("variations") or []),
             "boundary_events": list(raw_section.get("boundary_events") or []),
+            # Preserve phrase variation plan so intra-section phrase splits are rendered.
+            "phrase_plan": raw_section.get("phrase_plan"),
+            # Preserve hook evolution stage so hook1/hook2/hook3 processing is distinct.
+            "hook_evolution": raw_section.get("hook_evolution"),
+            # Preserve active_stem_roles for diagnostics / debug_render_report.
+            "active_stem_roles": raw_section.get("active_stem_roles") or raw_section.get("instruments") or [],
         }
         normalized_sections.append(normalized)
 
