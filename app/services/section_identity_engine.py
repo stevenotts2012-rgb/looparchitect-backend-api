@@ -191,6 +191,68 @@ def _profile(section_type: str) -> SectionProfile:
     return SECTION_PROFILES.get(str(section_type).strip().lower(), _FALLBACK_PROFILE)
 
 
+def get_effective_profile(section_type: str, preset_name: str | None = None) -> SectionProfile:
+    """Return a ``SectionProfile`` for *section_type* with optional preset overrides applied.
+
+    When *preset_name* is ``None`` or unrecognised the base profile from
+    ``SECTION_PROFILES`` is returned unchanged.  When a valid preset is given,
+    only the fields explicitly set in the preset's ``PresetSectionOverride`` for
+    this section type are replaced; all other fields keep their base values.
+    """
+    base = _profile(section_type)
+    if not preset_name:
+        return base
+
+    try:
+        from app.services.arrangement_presets import get_preset_config
+    except ImportError:
+        return base
+
+    preset = get_preset_config(preset_name)
+    if not preset:
+        return base
+
+    override = preset.section_overrides.get(str(section_type).strip().lower())
+    if not override:
+        return base
+
+    return SectionProfile(
+        role_priorities=(
+            override.role_priorities
+            if override.role_priorities is not None
+            else base.role_priorities
+        ),
+        forbidden_roles=(
+            override.forbidden_roles
+            if override.forbidden_roles is not None
+            else base.forbidden_roles
+        ),
+        density_min=(
+            override.density_min
+            if override.density_min is not None
+            else base.density_min
+        ),
+        density_max=(
+            override.density_max
+            if override.density_max is not None
+            else base.density_max
+        ),
+        contrast_vs_adjacent=base.contrast_vs_adjacent,
+        escalation_per_repeat=base.escalation_per_repeat,
+        subtract_on_repeat=base.subtract_on_repeat,
+        default_transition_in=(
+            override.default_transition_in
+            if override.default_transition_in is not None
+            else base.default_transition_in
+        ),
+        default_transition_out=(
+            override.default_transition_out
+            if override.default_transition_out is not None
+            else base.default_transition_out
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Role selection — the core deterministic algorithm
 # ---------------------------------------------------------------------------
@@ -203,6 +265,7 @@ def select_roles_for_section(
     prev_same_type_roles: Optional[list[str]] = None,
     next_section_type: Optional[str] = None,
     prev_adjacent_roles: Optional[list[str]] = None,
+    preset_name: Optional[str] = None,
 ) -> list[str]:
     """Return the active role list for one section occurrence.
 
@@ -223,6 +286,10 @@ def select_roles_for_section(
     prev_adjacent_roles:
         Active roles from the immediately preceding section (different type).
         Used to enforce contrast_vs_adjacent.
+    preset_name:
+        Optional arrangement preset name (e.g. ``"trap"``, ``"cinematic"``).
+        When provided, role priorities, density bounds, and forbidden roles are
+        taken from the preset rather than the default ``SECTION_PROFILES``.
 
     Returns
     -------
@@ -232,7 +299,7 @@ def select_roles_for_section(
     if not available_roles:
         return []
 
-    profile = _profile(section_type)
+    profile = get_effective_profile(section_type, preset_name)
     available_set = set(available_roles)
 
     # 1. Filter out forbidden roles.
@@ -983,6 +1050,7 @@ def select_roles_with_choreography(
     prev_same_type_roles: Optional[list[str]] = None,
     next_section_type: Optional[str] = None,
     prev_adjacent_roles: Optional[list[str]] = None,
+    preset_name: Optional[str] = None,
 ) -> tuple[list[str], SectionChoreography]:
     """Select active roles AND compute the role hierarchy for one section occurrence.
 
@@ -996,6 +1064,10 @@ def select_roles_with_choreography(
     section_type, available_roles, occurrence, prev_same_type_roles,
     next_section_type, prev_adjacent_roles:
         Same semantics as ``select_roles_for_section``.
+    preset_name:
+        Optional arrangement preset name.  When provided, the effective
+        profile (role priorities, density, forbidden roles) is derived from
+        the preset rather than the base ``SECTION_PROFILES``.
 
     Returns
     -------
@@ -1008,7 +1080,7 @@ def select_roles_with_choreography(
 
     choreography = get_section_choreography(section_type, occurrence, available_roles)
 
-    profile = _profile(section_type)
+    profile = get_effective_profile(section_type, preset_name)
     available_set = set(available_roles)
 
     # Merge profile's forbidden with choreography's suppressed roles.

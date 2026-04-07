@@ -330,14 +330,17 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
             from app.services.arrangement_jobs import run_arrangement_job
 
+            arrangement_preset = str(params.get("arrangement_preset") or "trap").strip().lower() if isinstance(params, dict) else "trap"
+
             logger.info(
-                "Arrangement-mode START run_arrangement_job: app_job_id=%s arrangement_id=%s loop_id=%s",
+                "Arrangement-mode START run_arrangement_job: app_job_id=%s arrangement_id=%s loop_id=%s preset=%s",
                 app_job_id,
                 arrangement_id,
                 loop_id,
+                arrangement_preset,
             )
             try:
-                _run_with_timeout(run_arrangement_job, int(arrangement_id))
+                _run_with_timeout(run_arrangement_job, int(arrangement_id), arrangement_preset)
             except FuturesTimeoutError:
                 raise TimeoutError(
                     f"Arrangement job {arrangement_id} exceeded timeout of {_JOB_TIMEOUT_SECONDS}s"

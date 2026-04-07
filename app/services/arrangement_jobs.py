@@ -651,7 +651,11 @@ def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
     return (audio * repeats)[:target_ms]
 
 
-def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict | None) -> list[dict]:
+def _apply_stem_primary_section_states(
+    sections: list[dict],
+    stem_metadata: dict | None,
+    arrangement_preset: str | None = None,
+) -> list[dict]:
     if not stem_metadata or not stem_metadata.get("enabled") or not stem_metadata.get("succeeded"):
         return sections
 
@@ -694,6 +698,7 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
                     occurrence=occurrence,
                     prev_same_type_roles=prev_same_type_roles.get(section_type),
                     prev_adjacent_roles=prev_adjacent_roles if section_idx > 0 else None,
+                    preset_name=arrangement_preset,
                 )
                 section["choreography"] = {
                     "leader_roles": list(choreography.leader_roles),
@@ -709,6 +714,7 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
                     occurrence=occurrence,
                     prev_same_type_roles=prev_same_type_roles.get(section_type),
                     prev_adjacent_roles=prev_adjacent_roles if section_idx > 0 else None,
+                    preset_name=arrangement_preset,
                 )
 
             if not active_roles and available_roles:
@@ -2107,6 +2113,7 @@ def _build_pre_render_plan(
     genre_hint: str | None,
     stem_metadata: dict | None = None,
     loop_variation_manifest: dict | None = None,
+    arrangement_preset: str | None = None,
 ) -> dict:
     """Build render_plan_json before rendering begins so all render paths consume the same plan."""
 
@@ -2231,7 +2238,7 @@ def _build_pre_render_plan(
             for s in sections
         ]
 
-    sections = _apply_stem_primary_section_states(sections, stem_metadata)
+    sections = _apply_stem_primary_section_states(sections, stem_metadata, arrangement_preset)
     sections = assign_section_variants(sections, loop_variation_manifest)
     transition_payload = build_transition_plan(
         sections=sections,
@@ -2413,7 +2420,7 @@ def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
     raise ValueError(f"Cannot decode audio file in any supported format. File signature: {sig}. Errors: {error_details}")
 
 
-def run_arrangement_job(arrangement_id: int):
+def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
 
@@ -2427,6 +2434,7 @@ def run_arrangement_job(arrangement_id: int):
 
     Args:
         arrangement_id: ID of the Arrangement record to process
+        arrangement_preset: Optional genre preset name (trap, drill, cinematic, etc.)
     """
     db = SessionLocal()
 
@@ -2645,6 +2653,7 @@ def run_arrangement_job(arrangement_id: int):
             genre_hint=(arrangement.genre or loop.genre),
             stem_metadata=stem_metadata,
             loop_variation_manifest=loop_variation_manifest,
+            arrangement_preset=arrangement_preset,
         )
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()

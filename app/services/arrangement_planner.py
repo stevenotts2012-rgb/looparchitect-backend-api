@@ -133,7 +133,49 @@ def _section_density(section_type: str, energy: int) -> str:
     return "medium" if energy <= 3 else "full"
 
 
-def _transition_for_section(section_type: str) -> str:
+_TRANSITION_SCHEMA_ALLOWED = frozenset({
+    "none",
+    "drum_fill",
+    "fx_rise",
+    "fx_hit",
+    "mute_drop",
+    "bass_drop",
+    "vocal_chop",
+    "arp_lift",
+    "percussion_fill",
+})
+
+_TRANSITION_REMAP = {
+    "riser": "fx_rise",
+    "pull_back": "none",
+    "crossfade": "none",
+    "silence_drop": "fx_hit",
+    "filter_open": "none",
+    "lift": "drum_fill",
+    "impact": "fx_hit",
+    "fade": "none",
+}
+
+
+def _normalize_transition(value: str) -> str:
+    """Map any transition string to an ``ArrangementPlanSection``-allowed value."""
+    v = str(value).strip().lower()
+    if v in _TRANSITION_SCHEMA_ALLOWED:
+        return v
+    return _TRANSITION_REMAP.get(v, "none")
+
+
+def _transition_for_section(section_type: str, arrangement_preset: str | None = None) -> str:
+    if arrangement_preset:
+        try:
+            from app.services.arrangement_presets import get_preset_config
+            preset = get_preset_config(arrangement_preset)
+            if preset:
+                override = preset.section_overrides.get(str(section_type).strip().lower())
+                if override and override.default_transition_in is not None:
+                    return _normalize_transition(override.default_transition_in)
+        except ImportError:
+            pass
     return {
         "intro": "none",
         "verse": "drum_fill",
@@ -145,7 +187,7 @@ def _transition_for_section(section_type: str) -> str:
     }.get(section_type, "none")
 
 
-def _roles_for_section(section_type: str, allowed_roles: list[str], density: str, occurrence: int = 1, prev_same_type_roles: list[str] | None = None, prev_adjacent_roles: list[str] | None = None) -> list[str]:
+def _roles_for_section(section_type: str, allowed_roles: list[str], density: str, occurrence: int = 1, prev_same_type_roles: list[str] | None = None, prev_adjacent_roles: list[str] | None = None, arrangement_preset: str | None = None) -> list[str]:
     if settings.feature_producer_section_identity_v2:
         from app.services.section_identity_engine import select_roles_for_section
         return select_roles_for_section(
@@ -154,10 +196,32 @@ def _roles_for_section(section_type: str, allowed_roles: list[str], density: str
             occurrence=occurrence,
             prev_same_type_roles=prev_same_type_roles,
             prev_adjacent_roles=prev_adjacent_roles,
+            preset_name=arrangement_preset,
         )
 
     if not allowed_roles:
         return []
+
+    # When an arrangement preset is given, apply its role priorities and density
+    # overrides even outside the identity engine.
+    if arrangement_preset:
+        try:
+            from app.services.section_identity_engine import get_effective_profile
+            profile = get_effective_profile(section_type, arrangement_preset)
+            forbidden = profile.forbidden_roles
+            permitted = [r for r in allowed_roles if r not in forbidden]
+            ordered_pref = [r for r in profile.role_priorities if r in set(permitted)]
+            for r in permitted:
+                if r not in set(ordered_pref):
+                    ordered_pref.append(r)
+            max_roles_p = profile.density_max
+            selected = _dedupe(ordered_pref[:max_roles_p])
+            if len(selected) < profile.density_min and ordered_pref:
+                extra = [r for r in ordered_pref if r not in set(selected)]
+                selected.extend(extra[: profile.density_min - len(selected)])
+            return selected if selected else (ordered_pref[:1] if ordered_pref else ([allowed_roles[0]] if allowed_roles else []))
+        except (ImportError, Exception):
+            pass  # Fall through to hardcoded preference below
 
     preference = {
         "intro": ["pads", "fx", "melody", "arp", "vocal", "full_mix", "synth"],
@@ -199,6 +263,8 @@ def build_fallback_arrangement_plan(
     user_request: Optional[str],
     planner_config: ArrangementPlannerConfig,
 ) -> ArrangementPlan:
+    arrangement_preset = getattr(planner_input, "arrangement_preset", None)
+
     allowed_roles = _normalize_roles(
         planner_input.detected_roles,
         allow_full_mix=planner_config.allow_full_mix,
@@ -241,8 +307,9 @@ def build_fallback_arrangement_plan(
             occurrence=occurrence,
             prev_same_type_roles=prev_same_type_roles.get(section_type),
             prev_adjacent_roles=prev_adjacent_roles if idx > 0 else None,
+            arrangement_preset=arrangement_preset,
         )
-        transition = _transition_for_section(section_type)
+        transition = _transition_for_section(section_type, arrangement_preset)
         note = _SECTION_PLAN_NOTES.get(section_type, "Controlled section change to preserve progression.")
         if occurrence > 1:
             note = f"{note} (occurrence {occurrence}: evolved from prior {section_type})"
