@@ -1488,7 +1488,7 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         "hook_stages": hook_stages,
         "transition_event_count": transition_event_count,
         "section_role_map": section_role_rows,
-        # --- Phase 2 / Phase 6 hard-truth metrics ---
+        # --- Phase 5 hard-truth audibility metrics ---
         "unique_render_signature_count": unique_render_signature_count,
         "unique_phrase_signature_count": unique_phrase_signature_count,
         "render_path_used": render_path_used,

@@ -434,7 +434,7 @@ class TestFallbackPathDetection:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 Test Class 4 — stem fallback respects forbidden roles
+# Phase 5 Test Class 4 — stem fallback respects forbidden roles
 # ---------------------------------------------------------------------------
 
 
