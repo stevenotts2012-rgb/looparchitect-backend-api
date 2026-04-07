@@ -636,7 +636,7 @@ def compute_arrangement_quality(
         avg_verse = sum(verse_densities) / len(verse_densities)
         avg_hook = sum(hook_densities) / len(hook_densities)
         ratio = avg_hook / max(1, avg_verse)
-        metrics.payoff_strength_score = round(min(1.0, (ratio - 1.0) / 1.0), 3)  # 0 if equal, 1 if hook is 2x verse
+        metrics.payoff_strength_score = round(min(1.0, ratio - 1.0), 3)  # 0 if equal, 1 if hook is 2x verse
         metrics.payoff_strength_score = max(0.0, metrics.payoff_strength_score)
     else:
         metrics.payoff_strength_score = 0.5  # Not enough data

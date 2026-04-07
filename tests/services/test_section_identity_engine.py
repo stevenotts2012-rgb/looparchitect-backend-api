@@ -228,7 +228,7 @@ class TestRoleChoreography:
 
     def test_adjacent_contrast_enforcement_kicks_in(self):
         """When adjacent roles are too similar, the engine must swap roles."""
-        # Give intro and verse a scenario where naive selection overlaps a lot
+        # Give verse and bridge a scenario where naive selection overlaps a lot
         # by restricting to only non-rhythmic roles — bridge should still differ from verse
         limited_roles = ["melody", "pads", "fx", "arp", "synth"]
         verse = select_roles_for_section("verse", limited_roles, occurrence=1)
