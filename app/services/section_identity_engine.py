@@ -237,6 +237,12 @@ def get_effective_profile(section_type: str, preset_name: str | None = None) -> 
             if override.density_max is not None
             else base.density_max
         ),
+        # contrast_vs_adjacent, escalation_per_repeat, and subtract_on_repeat are
+        # intentionally NOT exposed as preset overrides.  They govern algorithmic
+        # evolution behaviour (adjacent-section contrast enforcement, per-repeat
+        # density escalation, and subtractive-tension rules) that are
+        # section-type invariants and should remain consistent regardless of the
+        # genre preset in order to preserve the QA metrics baselines.
         contrast_vs_adjacent=base.contrast_vs_adjacent,
         escalation_per_repeat=base.escalation_per_repeat,
         subtract_on_repeat=base.subtract_on_repeat,

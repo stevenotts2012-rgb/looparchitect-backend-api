@@ -220,8 +220,10 @@ def _roles_for_section(section_type: str, allowed_roles: list[str], density: str
                 extra = [r for r in ordered_pref if r not in set(selected)]
                 selected.extend(extra[: profile.density_min - len(selected)])
             return selected if selected else (ordered_pref[:1] if ordered_pref else ([allowed_roles[0]] if allowed_roles else []))
-        except (ImportError, Exception):
-            pass  # Fall through to hardcoded preference below
+        except ImportError:
+            logger.debug("section_identity_engine unavailable; falling back to hardcoded role preference")
+        except Exception:
+            logger.warning("Preset role selection failed for section=%s preset=%s; falling back", section_type, arrangement_preset, exc_info=True)
 
     preference = {
         "intro": ["pads", "fx", "melody", "arp", "vocal", "full_mix", "synth"],
