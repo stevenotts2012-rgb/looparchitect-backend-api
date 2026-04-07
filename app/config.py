@@ -67,6 +67,15 @@ class Settings(BaseSettings):
         validation_alias="PRODUCER_SECTION_IDENTITY_V2",
     )
 
+    # Section Choreography V2 — per-section role hierarchy (leader/support/suppressed/contrast),
+    # support-role rotation between repeated sections, intra-section phrase variation, and the
+    # five Phase-5 audible-contrast QA metrics.
+    # Requires PRODUCER_SECTION_IDENTITY_V2=true to take full effect.
+    feature_section_choreography_v2: bool = Field(
+        default=False,
+        validation_alias="SECTION_CHOREOGRAPHY_V2",
+    )
+
     # Reference-Guided Arrangement Mode — use an uploaded reference track as a structural blueprint
     # Musical content is NEVER copied; only structure/energy guidance is extracted.
     feature_reference_guided_arrangement: bool = Field(
@@ -121,6 +130,7 @@ class Settings(BaseSettings):
         "feature_ai_style_interpretation",
         "feature_producer_engine_strict_rules",
         "feature_producer_section_identity_v2",
+        "feature_section_choreography_v2",
         "feature_reference_guided_arrangement",
         "feature_reference_section_analysis",
         mode="before",

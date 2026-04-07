@@ -1,5 +1,5 @@
 """
-Section Identity Engine — Phase 2–7 of the real-arrangement initiative.
+Section Identity Engine — full-stack arrangement differentiation.
 
 Root causes fixed here:
 1. section_type role selection was occurrence-blind — verse 2 == verse 1.
@@ -7,10 +7,16 @@ Root causes fixed here:
 3. Repeated sections got identical role sets with no evolution strategy.
 4. Transitions existed as string labels only; no material handoff logic.
 5. No inspectable quality metrics — couldn't detect "fake arrangement" output.
+6. No role hierarchy (leader/support/suppressed) — just density shifts.
+7. No intra-section phrase variation — sections internally static for their duration.
+8. Repeated-section evolution too weak — support roles never rotated.
 
 This module provides:
 - SECTION_PROFILES: per-section identity rules (priorities, forbidden, density, contrast).
 - select_roles_for_section(): deterministic, occurrence-aware role selector.
+- SectionChoreography + get_section_choreography(): per-section role hierarchy.
+- select_roles_with_choreography(): role selection enforcing leader/support/suppressed hierarchy.
+- PhraseVariationPlan + get_phrase_variation_plan(): intra-section phrase-level splits.
 - compute_arrangement_quality(): inspectable quality metrics for QA/logging.
 - get_transition_events(): deterministic transition event generator per section boundary.
 - SECTION_IDENTITY_ENGINE_VERSION: version string for rollout traceability.
@@ -19,6 +25,7 @@ Integration points:
 - arrangement_planner.py  → _roles_for_section()
 - arrangement_jobs.py     → _apply_stem_primary_section_states()
 - Both gated by PRODUCER_SECTION_IDENTITY_V2 feature flag.
+- Choreography + phrase variation additionally gated by SECTION_CHOREOGRAPHY_V2 flag.
 
 Design principles:
 - Fully deterministic for the same inputs (no random, no LLM).
@@ -31,7 +38,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-SECTION_IDENTITY_ENGINE_VERSION = "1.0"
+# ---------------------------------------------------------------------------
+# Named constants — avoids magic-number repetition
+# ---------------------------------------------------------------------------
+
+# Jaccard distance below which consecutive same-type sections are considered
+# "too similar to hear as different" and the choreography rotation is triggered.
+_CHOREOGRAPHY_ROTATION_THRESHOLD: float = 0.25
+
+# Minimum Jaccard distance between consecutive same-type sections for the
+# repeat_distinction_score QA metric to consider them audibly distinct.
+MIN_REPEAT_DISTINCTION_THRESHOLD: float = 0.20
+
+# Minimum Jaccard distance between adjacent different-type section pairs for the
+# audible_contrast_score QA metric to pass.
+_AUDIBLE_CONTRAST_THRESHOLD: float = 0.35
+
+SECTION_IDENTITY_ENGINE_VERSION = "2.0"
 
 # ---------------------------------------------------------------------------
 # Per-section identity profiles
@@ -495,6 +518,14 @@ class ArrangementQualityMetrics:
     """Inspectable quality scores for a completed arrangement plan.
 
     All scores are in [0.0, 1.0].  Higher is better.
+
+    Legacy metrics (v1.0):
+      section_contrast_score, repetition_variation_score, transition_impact_score,
+      role_choreography_score, payoff_strength_score
+
+    New metrics (v2.0):
+      section_identity_score, repeat_distinction_score, phrase_variation_score,
+      arrangement_motion_score, audible_contrast_score
     """
 
     section_contrast_score: float = 0.0
@@ -511,6 +542,28 @@ class ArrangementQualityMetrics:
 
     payoff_strength_score: float = 0.0
     """Ratio of hook density to verse density (capped at 1.0)."""
+
+    # ---- Phase 5 / v2.0 metrics ----
+
+    section_identity_score: float = 0.0
+    """Fraction of sections whose active roles contain no profile-forbidden roles."""
+
+    repeat_distinction_score: float = 0.0
+    """Average Jaccard distance between consecutive occurrences of the same section type.
+    A value >= 0.20 means repeated sections are audibly distinguishable."""
+
+    phrase_variation_score: float = 0.0
+    """Fraction of sections > 4 bars that carry a phrase-level variation plan.
+    A value of 1.0 means every eligible section has internal first/second-half contrast."""
+
+    arrangement_motion_score: float = 0.0
+    """Fraction of adjacent section pairs where at least one role was ADDED and at least
+    one was REMOVED.  Pure density shifts (add-only or remove-only) do not count."""
+
+    audible_contrast_score: float = 0.0
+    """Fraction of adjacent different-type section pairs where the role Jaccard distance
+    exceeds 0.35 — the threshold below which most listeners cannot reliably detect the
+    section change."""
 
     warnings: list[str] = field(default_factory=list)
     """Human-readable QA warnings (non-fatal)."""
@@ -646,7 +699,613 @@ def compute_arrangement_quality(
             "payoff_strength_score <= 0 — hooks are no denser than verses"
         )
 
+    # ---- section_identity_score (v2.0) ----
+    # Fraction of sections whose active roles contain no profile-forbidden roles.
+    identity_ok = 0
+    for snap in snaps:
+        profile = SECTION_PROFILES.get(snap.section_type)
+        if profile is None:
+            identity_ok += 1  # Unknown section type: treat as ok
+            continue
+        if not any(r in profile.forbidden_roles for r in snap.active_roles):
+            identity_ok += 1
+    metrics.section_identity_score = round(identity_ok / len(snaps), 3)
+    if metrics.section_identity_score < 1.0:
+        violations = len(snaps) - identity_ok
+        metrics.warnings.append(
+            f"section_identity_score={metrics.section_identity_score:.2f} — "
+            f"{violations} section(s) contain forbidden roles for their type"
+        )
+
+    # ---- repeat_distinction_score (v2.0) ----
+    # Average Jaccard distance between consecutive same-type occurrences.
+    repeat_pairs: list[float] = []
+    prev_occurrence_roles: dict[str, list[str]] = {}
+    for snap in snaps:
+        if snap.section_type in prev_occurrence_roles:
+            dist = _jaccard_distance(snap.active_roles, prev_occurrence_roles[snap.section_type])
+            repeat_pairs.append(dist)
+        prev_occurrence_roles[snap.section_type] = snap.active_roles
+    metrics.repeat_distinction_score = (
+        round(sum(repeat_pairs) / len(repeat_pairs), 3) if repeat_pairs else 1.0
+    )
+    if repeat_pairs and metrics.repeat_distinction_score < 0.20:
+        metrics.warnings.append(
+            f"repeat_distinction_score={metrics.repeat_distinction_score:.2f} — "
+            "consecutive repeated sections sound near-identical (target >= 0.20)"
+        )
+
+    # ---- phrase_variation_score (v2.0) ----
+    # Fraction of sections > 4 bars that carry a phrase_plan dict.
+    eligible_for_phrase = [s for s in sections if int(s.get("bars", 0) or 0) > 4]
+    if eligible_for_phrase:
+        has_phrase_plan = sum(1 for s in eligible_for_phrase if s.get("phrase_plan"))
+        metrics.phrase_variation_score = round(has_phrase_plan / len(eligible_for_phrase), 3)
+    else:
+        metrics.phrase_variation_score = 1.0  # No eligible sections; not a problem
+    if eligible_for_phrase and metrics.phrase_variation_score < 0.50:
+        metrics.warnings.append(
+            f"phrase_variation_score={metrics.phrase_variation_score:.2f} — "
+            "most sections > 4 bars lack intra-section phrase variation"
+        )
+
+    # ---- arrangement_motion_score (v2.0) ----
+    # Fraction of adjacent pairs where at least one role is added AND one is removed.
+    motion_pairs = 0
+    motion_count = 0
+    for i in range(1, len(snaps)):
+        a = set(snaps[i - 1].active_roles)
+        b = set(snaps[i].active_roles)
+        motion_pairs += 1
+        if (b - a) and (a - b):  # Both additions and removals
+            motion_count += 1
+    metrics.arrangement_motion_score = (
+        round(motion_count / motion_pairs, 3) if motion_pairs else 1.0
+    )
+    if motion_pairs > 0 and metrics.arrangement_motion_score < 0.30:
+        metrics.warnings.append(
+            f"arrangement_motion_score={metrics.arrangement_motion_score:.2f} — "
+            "arrangement mostly shifts density; too few real role swaps"
+        )
+
+    # ---- audible_contrast_score (v2.0) ----
+    # Stricter Jaccard threshold (> 0.35) on adjacent different-type boundaries.
+    audible_pairs = 0
+    audible_count = 0
+    for i in range(1, len(snaps)):
+        if snaps[i].section_type != snaps[i - 1].section_type:
+            audible_pairs += 1
+            if _jaccard_distance(snaps[i].active_roles, snaps[i - 1].active_roles) > _AUDIBLE_CONTRAST_THRESHOLD:
+                audible_count += 1
+    metrics.audible_contrast_score = (
+        round(audible_count / audible_pairs, 3) if audible_pairs else 1.0
+    )
+    if audible_pairs > 0 and metrics.audible_contrast_score < 0.50:
+        metrics.warnings.append(
+            f"audible_contrast_score={metrics.audible_contrast_score:.2f} — "
+            f"section boundaries may not be audible enough (target > {_AUDIBLE_CONTRAST_THRESHOLD} Jaccard)"
+        )
+
     return metrics
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Section Choreography
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SectionChoreography:
+    """Role hierarchy for one section occurrence.
+
+    Describes *how* roles are arranged within a section — not just which are
+    present.  The renderer uses this to apply differential treatment (e.g.,
+    leader gets slightly more headroom, support sits behind, suppressed are
+    absent even when available).
+    """
+
+    leader_roles: tuple[str, ...]      # Roles that carry this section prominently
+    support_roles: tuple[str, ...]     # Present but secondary; mix slightly behind
+    suppressed_roles: tuple[str, ...]  # Absent by design (stronger than forbidden)
+    contrast_roles: tuple[str, ...]    # Optional roles that add harmonic interest
+    rotation_note: str = ""            # Human-readable annotation for diagnostics
+
+
+# Per-section choreography templates indexed by occurrence (0-based, wraps around).
+# Each list entry represents one distinct occurrence; the list cycles for extra repeats.
+_CHOREOGRAPHY_TEMPLATES: dict[str, list[SectionChoreography]] = {
+    "intro": [
+        SectionChoreography(
+            leader_roles=("pads", "fx"),
+            support_roles=("melody",),
+            suppressed_roles=("drums", "bass", "percussion"),
+            contrast_roles=("arp",),
+            rotation_note="Atmospheric entry — pads and FX carry",
+        ),
+    ],
+    "verse": [
+        # Occurrence 1: rhythm backbone carries, melody floats
+        SectionChoreography(
+            leader_roles=("drums", "bass"),
+            support_roles=("melody",),
+            suppressed_roles=("synth", "arp"),
+            contrast_roles=("vocal",),
+            rotation_note="Verse 1 — rhythm leads, melody supports",
+        ),
+        # Occurrence 2: melody promoted to co-leader, support rotated
+        SectionChoreography(
+            leader_roles=("melody", "bass"),
+            support_roles=("drums",),
+            suppressed_roles=("arp",),
+            contrast_roles=("vocal", "pads"),
+            rotation_note="Verse 2 — melody co-leads, support rotated",
+        ),
+        # Occurrence 3: synth enters as contrast, arp adds texture
+        SectionChoreography(
+            leader_roles=("drums", "melody"),
+            support_roles=("bass", "synth"),
+            suppressed_roles=(),
+            contrast_roles=("arp",),
+            rotation_note="Verse 3 — synth contrast layer added",
+        ),
+    ],
+    "pre_hook": [
+        # Occurrence 1: rhythmic edge, bass drives, drums suppressed
+        SectionChoreography(
+            leader_roles=("bass", "percussion"),
+            support_roles=("arp",),
+            suppressed_roles=("pads", "melody"),
+            contrast_roles=("fx",),
+            rotation_note="Pre-hook 1 — tension through bass/perc lead",
+        ),
+        # Occurrence 2: tension-through-absence — full rhythmic suppression
+        SectionChoreography(
+            leader_roles=("bass", "fx"),
+            support_roles=("arp",),
+            suppressed_roles=("drums", "percussion", "pads", "melody"),
+            contrast_roles=(),
+            rotation_note="Pre-hook 2 — tension through absence (drums suppressed)",
+        ),
+    ],
+    "hook": [
+        # Occurrence 1: full groove, melody+synth support
+        SectionChoreography(
+            leader_roles=("drums", "bass"),
+            support_roles=("melody", "synth"),
+            suppressed_roles=(),
+            contrast_roles=("vocal", "percussion"),
+            rotation_note="Hook 1 — full groove, melody+synth support",
+        ),
+        # Occurrence 2: melody elevated to co-leader, texture expands
+        SectionChoreography(
+            leader_roles=("drums", "melody"),
+            support_roles=("bass", "synth"),
+            suppressed_roles=(),
+            contrast_roles=("vocal", "pads", "fx"),
+            rotation_note="Hook 2 — melody co-leads, texture expands",
+        ),
+        # Occurrence 3: maximum density, all contrast roles join
+        SectionChoreography(
+            leader_roles=("drums", "melody"),
+            support_roles=("bass", "synth", "pads"),
+            suppressed_roles=(),
+            contrast_roles=("vocal", "arp", "fx"),
+            rotation_note="Hook 3 — maximum payoff, all contrast roles",
+        ),
+    ],
+    "bridge": [
+        SectionChoreography(
+            leader_roles=("pads", "melody"),
+            support_roles=("fx",),
+            suppressed_roles=("drums", "bass", "percussion"),
+            contrast_roles=("vocal", "arp"),
+            rotation_note="Bridge — melodic/textural, groove suppressed",
+        ),
+    ],
+    "breakdown": [
+        SectionChoreography(
+            leader_roles=("pads", "fx"),
+            support_roles=("vocal",),
+            suppressed_roles=("drums", "bass", "percussion"),
+            contrast_roles=("arp", "melody"),
+            rotation_note="Breakdown — atmosphere only, groove absent",
+        ),
+    ],
+    "outro": [
+        SectionChoreography(
+            leader_roles=("pads", "melody"),
+            support_roles=("fx",),
+            suppressed_roles=("drums", "bass", "percussion"),
+            contrast_roles=("arp",),
+            rotation_note="Outro — resolution, groove stripped",
+        ),
+    ],
+}
+
+_FALLBACK_CHOREOGRAPHY = SectionChoreography(
+    leader_roles=(),
+    support_roles=(),
+    suppressed_roles=(),
+    contrast_roles=(),
+    rotation_note="Fallback — no choreography rule for this section type",
+)
+
+
+def get_section_choreography(
+    section_type: str,
+    occurrence: int,
+    available_roles: list[str],
+) -> SectionChoreography:
+    """Return the deterministic role hierarchy for a section occurrence.
+
+    Parameters
+    ----------
+    section_type:
+        Canonical section type string.
+    occurrence:
+        1-based occurrence counter for this section type in the arrangement.
+    available_roles:
+        All roles present in the source material.  Used to filter the
+        leader/support/contrast lists to only roles that exist.
+
+    Returns
+    -------
+    SectionChoreography
+        Choreography with leader/support/suppressed/contrast filtered to
+        only the roles present in available_roles.
+    """
+    templates = _CHOREOGRAPHY_TEMPLATES.get(
+        str(section_type).strip().lower(),
+        None,
+    )
+    if not templates:
+        return _FALLBACK_CHOREOGRAPHY
+
+    idx = (max(1, occurrence) - 1) % len(templates)
+    template = templates[idx]
+
+    available_set = set(available_roles)
+    return SectionChoreography(
+        leader_roles=tuple(r for r in template.leader_roles if r in available_set),
+        support_roles=tuple(r for r in template.support_roles if r in available_set),
+        # suppressed_roles intentionally NOT filtered — they should be absent even
+        # if they exist in the source.
+        suppressed_roles=template.suppressed_roles,
+        contrast_roles=tuple(r for r in template.contrast_roles if r in available_set),
+        rotation_note=template.rotation_note,
+    )
+
+
+def select_roles_with_choreography(
+    section_type: str,
+    available_roles: list[str],
+    occurrence: int = 1,
+    prev_same_type_roles: Optional[list[str]] = None,
+    next_section_type: Optional[str] = None,
+    prev_adjacent_roles: Optional[list[str]] = None,
+) -> tuple[list[str], SectionChoreography]:
+    """Select active roles AND compute the role hierarchy for one section occurrence.
+
+    Extends ``select_roles_for_section`` by also enforcing the occurrence-based
+    suppression and leader rotation defined in ``_CHOREOGRAPHY_TEMPLATES``.  The
+    choreography object is returned alongside the role list so callers can use it
+    for render-time DSP decisions (e.g., boost leader by +1 dB).
+
+    Parameters
+    ----------
+    section_type, available_roles, occurrence, prev_same_type_roles,
+    next_section_type, prev_adjacent_roles:
+        Same semantics as ``select_roles_for_section``.
+
+    Returns
+    -------
+    (active_roles, choreography):
+        active_roles — ordered list of active roles for this section.
+        choreography — SectionChoreography with role hierarchy metadata.
+    """
+    if not available_roles:
+        return [], _FALLBACK_CHOREOGRAPHY
+
+    choreography = get_section_choreography(section_type, occurrence, available_roles)
+
+    profile = _profile(section_type)
+    available_set = set(available_roles)
+
+    # Merge profile's forbidden with choreography's suppressed roles.
+    effective_forbidden = profile.forbidden_roles | frozenset(choreography.suppressed_roles)
+    permitted = [r for r in available_roles if r not in effective_forbidden]
+
+    # Build the preference order: leaders first, then support, then contrast,
+    # then profile priority order, then anything remaining.
+    order_map: dict[str, int] = {}
+    for i, r in enumerate(choreography.leader_roles):
+        order_map[r] = i
+    base = len(choreography.leader_roles)
+    for i, r in enumerate(choreography.support_roles):
+        order_map.setdefault(r, base + i)
+    base += len(choreography.support_roles)
+    for i, r in enumerate(choreography.contrast_roles):
+        order_map.setdefault(r, base + i)
+    base += len(choreography.contrast_roles)
+    for i, r in enumerate(profile.role_priorities):
+        order_map.setdefault(r, base + i)
+
+    preferred_order = sorted(
+        [r for r in permitted if r in order_map],
+        key=lambda r: order_map[r],
+    )
+    for r in permitted:
+        if r not in set(preferred_order):
+            preferred_order.append(r)
+
+    if not preferred_order:
+        # All roles forbidden/suppressed — return least harmful.
+        return ([available_roles[0]] if available_roles else []), choreography
+
+    target_count = _target_density(profile, occurrence, len(preferred_order))
+    candidates = preferred_order[:target_count]
+
+    # Apply support-role rotation using choreography-aware evolution.
+    candidates = _apply_choreography_evolution(
+        profile=profile,
+        occurrence=occurrence,
+        candidates=candidates,
+        preferred_order=preferred_order,
+        prev_same_type_roles=prev_same_type_roles or [],
+        choreography=choreography,
+    )
+
+    if prev_adjacent_roles:
+        candidates = _enforce_adjacent_contrast(
+            profile=profile,
+            candidates=candidates,
+            preferred_order=preferred_order,
+            prev_adjacent_roles=prev_adjacent_roles,
+            available_roles=available_roles,
+        )
+
+    # Prefer isolated roles over full_mix.
+    non_full = [r for r in candidates if r != "full_mix"]
+    if len(non_full) >= 2:
+        candidates = non_full
+
+    candidates = candidates[: profile.density_max]
+    if len(candidates) < profile.density_min and preferred_order:
+        extra = [r for r in preferred_order if r not in set(candidates)]
+        candidates.extend(extra[: profile.density_min - len(candidates)])
+
+    candidates = [r for r in candidates if r in available_set]
+    if not candidates:
+        candidates = preferred_order[:1] if preferred_order else []
+
+    return candidates, choreography
+
+
+def _apply_choreography_evolution(
+    profile: SectionProfile,
+    occurrence: int,
+    candidates: list[str],
+    preferred_order: list[str],
+    prev_same_type_roles: list[str],
+    choreography: SectionChoreography,
+) -> list[str]:
+    """Rotate support roles between repeated sections for audible distinction.
+
+    Unlike the base ``_apply_evolution`` (which only forces a change when sets
+    are identical), this version also rotates when the Jaccard distance between
+    the current candidates and the previous occurrence is below 0.25 — even if
+    the sets are not strictly equal.
+    """
+    if occurrence <= 1 or not prev_same_type_roles:
+        return candidates
+
+    prev_set = set(prev_same_type_roles)
+    current_set = set(candidates)
+
+    jaccard = _jaccard_distance(list(current_set), list(prev_set))
+
+    if jaccard < _CHOREOGRAPHY_ROTATION_THRESHOLD:
+        # Sets are too similar — rotate support roles.
+        # Find roles NOT in the previous occurrence (fresh choices).
+        fresh_roles = [r for r in preferred_order if r not in prev_set]
+        # Roles shared between previous and current (candidates for swapping out).
+        shared_roles = [c for c in candidates if c in prev_set]
+
+        # Prefer swapping support-tier roles (not leaders) to preserve section identity.
+        leader_set = set(choreography.leader_roles)
+        non_leader_shared = [r for r in shared_roles if r not in leader_set]
+        swap_targets = non_leader_shared if non_leader_shared else shared_roles
+
+        # Rotation index: deterministic, advances by 1 per occurrence so
+        # the same pair of candidates is never chosen twice in a row.
+        rotation_index = max(0, occurrence - 2)
+
+        if fresh_roles and swap_targets:
+            swap_in = fresh_roles[rotation_index % len(fresh_roles)]
+            swap_out = swap_targets[rotation_index % len(swap_targets)]
+            candidates = [c for c in candidates if c != swap_out] + [swap_in]
+        elif fresh_roles and len(candidates) < profile.density_max:
+            candidates = list(candidates) + [fresh_roles[rotation_index % len(fresh_roles)]]
+
+    # subtract_on_repeat: pre_hook loses drums on every repeat for tension.
+    if profile.subtract_on_repeat and occurrence >= 2:
+        for r in ("drums", "percussion"):
+            if r in set(candidates) and len(candidates) > profile.density_min:
+                candidates = [c for c in candidates if c != r]
+                break
+
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Intra-Section Phrase Variation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PhraseVariationPlan:
+    """Intra-section phrase variation for sections longer than 4 bars.
+
+    Splits the section into two phrases at ``split_bar`` and assigns
+    independent role sets to each half.  When the render pipeline has this
+    data it builds each phrase from separate stems, creating real audible
+    movement inside a single section.
+    """
+
+    section_type: str
+    total_bars: int
+    split_bar: int                         # Relative bar index where second phrase starts
+    first_phrase_roles: list[str]          # Active stems for bars [0, split_bar)
+    second_phrase_roles: list[str]         # Active stems for bars [split_bar, total_bars)
+    lead_entry_delay_bars: int = 0         # Bars before lead role enters (0 = immediate)
+    end_dropout_bars: int = 0              # Bars at section end where some roles drop
+    end_dropout_roles: list[str] = field(default_factory=list)
+    description: str = ""
+
+
+def get_phrase_variation_plan(
+    section_type: str,
+    active_roles: list[str],
+    section_bars: int,
+    occurrence: int = 1,
+    available_roles: Optional[list[str]] = None,
+) -> Optional[PhraseVariationPlan]:
+    """Return a phrase variation plan for sections longer than 4 bars.
+
+    Creates meaningful internal movement inside a section rather than a
+    static repeated loop.  Returns ``None`` for sections ≤ 4 bars (too
+    short for audible phrase structure) or when active_roles has fewer
+    than 2 roles.
+
+    Parameters
+    ----------
+    section_type:
+        Canonical section type string.
+    active_roles:
+        Roles selected for this section occurrence (output of role selector).
+    section_bars:
+        Total number of bars in this section.
+    occurrence:
+        1-based occurrence counter for this section type.
+    available_roles:
+        All roles in the source (used to fill second-half hook expansion).
+    """
+    if section_bars <= 4:
+        return None  # Too short for phrase-level variation
+    if len(active_roles) < 2:
+        return None  # Need at least 2 roles to vary
+
+    stype = str(section_type).strip().lower()
+    active_set = set(active_roles)
+    split_bar = section_bars // 2  # Standard mid-section split
+
+    if stype == "verse":
+        # First phrase: rhythm backbone only (drums + bass).
+        # Second phrase: full role set (adds melody/lead at bar split_bar).
+        rhythmic = [r for r in active_roles if r in {"drums", "bass", "percussion"}]
+        melodic = [r for r in active_roles if r in {"melody", "vocal", "synth", "arp"}]
+        support = [r for r in active_roles if r not in set(rhythmic) and r not in set(melodic)]
+
+        if rhythmic and melodic:
+            first_phrase = list(rhythmic) + list(support)
+            second_phrase = list(active_roles)
+            # End dropout: remove atmospheric roles in last bar
+            end_drop = [r for r in ["pads", "synth", "arp"] if r in active_set]
+            return PhraseVariationPlan(
+                section_type=stype,
+                total_bars=section_bars,
+                split_bar=split_bar,
+                first_phrase_roles=first_phrase,
+                second_phrase_roles=second_phrase,
+                lead_entry_delay_bars=0,
+                end_dropout_bars=1,
+                end_dropout_roles=end_drop[:1],
+                description=(
+                    f"Verse {occurrence} phrase split bar {split_bar}: "
+                    f"rhythm-only first half → full second half"
+                ),
+            )
+
+    elif stype == "hook":
+        # First phrase: core groove (drums + bass + melody).
+        # Second phrase: full roles + one available contrast role if possible.
+        core = [r for r in active_roles if r in {"drums", "bass", "melody", "vocal"}]
+        extra_in_active = [r for r in active_roles if r not in set(core)]
+        extra_available = [
+            r for r in (available_roles or [])
+            if r not in active_set and r not in {"full_mix"}
+        ]
+        if core:
+            second = list(active_roles)
+            if extra_available and len(second) < 5:
+                second = second + [extra_available[0]]
+            return PhraseVariationPlan(
+                section_type=stype,
+                total_bars=section_bars,
+                split_bar=split_bar,
+                first_phrase_roles=core + extra_in_active,
+                second_phrase_roles=second,
+                lead_entry_delay_bars=0,
+                end_dropout_bars=0,
+                description=(
+                    f"Hook {occurrence} phrase split bar {split_bar}: "
+                    f"core first half → expanded second half"
+                ),
+            )
+
+    elif stype == "pre_hook":
+        # Full roles first half; end-section dropout of rhythmic roles for tension.
+        end_drop = [r for r in ["drums", "percussion"] if r in active_set]
+        return PhraseVariationPlan(
+            section_type=stype,
+            total_bars=section_bars,
+            split_bar=split_bar,
+            first_phrase_roles=list(active_roles),
+            second_phrase_roles=list(active_roles),
+            lead_entry_delay_bars=0,
+            end_dropout_bars=min(2, section_bars // 2),
+            end_dropout_roles=end_drop[:1],
+            description=(
+                f"Pre-hook {occurrence}: tension via dropout of "
+                f"{', '.join(end_drop[:1]) or 'none'} in last bars"
+            ),
+        )
+
+    elif stype in {"bridge", "breakdown"}:
+        # Delayed lead entry: atmospheric roles fill first phrase, melodic enters second.
+        atmospheric = [r for r in active_roles if r in {"pads", "fx", "arp"}]
+        melodic_parts = [r for r in active_roles if r in {"melody", "vocal", "synth"}]
+        if atmospheric and melodic_parts:
+            return PhraseVariationPlan(
+                section_type=stype,
+                total_bars=section_bars,
+                split_bar=split_bar,
+                first_phrase_roles=atmospheric,
+                second_phrase_roles=list(active_roles),
+                lead_entry_delay_bars=split_bar,
+                end_dropout_bars=0,
+                description=(
+                    f"{stype.title()} {occurrence} phrase split bar {split_bar}: "
+                    f"atmosphere first → melody enters at bar {split_bar}"
+                ),
+            )
+
+    elif stype == "outro":
+        # Progressive strip: full roles first half, one role removed in second half.
+        second = active_roles[:max(1, len(active_roles) - 1)]
+        return PhraseVariationPlan(
+            section_type=stype,
+            total_bars=section_bars,
+            split_bar=split_bar,
+            first_phrase_roles=list(active_roles),
+            second_phrase_roles=second,
+            lead_entry_delay_bars=0,
+            end_dropout_bars=max(2, section_bars // 2),
+            end_dropout_roles=list(active_roles[-1:]),
+            description=f"Outro {occurrence}: progressive strip in second half",
+        )
+
+    return None
 
 
 # ---------------------------------------------------------------------------

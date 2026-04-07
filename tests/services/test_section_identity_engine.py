@@ -37,6 +37,11 @@ from app.services.section_identity_engine import (
 
 _FULL_ROLES = ["drums", "bass", "melody", "pads", "fx", "vocal", "arp", "synth"]
 
+# Minimum Jaccard distance between consecutive same-type sections for them
+# to be considered audibly distinct.  Mirrors MIN_REPEAT_DISTINCTION_THRESHOLD
+# from section_identity_engine but defined here so tests are self-contained.
+_MIN_REPEAT_DISTINCTION = 0.20
+
 
 def _jaccard(a: list[str], b: list[str]) -> float:
     sa, sb = set(a), set(b)
@@ -943,3 +948,632 @@ class TestReferenceGuidedRegression:
             assert isinstance(section.get("active_stem_roles"), list), (
                 f"Section {section.get('type')} has no active_stem_roles in legacy path"
             )
+
+
+# ===========================================================================
+# Phase 6 — Regression Tests (Section Choreography V2 + Phrase Variation)
+# ===========================================================================
+
+
+class TestSectionChoreography:
+    """Phase 1: Each section must have a deterministic role hierarchy."""
+
+    def test_get_section_choreography_verse_occurrence1(self):
+        from app.services.section_identity_engine import get_section_choreography
+        choro = get_section_choreography("verse", occurrence=1, available_roles=_FULL_ROLES)
+        assert isinstance(choro.leader_roles, tuple)
+        assert isinstance(choro.support_roles, tuple)
+        assert isinstance(choro.suppressed_roles, tuple)
+        assert isinstance(choro.contrast_roles, tuple)
+        assert len(choro.rotation_note) > 0
+
+    def test_get_section_choreography_verse_rotates_on_repeat(self):
+        """Verse 2 choreography must differ from verse 1 (support rotation)."""
+        from app.services.section_identity_engine import get_section_choreography
+        choro1 = get_section_choreography("verse", occurrence=1, available_roles=_FULL_ROLES)
+        choro2 = get_section_choreography("verse", occurrence=2, available_roles=_FULL_ROLES)
+        # Leader roles or support roles must change between occurrences.
+        assert (
+            set(choro1.leader_roles) != set(choro2.leader_roles)
+            or set(choro1.support_roles) != set(choro2.support_roles)
+        ), "Verse choreography must differ between occurrence 1 and 2"
+
+    def test_get_section_choreography_hook_escalates(self):
+        """Hook 3 must have more contrast roles than hook 1."""
+        from app.services.section_identity_engine import get_section_choreography
+        choro1 = get_section_choreography("hook", occurrence=1, available_roles=_FULL_ROLES)
+        choro3 = get_section_choreography("hook", occurrence=3, available_roles=_FULL_ROLES)
+        assert len(choro3.contrast_roles) >= len(choro1.contrast_roles), (
+            "Hook 3 should have at least as many contrast roles as hook 1"
+        )
+
+    def test_intro_choreography_suppresses_drums_and_bass(self):
+        """Intro choreography must suppress drums and bass."""
+        from app.services.section_identity_engine import get_section_choreography
+        choro = get_section_choreography("intro", occurrence=1, available_roles=_FULL_ROLES)
+        assert "drums" in choro.suppressed_roles
+        assert "bass" in choro.suppressed_roles
+
+    def test_bridge_choreography_suppresses_groove(self):
+        """Bridge choreography must suppress drums, bass, percussion."""
+        from app.services.section_identity_engine import get_section_choreography
+        choro = get_section_choreography("bridge", occurrence=1, available_roles=_FULL_ROLES)
+        assert "drums" in choro.suppressed_roles
+        assert "bass" in choro.suppressed_roles
+
+    def test_select_roles_with_choreography_verse1_vs_verse2_differ(self):
+        """select_roles_with_choreography must produce audibly distinct verse 1 and verse 2."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        roles1, _ = select_roles_with_choreography(
+            "verse", _FULL_ROLES, occurrence=1,
+        )
+        roles2, _ = select_roles_with_choreography(
+            "verse", _FULL_ROLES, occurrence=2,
+            prev_same_type_roles=roles1,
+        )
+        dist = _jaccard(roles1, roles2)
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
+            f"Verse 1 ({roles1}) and verse 2 ({roles2}) are too similar "
+            f"(Jaccard={dist:.2f}, need >= {_MIN_REPEAT_DISTINCTION})"
+        )
+
+    def test_select_roles_with_choreography_hook1_vs_hook2_differ(self):
+        """Hook 2 must differ from hook 1 at the role-map level."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        roles1, _ = select_roles_with_choreography(
+            "hook", _FULL_ROLES, occurrence=1,
+        )
+        roles2, _ = select_roles_with_choreography(
+            "hook", _FULL_ROLES, occurrence=2,
+            prev_same_type_roles=roles1,
+        )
+        dist = _jaccard(roles1, roles2)
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
+            f"Hook 1 ({roles1}) and hook 2 ({roles2}) are too similar "
+            f"(Jaccard={dist:.2f}, need >= {_MIN_REPEAT_DISTINCTION})"
+        )
+
+    def test_select_roles_with_choreography_intro_no_drums_or_bass(self):
+        """Choreography-aware selection must never include drums/bass in intro."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        roles, choro = select_roles_with_choreography("intro", _FULL_ROLES, occurrence=1)
+        assert "drums" not in roles, f"Drums in intro choreography roles: {roles}"
+        assert "bass" not in roles, f"Bass in intro choreography roles: {roles}"
+
+    def test_select_roles_with_choreography_bridge_no_groove(self):
+        """Bridge must have no drums, bass, or percussion via choreography."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        roles, _ = select_roles_with_choreography("bridge", _FULL_ROLES, occurrence=1)
+        assert "drums" not in roles
+        assert "bass" not in roles
+        assert "percussion" not in roles
+
+    def test_pre_hook_occurrence2_suppresses_drums(self):
+        """Pre-hook 2 uses tension-through-absence: drums must be suppressed."""
+        from app.services.section_identity_engine import (
+            get_section_choreography,
+            select_roles_with_choreography,
+        )
+        choro2 = get_section_choreography("pre_hook", occurrence=2, available_roles=_FULL_ROLES)
+        assert "drums" in choro2.suppressed_roles, (
+            "Pre-hook 2 choreography must suppress drums for tension-through-absence"
+        )
+        roles2, _ = select_roles_with_choreography(
+            "pre_hook", _FULL_ROLES, occurrence=2,
+            prev_same_type_roles=["bass", "arp", "fx"],
+        )
+        assert "drums" not in roles2, (
+            f"Drums must be absent from pre-hook 2 roles: {roles2}"
+        )
+
+    def test_choreography_returns_only_available_roles(self):
+        """Leader/support/contrast roles must be filtered to available roles."""
+        from app.services.section_identity_engine import get_section_choreography
+        limited = ["bass", "melody"]
+        choro = get_section_choreography("verse", occurrence=1, available_roles=limited)
+        for r in choro.leader_roles:
+            assert r in limited, f"Leader role {r} not in available_roles"
+        for r in choro.support_roles:
+            assert r in limited, f"Support role {r} not in available_roles"
+        for r in choro.contrast_roles:
+            assert r in limited, f"Contrast role {r} not in available_roles"
+
+
+class TestPhraseVariationPlan:
+    """Phase 2: Sections > 4 bars must receive phrase-level variation plans."""
+
+    def test_verse_8bars_gets_phrase_plan(self):
+        """An 8-bar verse must get a phrase variation plan."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "verse", ["drums", "bass", "melody", "vocal"], section_bars=8, occurrence=1
+        )
+        assert plan is not None, "8-bar verse must have a phrase variation plan"
+
+    def test_verse_4bars_no_phrase_plan(self):
+        """A 4-bar verse must NOT get a phrase variation plan (too short)."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "verse", ["drums", "bass", "melody"], section_bars=4, occurrence=1
+        )
+        assert plan is None, "4-bar sections should not get phrase variation plans"
+
+    def test_hook_8bars_first_half_differs_from_second_half(self):
+        """Hook phrase plan must have different roles in first and second halves."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "hook", ["drums", "bass", "melody", "synth"], section_bars=8,
+            occurrence=1, available_roles=_FULL_ROLES
+        )
+        assert plan is not None, "8-bar hook must have a phrase plan"
+        first = set(plan.first_phrase_roles)
+        second = set(plan.second_phrase_roles)
+        # Hook second half should be at least as dense as first (escalation direction).
+        assert len(second) >= len(first), (
+            f"Hook second half ({plan.second_phrase_roles}) should be >= first half ({plan.first_phrase_roles})"
+        )
+
+    def test_verse_phrase_plan_rhythm_first_melody_second(self):
+        """Verse phrase plan: first half is rhythm-only, second is full."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "verse", ["drums", "bass", "melody", "vocal"], section_bars=8, occurrence=1
+        )
+        assert plan is not None
+        first = set(plan.first_phrase_roles)
+        second = set(plan.second_phrase_roles)
+        assert "drums" in first or "bass" in first, "First half should have rhythmic roles"
+        assert "melody" in second or "vocal" in second, "Second half should have melodic roles"
+        # Second half should be fuller
+        assert len(second) > len(first) or second != first, "Second half must differ from first"
+
+    def test_bridge_phrase_plan_delayed_lead_entry(self):
+        """Bridge phrase plan: atmospheric first, melody enters in second half."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "bridge", ["pads", "fx", "melody", "vocal"], section_bars=8, occurrence=1
+        )
+        assert plan is not None, "8-bar bridge with pads+fx+melody should have phrase plan"
+        first = set(plan.first_phrase_roles)
+        second = set(plan.second_phrase_roles)
+        assert first != second, "Bridge phrase halves must differ"
+        assert plan.lead_entry_delay_bars > 0, "Bridge must have delayed lead entry"
+
+    def test_outro_phrase_plan_strips_progressively(self):
+        """Outro phrase plan: second half must have fewer roles than first."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "outro", ["pads", "melody", "fx"], section_bars=8, occurrence=1
+        )
+        assert plan is not None
+        assert len(plan.second_phrase_roles) < len(plan.first_phrase_roles), (
+            "Outro second half must strip roles for progressive resolution"
+        )
+
+    def test_phrase_plan_split_bar_is_valid(self):
+        """Phrase split_bar must be >= 1 and < section_bars."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "verse", ["drums", "bass", "melody", "pads"], section_bars=8, occurrence=1
+        )
+        assert plan is not None
+        assert 1 <= plan.split_bar < 8, f"split_bar={plan.split_bar} out of range [1, 7]"
+
+    def test_pre_hook_phrase_plan_end_dropout(self):
+        """Pre-hook phrase plan must specify end-of-section dropout for tension."""
+        from app.services.section_identity_engine import get_phrase_variation_plan
+        plan = get_phrase_variation_plan(
+            "pre_hook", ["bass", "arp", "fx", "drums"], section_bars=8, occurrence=1
+        )
+        assert plan is not None, "8-bar pre-hook must have a phrase plan"
+        assert plan.end_dropout_bars > 0, "Pre-hook must have end dropout bars"
+
+
+class TestRepeatDistinction:
+    """Phase 3: Repeated sections must be audibly distinct at the role-map level."""
+
+    def test_verse1_verse2_jaccard_meets_threshold(self):
+        """Verse 1 and verse 2 must have >= _MIN_REPEAT_DISTINCTION Jaccard distance."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        roles1, _ = select_roles_with_choreography("verse", _FULL_ROLES, occurrence=1)
+        roles2, _ = select_roles_with_choreography(
+            "verse", _FULL_ROLES, occurrence=2, prev_same_type_roles=roles1
+        )
+        dist = _jaccard(roles1, roles2)
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
+            f"verse1={roles1} vs verse2={roles2}: Jaccard={dist:.2f} < {_MIN_REPEAT_DISTINCTION}"
+        )
+
+    def test_hook1_hook2_jaccard_meets_threshold(self):
+        """Hook 1 and hook 2 must have >= _MIN_REPEAT_DISTINCTION Jaccard distance."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        roles1, _ = select_roles_with_choreography("hook", _FULL_ROLES, occurrence=1)
+        roles2, _ = select_roles_with_choreography(
+            "hook", _FULL_ROLES, occurrence=2, prev_same_type_roles=roles1
+        )
+        dist = _jaccard(roles1, roles2)
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
+            f"hook1={roles1} vs hook2={roles2}: Jaccard={dist:.2f} < {_MIN_REPEAT_DISTINCTION}"
+        )
+
+    def test_verse3_differs_from_verse2(self):
+        """Verse 3 must differ from verse 2 (no two-state oscillation)."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        roles1, _ = select_roles_with_choreography("verse", _FULL_ROLES, occurrence=1)
+        roles2, _ = select_roles_with_choreography(
+            "verse", _FULL_ROLES, occurrence=2, prev_same_type_roles=roles1
+        )
+        roles3, _ = select_roles_with_choreography(
+            "verse", _FULL_ROLES, occurrence=3, prev_same_type_roles=roles2
+        )
+        assert set(roles2) != set(roles3), f"verse2={roles2} and verse3={roles3} are identical"
+
+    def test_breakdown_distinct_from_bridge(self):
+        """Breakdown and bridge must be distinct section types with different role profiles."""
+        from app.services.section_identity_engine import select_roles_with_choreography
+        bridge_roles, _ = select_roles_with_choreography("bridge", _FULL_ROLES, occurrence=1)
+        breakdown_roles, _ = select_roles_with_choreography("breakdown", _FULL_ROLES, occurrence=1)
+        # Both suppress groove, but may differ in lead roles.
+        assert "drums" not in bridge_roles, "Bridge must not have drums"
+        assert "drums" not in breakdown_roles, "Breakdown must not have drums"
+        # Their active sets must differ from hook to confirm they are not just density shifts.
+        hook_roles, _ = select_roles_with_choreography("hook", _FULL_ROLES, occurrence=1)
+        assert _jaccard(bridge_roles, hook_roles) >= 0.40, (
+            f"Bridge ({bridge_roles}) is too similar to hook ({hook_roles})"
+        )
+        assert _jaccard(breakdown_roles, hook_roles) >= 0.40, (
+            f"Breakdown ({breakdown_roles}) is too similar to hook ({hook_roles})"
+        )
+
+
+class TestRendererChoreographyEnforcement:
+    """Phase 4: Renderer must materially respect choreography and phrase plans."""
+
+    def test_apply_stem_primary_stores_choreography_with_flag_on(self):
+        """When SECTION_CHOREOGRAPHY_V2=True, sections get choreography metadata."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [
+            {"name": "Verse 1", "type": "verse", "bar_start": 0, "bars": 8},
+            {"name": "Hook 1", "type": "hook", "bar_start": 8, "bars": 8},
+        ]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            mock_settings.feature_section_choreography_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        for section in result:
+            assert "choreography" in section, (
+                f"Section {section.get('type')} missing choreography metadata"
+            )
+            choro = section["choreography"]
+            assert "leader_roles" in choro
+            assert "support_roles" in choro
+            assert "suppressed_roles" in choro
+
+    def test_apply_stem_primary_stores_phrase_plan_for_8bar_sections(self):
+        """When SECTION_CHOREOGRAPHY_V2=True, 8-bar sections get phrase plans."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [
+            {"name": "Verse 1", "type": "verse", "bar_start": 0, "bars": 8},
+            {"name": "Hook 1", "type": "hook", "bar_start": 8, "bars": 8},
+        ]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            mock_settings.feature_section_choreography_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        # At least one 8-bar section should have a phrase plan (verse or hook)
+        sections_with_phrase_plans = [s for s in result if s.get("phrase_plan")]
+        assert len(sections_with_phrase_plans) > 0, (
+            "At least one 8-bar section must have a phrase_plan when SECTION_CHOREOGRAPHY_V2=True"
+        )
+
+    def test_apply_stem_primary_no_phrase_plan_for_4bar_sections(self):
+        """Short sections (4 bars) must NOT have phrase plans injected."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [
+            {"name": "Intro", "type": "intro", "bar_start": 0, "bars": 4},
+            {"name": "Pre-hook", "type": "pre_hook", "bar_start": 4, "bars": 4},
+        ]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            mock_settings.feature_section_choreography_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        for section in result:
+            assert not section.get("phrase_plan"), (
+                f"4-bar section {section.get('type')} must not have a phrase_plan"
+            )
+
+    def test_verse1_and_verse2_have_different_instruments(self):
+        """Verse 1 and verse 2 must have different instrument lists in the renderer."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [
+            {"name": "Intro", "type": "intro", "bar_start": 0, "bars": 4},
+            {"name": "Verse 1", "type": "verse", "bar_start": 4, "bars": 8},
+            {"name": "Hook 1", "type": "hook", "bar_start": 12, "bars": 8},
+            {"name": "Verse 2", "type": "verse", "bar_start": 20, "bars": 8},
+            {"name": "Hook 2", "type": "hook", "bar_start": 28, "bars": 8},
+        ]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            mock_settings.feature_section_choreography_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        verse_sections = [s for s in result if s.get("type") == "verse"]
+        assert len(verse_sections) >= 2
+        verse1_roles = set(verse_sections[0].get("active_stem_roles", []))
+        verse2_roles = set(verse_sections[1].get("active_stem_roles", []))
+        dist = _jaccard(list(verse1_roles), list(verse2_roles))
+        assert dist >= 0.15, (
+            f"Verse 1 ({sorted(verse1_roles)}) and verse 2 ({sorted(verse2_roles)}) "
+            f"are too similar in renderer output (Jaccard={dist:.2f} < 0.15)"
+        )
+
+    def test_hook1_and_hook2_have_different_instruments(self):
+        """Hook 1 and hook 2 must have different instrument lists in the renderer."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [
+            {"name": "Verse 1", "type": "verse", "bar_start": 0, "bars": 8},
+            {"name": "Hook 1", "type": "hook", "bar_start": 8, "bars": 8},
+            {"name": "Verse 2", "type": "verse", "bar_start": 16, "bars": 8},
+            {"name": "Hook 2", "type": "hook", "bar_start": 24, "bars": 8},
+        ]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            mock_settings.feature_section_choreography_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        hook_sections = [s for s in result if s.get("type") == "hook"]
+        assert len(hook_sections) >= 2
+        hook1_roles = set(hook_sections[0].get("active_stem_roles", []))
+        hook2_roles = set(hook_sections[1].get("active_stem_roles", []))
+        dist = _jaccard(list(hook1_roles), list(hook2_roles))
+        assert dist >= 0.15, (
+            f"Hook 1 ({sorted(hook1_roles)}) and hook 2 ({sorted(hook2_roles)}) "
+            f"are too similar (Jaccard={dist:.2f} < 0.15)"
+        )
+
+    def test_transition_events_are_present(self):
+        """Transition boundary events must be present at section boundaries."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [
+            {"name": "Verse 1", "type": "verse", "bar_start": 0, "bars": 8},
+            {"name": "Hook 1", "type": "hook", "bar_start": 8, "bars": 8},
+        ]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            mock_settings.feature_section_choreography_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        # Verse → Hook boundary should have at least one transition event.
+        verse_section = next((s for s in result if s.get("type") == "verse"), None)
+        assert verse_section is not None
+        boundary_events = verse_section.get("boundary_events", [])
+        assert len(boundary_events) > 0, (
+            "Verse → Hook transition must generate at least one boundary event"
+        )
+
+    def test_anti_mud_still_holds_with_choreography(self):
+        """Anti-mud: intro and bridge must not have drums or bass even with choreography on."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [
+            {"name": "Intro", "type": "intro", "bar_start": 0, "bars": 4},
+            {"name": "Bridge", "type": "bridge", "bar_start": 4, "bars": 8},
+        ]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            mock_settings.feature_section_choreography_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        for section in result:
+            roles = section.get("active_stem_roles", [])
+            assert "drums" not in roles, (
+                f"Section {section.get('type')} must not have drums: {roles}"
+            )
+            assert "bass" not in roles, (
+                f"Section {section.get('type')} must not have bass: {roles}"
+            )
+
+
+class TestNewQAMetrics:
+    """Phase 5: New QA metrics must compute correctly and catch fake arrangements."""
+
+    def _make_sections(self, roles_per_section: list[tuple[str, list[str], int]]) -> list[dict]:
+        """Helper: build section dicts from (type, roles, bars) triples."""
+        result = []
+        bar = 0
+        for stype, roles, bars in roles_per_section:
+            result.append({
+                "type": stype,
+                "active_stem_roles": roles,
+                "instruments": roles,
+                "bars": bars,
+                "bar_start": bar,
+            })
+            bar += bars
+        return result
+
+    def test_section_identity_score_perfect_when_no_forbidden_violations(self):
+        """section_identity_score must be 1.0 when all sections respect forbidden roles."""
+        sections = self._make_sections([
+            ("intro", ["pads", "fx"], 4),
+            ("verse", ["drums", "bass", "melody"], 8),
+            ("hook", ["drums", "bass", "melody", "synth"], 8),
+            ("outro", ["pads", "melody"], 4),
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.section_identity_score == 1.0, (
+            f"section_identity_score={metrics.section_identity_score} — expected 1.0"
+        )
+
+    def test_section_identity_score_penalised_for_forbidden_roles(self):
+        """section_identity_score must drop below 1.0 when a section has forbidden roles."""
+        sections = self._make_sections([
+            ("intro", ["drums", "pads", "fx"], 4),   # drums forbidden in intro
+            ("verse", ["drums", "bass"], 8),
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.section_identity_score < 1.0, (
+            "section_identity_score must be < 1.0 when intro has forbidden drums"
+        )
+        assert any("section_identity_score" in w for w in metrics.warnings)
+
+    def test_repeat_distinction_score_high_when_repeated_sections_differ(self):
+        """repeat_distinction_score must be >= _MIN_REPEAT_DISTINCTION for well-differentiated arrangements."""
+        sections = self._make_sections([
+            ("verse", ["drums", "bass"], 8),
+            ("hook", ["drums", "bass", "melody", "synth"], 8),
+            ("verse", ["drums", "melody", "vocal"], 8),   # different from verse 1
+            ("hook", ["drums", "bass", "melody", "synth", "pads"], 8),  # different from hook 1
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.repeat_distinction_score >= _MIN_REPEAT_DISTINCTION, (
+            f"repeat_distinction_score={metrics.repeat_distinction_score:.2f} — "
+            f"expected >= {_MIN_REPEAT_DISTINCTION} for well-differentiated arrangement"
+        )
+
+    def test_repeat_distinction_score_low_for_identical_repeats(self):
+        """repeat_distinction_score must warn when repeated sections are identical."""
+        roles = ["drums", "bass", "melody"]
+        sections = self._make_sections([
+            ("verse", roles, 8),
+            ("hook", ["drums", "bass", "melody", "synth"], 8),
+            ("verse", roles, 8),  # identical repeat
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.repeat_distinction_score < _MIN_REPEAT_DISTINCTION, (
+            f"repeat_distinction_score={metrics.repeat_distinction_score:.2f} — "
+            f"should be < {_MIN_REPEAT_DISTINCTION} for identical repeats"
+        )
+        assert any("repeat_distinction_score" in w for w in metrics.warnings)
+
+    def test_phrase_variation_score_1_when_all_sections_have_plans(self):
+        """phrase_variation_score must be 1.0 when all >4-bar sections have phrase plans."""
+        sections = self._make_sections([
+            ("intro", ["pads"], 4),
+            ("verse", ["drums", "bass", "melody"], 8),
+            ("hook", ["drums", "bass", "melody", "synth"], 8),
+        ])
+        # Inject phrase plans for the > 4 bar sections
+        for s in sections:
+            if int(s.get("bars", 0)) > 4:
+                s["phrase_plan"] = {"split_bar": 4, "description": "test"}
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.phrase_variation_score == 1.0, (
+            f"phrase_variation_score={metrics.phrase_variation_score} — expected 1.0"
+        )
+
+    def test_phrase_variation_score_0_when_no_plans(self):
+        """phrase_variation_score must be 0.0 when no >4-bar sections have plans."""
+        sections = self._make_sections([
+            ("verse", ["drums", "bass", "melody"], 8),
+            ("hook", ["drums", "bass", "melody", "synth"], 8),
+        ])
+        # No phrase_plan injected
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.phrase_variation_score == 0.0, (
+            f"phrase_variation_score={metrics.phrase_variation_score} — expected 0.0"
+        )
+        assert any("phrase_variation_score" in w for w in metrics.warnings)
+
+    def test_arrangement_motion_score_reflects_real_swaps(self):
+        """arrangement_motion_score must be high when roles are swapped not just added."""
+        sections = self._make_sections([
+            ("verse", ["drums", "bass"], 8),
+            ("hook", ["bass", "melody", "synth"], 8),   # drums removed, melody+synth added
+            ("bridge", ["pads", "fx"], 8),              # bass removed, pads+fx added
+            ("outro", ["pads", "melody"], 4),
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.arrangement_motion_score >= 0.50, (
+            f"arrangement_motion_score={metrics.arrangement_motion_score:.2f} — "
+            "expected >= 0.50 for arrangement with real role swaps"
+        )
+
+    def test_arrangement_motion_score_low_for_density_only_shifts(self):
+        """arrangement_motion_score must be low when sections only add roles (no removals)."""
+        sections = self._make_sections([
+            ("intro", ["pads"], 4),
+            ("verse", ["pads", "drums"], 8),          # only added
+            ("hook", ["pads", "drums", "bass"], 8),   # only added
+            ("outro", ["pads", "drums", "bass", "melody"], 4),  # only added
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.arrangement_motion_score <= 0.25, (
+            f"arrangement_motion_score={metrics.arrangement_motion_score:.2f} — "
+            "should be low for density-only shifts (no role removals)"
+        )
+
+    def test_audible_contrast_score_high_when_sections_clearly_different(self):
+        """audible_contrast_score must be high when adjacent sections have > 0.35 Jaccard."""
+        sections = self._make_sections([
+            ("intro", ["pads", "fx"], 4),
+            ("verse", ["drums", "bass", "melody"], 8),
+            ("hook", ["drums", "bass", "melody", "synth", "vocal"], 8),
+            ("bridge", ["pads", "arp", "melody"], 8),
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.audible_contrast_score >= 0.50, (
+            f"audible_contrast_score={metrics.audible_contrast_score:.2f} — "
+            "expected >= 0.50 for clearly differentiated arrangement"
+        )
+
+    def test_audible_contrast_score_warns_when_low(self):
+        """audible_contrast_score must emit a warning when below threshold."""
+        sections = self._make_sections([
+            ("verse", ["drums", "bass", "melody"], 8),
+            ("hook", ["drums", "bass", "melody"], 8),  # identical to verse — no contrast
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert metrics.audible_contrast_score < 0.50
+        assert any("audible_contrast_score" in w for w in metrics.warnings)
+
+    def test_all_new_metrics_are_present_in_result(self):
+        """All five v2.0 metrics must be present as named fields on the result."""
+        sections = self._make_sections([
+            ("verse", ["drums", "bass"], 8),
+            ("hook", ["drums", "bass", "melody"], 8),
+        ])
+        metrics = compute_arrangement_quality(sections)
+        assert hasattr(metrics, "section_identity_score")
+        assert hasattr(metrics, "repeat_distinction_score")
+        assert hasattr(metrics, "phrase_variation_score")
+        assert hasattr(metrics, "arrangement_motion_score")
+        assert hasattr(metrics, "audible_contrast_score")
+        # All scores must be in [0, 1].
+        for attr in (
+            "section_identity_score", "repeat_distinction_score",
+            "phrase_variation_score", "arrangement_motion_score", "audible_contrast_score",
+        ):
+            val = getattr(metrics, attr)
+            assert 0.0 <= val <= 1.0, f"{attr}={val} out of [0, 1]"
+
