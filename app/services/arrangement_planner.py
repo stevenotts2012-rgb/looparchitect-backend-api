@@ -183,6 +183,17 @@ def _roles_for_section(section_type: str, allowed_roles: list[str], density: str
     return selected
 
 
+_SECTION_PLAN_NOTES: dict[str, str] = {
+    "intro": "Sparse entry — atmosphere and texture only, no groove.",
+    "verse": "Rhythmic backbone established; melody and bass carry the groove.",
+    "pre_hook": "Tension build — add edge, strip softness, drive toward hook.",
+    "hook": "Hook peak with strongest groove and lead emphasis.",
+    "bridge": "Contrast and reset — stripped groove, melodic or textural focus.",
+    "breakdown": "Attention reset — subtractive, atmospheric, maximum space.",
+    "outro": "Resolution — strip layers, fade energy, close cleanly.",
+}
+
+
 def build_fallback_arrangement_plan(
     planner_input: ArrangementPlannerInput,
     user_request: Optional[str],
@@ -232,11 +243,9 @@ def build_fallback_arrangement_plan(
             prev_adjacent_roles=prev_adjacent_roles if idx > 0 else None,
         )
         transition = _transition_for_section(section_type)
-        note = (
-            "Hook peak with strongest groove and lead emphasis."
-            if section_type == "hook"
-            else "Controlled section change to preserve progression."
-        )
+        note = _SECTION_PLAN_NOTES.get(section_type, "Controlled section change to preserve progression.")
+        if occurrence > 1:
+            note = f"{note} (occurrence {occurrence}: evolved from prior {section_type})"
 
         sections.append(
             ArrangementPlanSection(

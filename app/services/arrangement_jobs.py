@@ -56,6 +56,7 @@ _SECTION_ROLE_PREFERENCES: dict[str, tuple[tuple[str, ...], ...]] = {
     "pre_hook": (("percussion", "drums"), ("bass",), ("fx", "accent"), ("melody", "vocals", "vocal")),
     "hook": (("drums", "percussion"), ("bass",), ("melody", "vocals", "vocal"), ("pads", "harmony"), ("fx", "accent")),
     "bridge": (("pads", "harmony"), ("melody", "vocals", "vocal"), ("fx", "accent")),
+    "breakdown": (("pads", "harmony"), ("fx", "accent"), ("melody", "vocals", "vocal")),
     "outro": (("melody", "vocals", "vocal"), ("pads", "harmony"), ("fx", "accent"), ("bass",)),
 }
 
@@ -65,6 +66,7 @@ _SECTION_MIN_LAYERS = {
     "pre_hook": 2,
     "hook": 3,
     "bridge": 1,
+    "breakdown": 1,
     "outro": 1,
 }
 
@@ -74,6 +76,7 @@ _SECTION_MAX_LAYERS = {
     "pre_hook": 3,
     "hook": 5,
     "bridge": 2,
+    "breakdown": 2,
     "outro": 2,
 }
 
@@ -83,6 +86,7 @@ _SECTION_ROLE_EXCLUSIONS = {
     "pre_hook": {"drums"},
     "hook": set(),
     "bridge": {"drums", "percussion", "bass"},
+    "breakdown": {"drums", "percussion", "bass"},
     "outro": set(),
 }
 
@@ -126,8 +130,10 @@ def _normalize_section_type(section_type: str) -> str:
         return "hook"
     if value in {"buildup", "build_up", "build", "prehook", "pre-hook"}:
         return "pre_hook"
-    if value in {"breakdown", "break"}:
-        return "bridge"
+    # "break" is a short-form alias for "breakdown"; do NOT collapse "breakdown" into
+    # "bridge" — they are musically distinct section types with separate identity profiles.
+    if value == "break":
+        return "breakdown"
     return value
 
 
@@ -367,7 +373,7 @@ def debug_render_report(arrangement_id: int) -> list[dict]:
                 elif section_type in {"drop", "hook", "chorus"}:
                     section_audio = section_audio + 4.0
                     section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
-                elif section_type in {"breakdown", "bridge", "break"}:
+                elif section_type in {"breakdown", "bridge"}:
                     section_audio = section_audio - 6
                 elif section_type == "outro":
                     section_audio = section_audio - 4
@@ -717,7 +723,7 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
                     "params": {},
                 })
 
-            if section_type == "bridge":
+            if section_type in {"bridge", "breakdown"}:
                 baseline_variations.append({
                     "variation_type": "bridge_strip",
                     "bar_start": bar_start,
@@ -782,8 +788,8 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
             hook_count += 1
             active_roles = _select_section_stem_roles("hook", available_roles, verse_count=verse_count)
             transition_out = "impact"
-        elif section_type in {"bridge", "breakdown", "break"}:
-            active_roles = _select_section_stem_roles("bridge", available_roles, verse_count=verse_count)
+        elif section_type in {"bridge", "breakdown"}:
+            active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
             transition_out = "riser"
         elif section_type == "outro":
             active_roles = _select_section_stem_roles(section_type, available_roles, verse_count=verse_count)
@@ -799,7 +805,7 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
                     if hook_role in available_roles and hook_role not in active_roles:
                         active_roles.append(hook_role)
                         break
-            elif section_type in {"bridge", "outro", "intro", "pre_hook"}:
+            elif section_type in {"bridge", "breakdown", "outro", "intro", "pre_hook"}:
                 for removable in ("drums", "percussion", "bass"):
                     if removable in active_roles and len(active_roles) > 1:
                         active_roles = [role for role in active_roles if role != removable]
@@ -848,7 +854,7 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
                 }
             )
 
-        if section_type == "bridge":
+        if section_type in {"bridge", "breakdown"}:
             baseline_variations.append(
                 {
                     "variation_type": "bridge_strip",
@@ -1527,7 +1533,7 @@ def _render_producer_arrangement(
                 section_audio = lead + tail
             logger.info(f"  PRE_HOOK post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
             
-        elif section_type in {"breakdown", "bridge", "break"}:
+        elif section_type in {"breakdown", "bridge"}:
             # BREAKDOWN/BRIDGE: Stripped, ambient — keep stems intact, apply mild EQ + gain
             logger.info(f"Processing BREAKDOWN section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
             section_audio = section_audio - 6  # Moderate reduction (-6 dB)

@@ -702,3 +702,244 @@ class TestFeatureFlag:
             )
         validation = validate_arrangement_plan(plan, _FULL_ROLES)
         assert validation.valid, f"Flag=ON plan must pass schema validation: {validation.errors}"
+
+
+# ===========================================================================
+# Additional regression tests — breakdown, normalization, reference mode
+# ===========================================================================
+
+
+class TestBreakdownSectionBehavior:
+    """'breakdown' must be treated as a distinct section type, not collapsed into 'bridge'."""
+
+    def test_normalize_section_type_preserves_breakdown(self):
+        from app.services.arrangement_jobs import _normalize_section_type
+        assert _normalize_section_type("breakdown") == "breakdown", (
+            "_normalize_section_type must preserve 'breakdown' — it has its own identity profile"
+        )
+
+    def test_normalize_section_type_maps_break_to_breakdown(self):
+        from app.services.arrangement_jobs import _normalize_section_type
+        assert _normalize_section_type("break") == "breakdown", (
+            "'break' is a short alias for 'breakdown', not for 'bridge'"
+        )
+
+    def test_normalize_section_type_preserves_bridge(self):
+        from app.services.arrangement_jobs import _normalize_section_type
+        assert _normalize_section_type("bridge") == "bridge"
+
+    def test_breakdown_forbids_drums_in_identity_engine(self):
+        roles = select_roles_for_section("breakdown", _FULL_ROLES, occurrence=1)
+        assert "drums" not in roles, f"Breakdown must forbid drums, got {roles}"
+        assert "bass" not in roles, f"Breakdown must forbid bass, got {roles}"
+
+    def test_breakdown_density_is_sparse(self):
+        roles = select_roles_for_section("breakdown", _FULL_ROLES, occurrence=1)
+        assert len(roles) <= 2, f"Breakdown should have at most 2 roles, got {roles}"
+
+    def _stem_meta(self, roles: list[str]) -> dict:
+        return {"enabled": True, "succeeded": True, "roles_detected": roles}
+
+    def _run_with_flag(self, sections, roles, flag_value=True):
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+        with unittest.mock.patch(
+            "app.services.arrangement_jobs.settings"
+        ) as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = flag_value
+            return _apply_stem_primary_section_states(sections, self._stem_meta(roles))
+
+    def _make_sections(self, section_specs: list) -> list[dict]:
+        return [
+            {"name": n, "type": t, "bar_start": bs, "bars": b}
+            for n, t, bs, b in section_specs
+        ]
+
+    def test_breakdown_has_no_drums_in_renderer_with_flag_on(self):
+        sections = self._make_sections([("Breakdown", "breakdown", 0, 8)])
+        result = self._run_with_flag(sections, _FULL_ROLES, flag_value=True)
+        assert "drums" not in result[0]["active_stem_roles"], (
+            f"Breakdown must not have drums with identity engine on, got {result[0]['active_stem_roles']}"
+        )
+        assert "bass" not in result[0]["active_stem_roles"], (
+            f"Breakdown must not have bass with identity engine on, got {result[0]['active_stem_roles']}"
+        )
+
+    def test_breakdown_gets_strip_variation_with_flag_on(self):
+        sections = self._make_sections([("Breakdown", "breakdown", 0, 8)])
+        result = self._run_with_flag(sections, _FULL_ROLES, flag_value=True)
+        breakdown = result[0]
+        variations = breakdown.get("variations") or []
+        var_types = {v["variation_type"] for v in variations}
+        assert "bridge_strip" in var_types, (
+            f"Breakdown should inject bridge_strip variation; got {var_types}"
+        )
+
+    def test_breakdown_gets_strip_variation_legacy_path(self):
+        sections = self._make_sections([("Breakdown", "breakdown", 0, 8)])
+        result = self._run_with_flag(sections, _FULL_ROLES, flag_value=False)
+        breakdown = result[0]
+        variations = breakdown.get("variations") or []
+        var_types = {v["variation_type"] for v in variations}
+        assert "bridge_strip" in var_types, (
+            f"Breakdown should inject bridge_strip variation in legacy path too; got {var_types}"
+        )
+
+    def test_breakdown_materially_differs_from_hook_in_renderer(self):
+        sections = self._make_sections([
+            ("Hook", "hook", 0, 8),
+            ("Breakdown", "breakdown", 8, 8),
+        ])
+        result = self._run_with_flag(sections, _FULL_ROLES, flag_value=True)
+        hook_roles = set(result[0]["active_stem_roles"])
+        breakdown_roles = set(result[1]["active_stem_roles"])
+        assert "drums" not in breakdown_roles, "Breakdown must not have drums after hook"
+        assert len(breakdown_roles) < len(hook_roles), (
+            f"Breakdown ({len(breakdown_roles)} roles) must be less dense than hook ({len(hook_roles)} roles)"
+        )
+
+    def test_breakdown_and_bridge_both_valid_in_legacy_path(self):
+        """Both 'breakdown' and 'bridge' must produce valid results in legacy path."""
+        for section_type in ("bridge", "breakdown"):
+            sections = self._make_sections([(section_type.title(), section_type, 0, 8)])
+            result = self._run_with_flag(sections, _FULL_ROLES, flag_value=False)
+            assert "drums" not in result[0]["active_stem_roles"], (
+                f"{section_type} should not have drums in legacy path"
+            )
+
+    def test_breakdown_type_preserved_in_section_dict(self):
+        """The rendered section dict must retain type='breakdown', not 'bridge'."""
+        sections = self._make_sections([("Breakdown", "breakdown", 0, 8)])
+        result = self._run_with_flag(sections, _FULL_ROLES, flag_value=True)
+        assert result[0]["type"] == "breakdown", (
+            f"Section type must remain 'breakdown' after render, got '{result[0]['type']}'"
+        )
+
+
+class TestPlannerSectionNotes:
+    """Planner must produce meaningful per-section notes for inspectability."""
+
+    def _build_plan(self, flag_value: bool) -> list:
+        import unittest.mock
+        from app.schemas.arrangement import ArrangementPlannerConfig, ArrangementPlannerInput
+        from app.services.arrangement_planner import build_fallback_arrangement_plan
+
+        planner_input = ArrangementPlannerInput(
+            bpm=140,
+            detected_roles=_FULL_ROLES,
+            target_total_bars=64,
+            source_type="stem_pack",
+        )
+        with unittest.mock.patch(
+            "app.services.arrangement_planner.settings"
+        ) as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = flag_value
+            plan = build_fallback_arrangement_plan(
+                planner_input=planner_input,
+                user_request=None,
+                planner_config=ArrangementPlannerConfig(strict=True),
+            )
+        return plan.sections
+
+    def test_hook_section_has_specific_note(self):
+        sections = self._build_plan(flag_value=False)
+        hook_sections = [s for s in sections if s.type == "hook"]
+        for hook in hook_sections:
+            assert "hook" in hook.notes.lower() or "peak" in hook.notes.lower(), (
+                f"Hook section note should be specific, got: {hook.notes!r}"
+            )
+
+    def test_repeated_section_note_mentions_occurrence(self):
+        sections = self._build_plan(flag_value=False)
+        by_type: dict[str, list] = {}
+        for s in sections:
+            by_type.setdefault(s.type, []).append(s)
+        for stype, slist in by_type.items():
+            if len(slist) >= 2:
+                repeated_note = slist[1].notes
+                assert (
+                    "occurrence" in repeated_note
+                    or "evolved" in repeated_note
+                    or "2" in repeated_note
+                ), (
+                    f"Repeated {stype} (occurrence 2) note should mention evolution: {repeated_note!r}"
+                )
+
+    def test_intro_and_hook_have_distinct_notes(self):
+        sections = self._build_plan(flag_value=False)
+        intro_notes = [s.notes for s in sections if s.type == "intro"]
+        hook_notes = [s.notes for s in sections if s.type == "hook"]
+        if intro_notes and hook_notes:
+            assert intro_notes[0] != hook_notes[0], (
+                "Intro and hook notes must differ for inspectability"
+            )
+
+
+class TestReferenceGuidedRegression:
+    """Reference-guided mode must still work after identity-engine changes."""
+
+    def test_reference_adapter_type_map_includes_breakdown(self):
+        from app.services.reference_plan_adapter import _TYPE_MAP
+        assert "breakdown" in _TYPE_MAP, (
+            "reference_plan_adapter._TYPE_MAP must include 'breakdown'"
+        )
+        assert _TYPE_MAP["breakdown"] == "breakdown", (
+            "reference_plan_adapter must map breakdown → breakdown (not bridge)"
+        )
+
+    def test_canonical_section_types_survive_normalize(self):
+        """Canonical section types must round-trip through _normalize_section_type."""
+        from app.services.arrangement_jobs import _normalize_section_type
+        for section_type in ("intro", "verse", "pre_hook", "hook", "bridge", "breakdown", "outro"):
+            normalized = _normalize_section_type(section_type)
+            assert normalized == section_type, (
+                f"_normalize_section_type('{section_type}') returned '{normalized}' "
+                f"but canonical types must round-trip unchanged"
+            )
+
+    def test_identity_engine_forbids_drums_in_intro_regardless_of_caller(self):
+        """The identity engine enforces forbidden roles independent of caller context."""
+        intro_roles = select_roles_for_section("intro", _FULL_ROLES, occurrence=1)
+        assert "drums" not in intro_roles
+        assert "bass" not in intro_roles
+
+    def test_reference_breakdown_section_gets_correct_profile(self):
+        """A breakdown section originating from reference analysis uses the breakdown
+        profile (not bridge) in the identity engine path."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        sections = [{"name": "Breakdown", "type": "breakdown", "bar_start": 0, "bars": 8}]
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = True
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        assert "drums" not in result[0]["active_stem_roles"]
+        assert "bass" not in result[0]["active_stem_roles"]
+        assert result[0]["type"] == "breakdown", (
+            "'breakdown' must not be re-typed to 'bridge' during render"
+        )
+
+    def test_legacy_path_does_not_regress_on_reference_section_types(self):
+        """Legacy path (flag=False) must handle all canonical section types without error."""
+        import unittest.mock
+        from app.services.arrangement_jobs import _apply_stem_primary_section_states
+
+        stem_meta = {"enabled": True, "succeeded": True, "roles_detected": _FULL_ROLES}
+        bar = 0
+        sections = []
+        for stype in ("intro", "verse", "pre_hook", "hook", "bridge", "breakdown", "outro"):
+            sections.append({"name": stype.title(), "type": stype, "bar_start": bar, "bars": 8})
+            bar += 8
+
+        with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+            mock_settings.feature_producer_section_identity_v2 = False
+            result = _apply_stem_primary_section_states(sections, stem_meta)
+
+        assert len(result) == len(sections)
+        for section in result:
+            assert isinstance(section.get("active_stem_roles"), list), (
+                f"Section {section.get('type')} has no active_stem_roles in legacy path"
+            )
