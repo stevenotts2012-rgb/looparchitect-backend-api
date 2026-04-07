@@ -619,9 +619,17 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
         return sections
 
     use_identity_engine = settings.feature_producer_section_identity_v2
+    use_choreography = settings.feature_section_choreography_v2 if hasattr(settings, "feature_section_choreography_v2") else False
 
     if use_identity_engine:
-        from app.services.section_identity_engine import select_roles_for_section, get_transition_events
+        if use_choreography:
+            from app.services.section_identity_engine import (
+                select_roles_with_choreography,
+                get_transition_events,
+                get_phrase_variation_plan,
+            )
+        else:
+            from app.services.section_identity_engine import select_roles_for_section, get_transition_events  # type: ignore[assignment]
         occurrence_counter: dict[str, int] = {}
         prev_same_type_roles: dict[str, list[str]] = {}
         prev_adjacent_roles: list[str] = []
@@ -631,13 +639,30 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
             occurrence_counter[section_type] = occurrence_counter.get(section_type, 0) + 1
             occurrence = occurrence_counter[section_type]
 
-            active_roles = select_roles_for_section(
-                section_type=section_type,
-                available_roles=available_roles,
-                occurrence=occurrence,
-                prev_same_type_roles=prev_same_type_roles.get(section_type),
-                prev_adjacent_roles=prev_adjacent_roles if section_idx > 0 else None,
-            )
+            if use_choreography:
+                active_roles, choreography = select_roles_with_choreography(
+                    section_type=section_type,
+                    available_roles=available_roles,
+                    occurrence=occurrence,
+                    prev_same_type_roles=prev_same_type_roles.get(section_type),
+                    prev_adjacent_roles=prev_adjacent_roles if section_idx > 0 else None,
+                )
+                section["choreography"] = {
+                    "leader_roles": list(choreography.leader_roles),
+                    "support_roles": list(choreography.support_roles),
+                    "suppressed_roles": list(choreography.suppressed_roles),
+                    "contrast_roles": list(choreography.contrast_roles),
+                    "rotation_note": choreography.rotation_note,
+                }
+            else:
+                active_roles = select_roles_for_section(
+                    section_type=section_type,
+                    available_roles=available_roles,
+                    occurrence=occurrence,
+                    prev_same_type_roles=prev_same_type_roles.get(section_type),
+                    prev_adjacent_roles=prev_adjacent_roles if section_idx > 0 else None,
+                )
+
             if not active_roles and available_roles:
                 active_roles = available_roles[:1]
 
@@ -662,6 +687,27 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
             section["stem_primary"] = True
             section["transition_out"] = transition_out
             section["type"] = section_type
+
+            # Inject intra-section phrase variation plan (SECTION_CHOREOGRAPHY_V2).
+            if use_choreography:
+                section_bars = int(section.get("bars", 1) or 1)
+                phrase_plan = get_phrase_variation_plan(
+                    section_type=section_type,
+                    active_roles=active_roles,
+                    section_bars=section_bars,
+                    occurrence=occurrence,
+                    available_roles=available_roles,
+                )
+                if phrase_plan is not None:
+                    section["phrase_plan"] = {
+                        "split_bar": phrase_plan.split_bar,
+                        "first_phrase_roles": phrase_plan.first_phrase_roles,
+                        "second_phrase_roles": phrase_plan.second_phrase_roles,
+                        "lead_entry_delay_bars": phrase_plan.lead_entry_delay_bars,
+                        "end_dropout_bars": phrase_plan.end_dropout_bars,
+                        "end_dropout_roles": phrase_plan.end_dropout_roles,
+                        "description": phrase_plan.description,
+                    }
 
             # Inject deterministic transition boundary events.
             baseline_variations: list[dict] = list(section.get("variations") or [])
@@ -1399,13 +1445,59 @@ def _render_producer_arrangement(
                 "full_mix" in enabled_stems,
             )
 
-            section_audio = _build_section_audio_from_stems(
-                stems=enabled_stems,
-                section_bars=section_bars,
-                bar_duration_ms=bar_duration_ms,
-                section_idx=section_idx,
-            )[:section_ms]
-            active_role_snapshot = list(enabled_stems.keys())
+            # ----------------------------------------------------------------
+            # PHRASE SPLIT: if a phrase_plan exists, build each half from its
+            # own stem set.  This creates real audible intra-section movement.
+            # ----------------------------------------------------------------
+            phrase_plan = section.get("phrase_plan") if isinstance(section.get("phrase_plan"), dict) else None
+            if phrase_plan and section_bars > 4:
+                split_bar = int(phrase_plan.get("split_bar", section_bars // 2) or (section_bars // 2))
+                split_bar = max(1, min(section_bars - 1, split_bar))
+                split_ms = split_bar * bar_duration_ms
+                remaining_bars = section_bars - split_bar
+
+                # First phrase stems
+                first_roles = phrase_plan.get("first_phrase_roles") or section_instruments
+                first_stems = map_instruments_to_stems(first_roles, stems) if first_roles else enabled_stems
+                if not first_stems:
+                    first_stems = enabled_stems
+
+                # Second phrase stems
+                second_roles = phrase_plan.get("second_phrase_roles") or section_instruments
+                second_stems = map_instruments_to_stems(second_roles, stems) if second_roles else enabled_stems
+                if not second_stems:
+                    second_stems = enabled_stems
+
+                first_audio = _build_section_audio_from_stems(
+                    stems=first_stems,
+                    section_bars=split_bar,
+                    bar_duration_ms=bar_duration_ms,
+                    section_idx=section_idx,
+                )[:split_ms]
+
+                second_audio = _build_section_audio_from_stems(
+                    stems=second_stems,
+                    section_bars=remaining_bars,
+                    bar_duration_ms=bar_duration_ms,
+                    section_idx=section_idx + 100,  # offset avoids identical loop restart
+                )[:remaining_bars * bar_duration_ms]
+
+                section_audio = (first_audio + second_audio)[:section_ms]
+                # Track both phrase role sets for diagnostics.
+                active_role_snapshot = list(dict.fromkeys(list(first_roles) + list(second_roles)))
+                logger.info(
+                    "PHRASE_SPLIT section='%s' split_bar=%d first=%s second=%s desc='%s'",
+                    section_name, split_bar, first_roles, second_roles,
+                    phrase_plan.get("description", ""),
+                )
+            else:
+                section_audio = _build_section_audio_from_stems(
+                    stems=enabled_stems,
+                    section_bars=section_bars,
+                    bar_duration_ms=bar_duration_ms,
+                    section_idx=section_idx,
+                )[:section_ms]
+                active_role_snapshot = list(enabled_stems.keys())
 
         elif use_loop_variations and section_loop_variant in (loop_variations or {}):
             variation_source = (loop_variations or {})[section_loop_variant]
