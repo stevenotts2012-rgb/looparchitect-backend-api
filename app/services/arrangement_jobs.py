@@ -1583,6 +1583,8 @@ def _render_producer_arrangement(
         # ====================================================================
         
         section_loop_variant = str(section.get("loop_variant") or "").strip().lower()
+        # Default to unknown in case no branch below sets it (guards against UnboundLocalError).
+        actual_render_signature: str = "unknown"
 
         if use_stems:
             # STEM MODE: Mix only the stems specified in section instruments list

@@ -438,7 +438,7 @@ class TestFallbackPathDetection:
 # ---------------------------------------------------------------------------
 
 
-class TestStemFallbackRespectsForbidenRoles:
+class TestStemFallbackRespectsForbiddenRoles:
     """When map_instruments_to_stems returns empty (no name match), the fallback
     must exclude forbidden-role stems instead of using ALL stems."""
 
