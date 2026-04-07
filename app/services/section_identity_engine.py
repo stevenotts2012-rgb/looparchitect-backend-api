@@ -38,6 +38,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+# ---------------------------------------------------------------------------
+# Named constants — avoids magic-number repetition
+# ---------------------------------------------------------------------------
+
+# Jaccard distance below which consecutive same-type sections are considered
+# "too similar to hear as different" and the choreography rotation is triggered.
+_CHOREOGRAPHY_ROTATION_THRESHOLD: float = 0.25
+
+# Minimum Jaccard distance between consecutive same-type sections for the
+# repeat_distinction_score QA metric to consider them audibly distinct.
+MIN_REPEAT_DISTINCTION_THRESHOLD: float = 0.20
+
+# Minimum Jaccard distance between adjacent different-type section pairs for the
+# audible_contrast_score QA metric to pass.
+_AUDIBLE_CONTRAST_THRESHOLD: float = 0.35
+
 SECTION_IDENTITY_ENGINE_VERSION = "2.0"
 
 # ---------------------------------------------------------------------------
@@ -759,7 +775,7 @@ def compute_arrangement_quality(
     for i in range(1, len(snaps)):
         if snaps[i].section_type != snaps[i - 1].section_type:
             audible_pairs += 1
-            if _jaccard_distance(snaps[i].active_roles, snaps[i - 1].active_roles) > 0.35:
+            if _jaccard_distance(snaps[i].active_roles, snaps[i - 1].active_roles) > _AUDIBLE_CONTRAST_THRESHOLD:
                 audible_count += 1
     metrics.audible_contrast_score = (
         round(audible_count / audible_pairs, 3) if audible_pairs else 1.0
@@ -767,7 +783,7 @@ def compute_arrangement_quality(
     if audible_pairs > 0 and metrics.audible_contrast_score < 0.50:
         metrics.warnings.append(
             f"audible_contrast_score={metrics.audible_contrast_score:.2f} — "
-            "section boundaries may not be audible enough (target > 0.35 Jaccard)"
+            f"section boundaries may not be audible enough (target > {_AUDIBLE_CONTRAST_THRESHOLD} Jaccard)"
         )
 
     return metrics
@@ -1088,7 +1104,7 @@ def _apply_choreography_evolution(
 
     jaccard = _jaccard_distance(list(current_set), list(prev_set))
 
-    if jaccard < 0.25:
+    if jaccard < _CHOREOGRAPHY_ROTATION_THRESHOLD:
         # Sets are too similar — rotate support roles.
         # Find roles NOT in the previous occurrence (fresh choices).
         fresh_roles = [r for r in preferred_order if r not in prev_set]
@@ -1100,16 +1116,16 @@ def _apply_choreography_evolution(
         non_leader_shared = [r for r in shared_roles if r not in leader_set]
         swap_targets = non_leader_shared if non_leader_shared else shared_roles
 
+        # Rotation index: deterministic, advances by 1 per occurrence so
+        # the same pair of candidates is never chosen twice in a row.
+        rotation_index = max(0, occurrence - 2)
+
         if fresh_roles and swap_targets:
-            # Deterministic rotation: index driven by occurrence number.
-            fresh_idx = (occurrence - 2) % len(fresh_roles)
-            swap_idx = (occurrence - 2) % len(swap_targets)
-            swap_in = fresh_roles[fresh_idx]
-            swap_out = swap_targets[swap_idx]
+            swap_in = fresh_roles[rotation_index % len(fresh_roles)]
+            swap_out = swap_targets[rotation_index % len(swap_targets)]
             candidates = [c for c in candidates if c != swap_out] + [swap_in]
         elif fresh_roles and len(candidates) < profile.density_max:
-            fresh_idx = (occurrence - 2) % len(fresh_roles)
-            candidates = list(candidates) + [fresh_roles[fresh_idx]]
+            candidates = list(candidates) + [fresh_roles[rotation_index % len(fresh_roles)]]
 
     # subtract_on_repeat: pre_hook loses drums on every repeat for tension.
     if profile.subtract_on_repeat and occurrence >= 2:

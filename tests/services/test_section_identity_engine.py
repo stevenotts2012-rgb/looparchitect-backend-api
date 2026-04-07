@@ -37,6 +37,11 @@ from app.services.section_identity_engine import (
 
 _FULL_ROLES = ["drums", "bass", "melody", "pads", "fx", "vocal", "arp", "synth"]
 
+# Minimum Jaccard distance between consecutive same-type sections for them
+# to be considered audibly distinct.  Mirrors MIN_REPEAT_DISTINCTION_THRESHOLD
+# from section_identity_engine but defined here so tests are self-contained.
+_MIN_REPEAT_DISTINCTION = 0.20
+
 
 def _jaccard(a: list[str], b: list[str]) -> float:
     sa, sb = set(a), set(b)
@@ -1007,9 +1012,9 @@ class TestSectionChoreography:
             prev_same_type_roles=roles1,
         )
         dist = _jaccard(roles1, roles2)
-        assert dist >= 0.20, (
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
             f"Verse 1 ({roles1}) and verse 2 ({roles2}) are too similar "
-            f"(Jaccard={dist:.2f}, need >= 0.20)"
+            f"(Jaccard={dist:.2f}, need >= {_MIN_REPEAT_DISTINCTION})"
         )
 
     def test_select_roles_with_choreography_hook1_vs_hook2_differ(self):
@@ -1023,9 +1028,9 @@ class TestSectionChoreography:
             prev_same_type_roles=roles1,
         )
         dist = _jaccard(roles1, roles2)
-        assert dist >= 0.20, (
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
             f"Hook 1 ({roles1}) and hook 2 ({roles2}) are too similar "
-            f"(Jaccard={dist:.2f}, need >= 0.20)"
+            f"(Jaccard={dist:.2f}, need >= {_MIN_REPEAT_DISTINCTION})"
         )
 
     def test_select_roles_with_choreography_intro_no_drums_or_bass(self):
@@ -1168,25 +1173,27 @@ class TestRepeatDistinction:
     """Phase 3: Repeated sections must be audibly distinct at the role-map level."""
 
     def test_verse1_verse2_jaccard_meets_threshold(self):
-        """Verse 1 and verse 2 must have >= 0.20 Jaccard distance (audible threshold)."""
+        """Verse 1 and verse 2 must have >= _MIN_REPEAT_DISTINCTION Jaccard distance."""
         from app.services.section_identity_engine import select_roles_with_choreography
         roles1, _ = select_roles_with_choreography("verse", _FULL_ROLES, occurrence=1)
         roles2, _ = select_roles_with_choreography(
             "verse", _FULL_ROLES, occurrence=2, prev_same_type_roles=roles1
         )
-        assert _jaccard(roles1, roles2) >= 0.20, (
-            f"verse1={roles1} vs verse2={roles2}: Jaccard={_jaccard(roles1, roles2):.2f} < 0.20"
+        dist = _jaccard(roles1, roles2)
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
+            f"verse1={roles1} vs verse2={roles2}: Jaccard={dist:.2f} < {_MIN_REPEAT_DISTINCTION}"
         )
 
     def test_hook1_hook2_jaccard_meets_threshold(self):
-        """Hook 1 and hook 2 must have >= 0.20 Jaccard distance."""
+        """Hook 1 and hook 2 must have >= _MIN_REPEAT_DISTINCTION Jaccard distance."""
         from app.services.section_identity_engine import select_roles_with_choreography
         roles1, _ = select_roles_with_choreography("hook", _FULL_ROLES, occurrence=1)
         roles2, _ = select_roles_with_choreography(
             "hook", _FULL_ROLES, occurrence=2, prev_same_type_roles=roles1
         )
-        assert _jaccard(roles1, roles2) >= 0.20, (
-            f"hook1={roles1} vs hook2={roles2}: Jaccard={_jaccard(roles1, roles2):.2f} < 0.20"
+        dist = _jaccard(roles1, roles2)
+        assert dist >= _MIN_REPEAT_DISTINCTION, (
+            f"hook1={roles1} vs hook2={roles2}: Jaccard={dist:.2f} < {_MIN_REPEAT_DISTINCTION}"
         )
 
     def test_verse3_differs_from_verse2(self):
@@ -1441,7 +1448,7 @@ class TestNewQAMetrics:
         assert any("section_identity_score" in w for w in metrics.warnings)
 
     def test_repeat_distinction_score_high_when_repeated_sections_differ(self):
-        """repeat_distinction_score must be >= 0.20 for well-differentiated arrangements."""
+        """repeat_distinction_score must be >= _MIN_REPEAT_DISTINCTION for well-differentiated arrangements."""
         sections = self._make_sections([
             ("verse", ["drums", "bass"], 8),
             ("hook", ["drums", "bass", "melody", "synth"], 8),
@@ -1449,9 +1456,9 @@ class TestNewQAMetrics:
             ("hook", ["drums", "bass", "melody", "synth", "pads"], 8),  # different from hook 1
         ])
         metrics = compute_arrangement_quality(sections)
-        assert metrics.repeat_distinction_score >= 0.20, (
+        assert metrics.repeat_distinction_score >= _MIN_REPEAT_DISTINCTION, (
             f"repeat_distinction_score={metrics.repeat_distinction_score:.2f} — "
-            "expected >= 0.20 for well-differentiated arrangement"
+            f"expected >= {_MIN_REPEAT_DISTINCTION} for well-differentiated arrangement"
         )
 
     def test_repeat_distinction_score_low_for_identical_repeats(self):
@@ -1463,9 +1470,9 @@ class TestNewQAMetrics:
             ("verse", roles, 8),  # identical repeat
         ])
         metrics = compute_arrangement_quality(sections)
-        assert metrics.repeat_distinction_score < 0.20, (
+        assert metrics.repeat_distinction_score < _MIN_REPEAT_DISTINCTION, (
             f"repeat_distinction_score={metrics.repeat_distinction_score:.2f} — "
-            "should be < 0.20 for identical repeats"
+            f"should be < {_MIN_REPEAT_DISTINCTION} for identical repeats"
         )
         assert any("repeat_distinction_score" in w for w in metrics.warnings)
 

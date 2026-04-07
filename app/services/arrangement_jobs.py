@@ -37,6 +37,11 @@ from app.services.transition_engine import build_transition_plan
 
 logger = logging.getLogger(__name__)
 
+# Section index offset applied to the second phrase when building split-section audio.
+# Ensures the second phrase starts the stem loop at a different position than the first,
+# creating audible variation across the phrase boundary.
+_PHRASE_SPLIT_SECTION_IDX_OFFSET = 100
+
 _ISOLATED_STEM_ROLES = {
     "drums",
     "percussion",
@@ -619,7 +624,10 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
         return sections
 
     use_identity_engine = settings.feature_producer_section_identity_v2
-    use_choreography = settings.feature_section_choreography_v2 if hasattr(settings, "feature_section_choreography_v2") else False
+    use_choreography = bool(
+        getattr(settings, "feature_section_choreography_v2", False)
+        and use_identity_engine
+    )
 
     if use_identity_engine:
         if use_choreography:
@@ -1479,7 +1487,7 @@ def _render_producer_arrangement(
                     stems=second_stems,
                     section_bars=remaining_bars,
                     bar_duration_ms=bar_duration_ms,
-                    section_idx=section_idx + 100,  # offset avoids identical loop restart
+                    section_idx=section_idx + _PHRASE_SPLIT_SECTION_IDX_OFFSET,
                 )[:remaining_bars * bar_duration_ms]
 
                 section_audio = (first_audio + second_audio)[:section_ms]
