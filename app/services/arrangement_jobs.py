@@ -1436,7 +1436,8 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     from collections import Counter
     stem_set_counts = Counter(stem_sets)
     distinct_count = len(stem_set_counts)
-    most_reused = stem_set_counts.most_common(1)[0][1] if stem_set_counts else 0
+    most_common_entry = stem_set_counts.most_common(1)
+    most_reused = most_common_entry[0][1] if most_common_entry else 0
 
     return {
         "sections_count": len(timeline_sections),
@@ -1777,7 +1778,7 @@ def _render_producer_arrangement(
         # Derive from the actual stems argument (use_stems), not only from render
         # profile metadata — so that when real stems are passed the effects are
         # at full strength even when metadata is missing.
-        stem_available = use_stems
+        stem_available = bool(use_stems)
 
         variations = section.get("variations", [])
         if not variations and isinstance(producer_arrangement.get("all_variations"), list):
