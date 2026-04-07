@@ -612,6 +612,153 @@ def _apply_stem_primary_section_states(sections: list[dict], stem_metadata: dict
     if not available_roles:
         return sections
 
+    use_identity_engine = settings.feature_producer_section_identity_v2
+
+    if use_identity_engine:
+        from app.services.section_identity_engine import select_roles_for_section, get_transition_events
+        occurrence_counter: dict[str, int] = {}
+        prev_same_type_roles: dict[str, list[str]] = {}
+        prev_adjacent_roles: list[str] = []
+
+        for section_idx, section in enumerate(sections):
+            section_type = _normalize_section_type(section.get("type") or "verse")
+            occurrence_counter[section_type] = occurrence_counter.get(section_type, 0) + 1
+            occurrence = occurrence_counter[section_type]
+
+            active_roles = select_roles_for_section(
+                section_type=section_type,
+                available_roles=available_roles,
+                occurrence=occurrence,
+                prev_same_type_roles=prev_same_type_roles.get(section_type),
+                prev_adjacent_roles=prev_adjacent_roles if section_idx > 0 else None,
+            )
+            if not active_roles and available_roles:
+                active_roles = available_roles[:1]
+
+            # Derive transition_out from the next section type (if known).
+            next_section_type = None
+            if section_idx + 1 < len(sections):
+                next_section_type = _normalize_section_type(sections[section_idx + 1].get("type") or "verse")
+
+            transition_out_map = {
+                "intro": "filter_open",
+                "verse": "lift",
+                "pre_hook": "riser",
+                "hook": "impact",
+                "bridge": "riser",
+                "breakdown": "riser",
+                "outro": "fade",
+            }
+            transition_out = transition_out_map.get(section_type, "cut")
+
+            section["instruments"] = active_roles
+            section["active_stem_roles"] = active_roles
+            section["stem_primary"] = True
+            section["transition_out"] = transition_out
+            section["type"] = section_type
+
+            # Inject deterministic transition boundary events.
+            baseline_variations: list[dict] = list(section.get("variations") or [])
+            boundary_events: list[dict] = list(section.get("boundary_events") or [])
+
+            bar_start = int(section.get("bar_start", 0) or 0)
+            section_bars = int(section.get("bars", 1) or 1)
+            prev_end_bar = bar_start + section_bars - 1
+
+            if next_section_type:
+                next_bar_start = bar_start + section_bars
+                transition_events = get_transition_events(
+                    prev_section_type=section_type,
+                    next_section_type=next_section_type,
+                    prev_end_bar=prev_end_bar,
+                    next_start_bar=next_bar_start,
+                    occurrence_of_next=occurrence_counter.get(next_section_type, 0) + 1,
+                )
+                for te in transition_events:
+                    if te.placement == "end_of_section":
+                        baseline_variations.append({
+                            "variation_type": te.event_type,
+                            "bar_start": te.bar,
+                            "duration_bars": 1,
+                            "intensity": te.intensity,
+                            "params": te.params,
+                        })
+                        boundary_events.append({
+                            "type": te.event_type,
+                            "bar": te.bar,
+                            "placement": te.placement,
+                            "intensity": te.intensity,
+                            "params": te.params,
+                        })
+
+            # Section-specific baseline variations (always applied).
+            if section_type == "pre_hook":
+                baseline_variations.extend([
+                    {
+                        "variation_type": "pre_hook_drum_mute",
+                        "bar_start": max(0, bar_start + section_bars - 1),
+                        "duration_bars": 1,
+                        "intensity": 0.85,
+                        "params": {"pause_bars": 0.5},
+                    },
+                    {
+                        "variation_type": "bass_pause",
+                        "bar_start": max(0, bar_start + section_bars - 1),
+                        "duration_bars": 1,
+                        "intensity": 0.8,
+                        "params": {"pause_bars": 0.5},
+                    },
+                ])
+                boundary_events.append({
+                    "type": "snare_pickup",
+                    "bar": max(0, bar_start + section_bars - 1),
+                    "placement": "end_of_section",
+                    "intensity": 0.82,
+                    "params": {},
+                })
+
+            if section_type == "bridge":
+                baseline_variations.append({
+                    "variation_type": "bridge_strip",
+                    "bar_start": bar_start,
+                    "duration_bars": max(1, section_bars),
+                    "intensity": 0.82,
+                    "params": {"strip": ["drums", "bass"]},
+                })
+
+            if section_type == "outro":
+                baseline_variations.append({
+                    "variation_type": "outro_strip_down",
+                    "bar_start": bar_start,
+                    "duration_bars": max(1, section_bars),
+                    "intensity": 0.8,
+                    "params": {"pause_bars": 1.0},
+                })
+
+            if baseline_variations:
+                section["variations"] = baseline_variations
+            if boundary_events:
+                section["boundary_events"] = boundary_events
+
+            if section_type in {"hook", "chorus", "drop"}:
+                hook_count = occurrence_counter.get("hook", occurrence_counter.get("chorus", occurrence_counter.get("drop", 1)))
+                stage = "hook1"
+                if hook_count == 2:
+                    stage = "hook2"
+                elif hook_count >= 3:
+                    stage = "hook3"
+                section["hook_evolution"] = {
+                    "stage": stage,
+                    "density": 0.75 + min(0.2, (hook_count - 1) * 0.1),
+                    "stereo_width": 1.0 + min(0.16, (hook_count - 1) * 0.08),
+                }
+
+            prev_same_type_roles[section_type] = active_roles
+            prev_adjacent_roles = active_roles
+
+        return sections
+
+    # --- Legacy path (PRODUCER_SECTION_IDENTITY_V2 disabled) ---
     hook_count = 0
     verse_count = 0
     previous_roles: list[str] = []

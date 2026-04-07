@@ -145,7 +145,17 @@ def _transition_for_section(section_type: str) -> str:
     }.get(section_type, "none")
 
 
-def _roles_for_section(section_type: str, allowed_roles: list[str], density: str) -> list[str]:
+def _roles_for_section(section_type: str, allowed_roles: list[str], density: str, occurrence: int = 1, prev_same_type_roles: list[str] | None = None, prev_adjacent_roles: list[str] | None = None) -> list[str]:
+    if settings.feature_producer_section_identity_v2:
+        from app.services.section_identity_engine import select_roles_for_section
+        return select_roles_for_section(
+            section_type=section_type,
+            available_roles=allowed_roles,
+            occurrence=occurrence,
+            prev_same_type_roles=prev_same_type_roles,
+            prev_adjacent_roles=prev_adjacent_roles,
+        )
+
     if not allowed_roles:
         return []
 
@@ -203,10 +213,24 @@ def build_fallback_arrangement_plan(
     bars_by_section = _fit_bars_to_target(structure, planner_input.target_total_bars)
 
     sections: list[ArrangementPlanSection] = []
+    occurrence_counter: dict[str, int] = {}
+    prev_same_type_roles: dict[str, list[str]] = {}
+    prev_adjacent_roles: list[str] = []
+
     for idx, section_type in enumerate(structure):
+        occurrence_counter[section_type] = occurrence_counter.get(section_type, 0) + 1
+        occurrence = occurrence_counter[section_type]
+
         energy = _section_energy(section_type)
         density = _section_density(section_type, energy)
-        roles = _roles_for_section(section_type, allowed_roles, density)
+        roles = _roles_for_section(
+            section_type,
+            allowed_roles,
+            density,
+            occurrence=occurrence,
+            prev_same_type_roles=prev_same_type_roles.get(section_type),
+            prev_adjacent_roles=prev_adjacent_roles if idx > 0 else None,
+        )
         transition = _transition_for_section(section_type)
         note = (
             "Hook peak with strongest groove and lead emphasis."
@@ -226,6 +250,8 @@ def build_fallback_arrangement_plan(
                 notes=note,
             )
         )
+        prev_same_type_roles[section_type] = roles
+        prev_adjacent_roles = roles
 
     verse_energies = [section.energy for section in sections if section.type == "verse"]
     max_verse = max(verse_energies) if verse_energies else 3

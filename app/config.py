@@ -59,6 +59,14 @@ class Settings(BaseSettings):
         validation_alias="PRODUCER_ENGINE_STRICT_RULES",
     )
 
+    # Section Identity Engine V2 — deterministic per-section profiles, repeated-section evolution,
+    # role choreography, and quality metrics.  Controls both arrangement_planner.py and
+    # arrangement_jobs.py integration.  Safe to enable independently of PRODUCER_ENGINE_V2.
+    feature_producer_section_identity_v2: bool = Field(
+        default=False,
+        validation_alias="PRODUCER_SECTION_IDENTITY_V2",
+    )
+
     # Reference-Guided Arrangement Mode — use an uploaded reference track as a structural blueprint
     # Musical content is NEVER copied; only structure/energy guidance is extracted.
     feature_reference_guided_arrangement: bool = Field(
@@ -112,6 +120,7 @@ class Settings(BaseSettings):
         "feature_ai_producer_assist",
         "feature_ai_style_interpretation",
         "feature_producer_engine_strict_rules",
+        "feature_producer_section_identity_v2",
         "feature_reference_guided_arrangement",
         "feature_reference_section_analysis",
         mode="before",
