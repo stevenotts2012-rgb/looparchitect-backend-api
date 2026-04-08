@@ -329,8 +329,9 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 progress_message="Running arrangement job",
             )
             from app.services.arrangement_jobs import run_arrangement_job
+            from app.services.arrangement_presets import resolve_preset_name
 
-            arrangement_preset = str(params.get("arrangement_preset") or "trap").strip().lower() if isinstance(params, dict) else "trap"
+            arrangement_preset = resolve_preset_name(params.get("arrangement_preset") if isinstance(params, dict) else None)
 
             logger.info(
                 "Arrangement-mode START run_arrangement_job: app_job_id=%s arrangement_id=%s loop_id=%s preset=%s",
