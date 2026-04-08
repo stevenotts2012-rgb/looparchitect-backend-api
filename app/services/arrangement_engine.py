@@ -63,17 +63,17 @@ def _genre_section_adjustments(genre: str, section_name: str) -> Dict[str, float
     }
 
     if "intro" in section_lower:
-        base.update({"low_pass": 4200.0, "high_pass": 60.0, "gain_db": -2.5, "fade_in_ratio": 0.32})
+        base.update({"low_pass": 8000.0, "high_pass": 60.0, "gain_db": -2.5, "fade_in_ratio": 0.32})
     elif "verse" in section_lower:
         base.update({"low_pass": 12000.0, "high_pass": 100.0, "gain_db": -0.5})
     elif "hook" in section_lower:
         base.update({"low_pass": 13200.0, "high_pass": 150.0, "gain_db": 2.0})
     elif "bridge" in section_lower:
-        base.update({"low_pass": 5200.0, "high_pass": 180.0, "gain_db": -1.5, "alt_bar_duck_db": 1.0})
+        base.update({"low_pass": 6500.0, "high_pass": 180.0, "gain_db": -1.5, "alt_bar_duck_db": 1.0})
     elif "chorus" in section_lower:
         base.update({"low_pass": 14200.0, "high_pass": 120.0, "gain_db": 2.8})
     elif "outro" in section_lower:
-        base.update({"low_pass": 3600.0, "high_pass": 60.0, "gain_db": -3.5, "fade_out_ratio": 0.42})
+        base.update({"low_pass": 6000.0, "high_pass": 60.0, "gain_db": -3.5, "fade_out_ratio": 0.42})
 
     if genre == "trap":
         if "hook" in section_lower or "chorus" in section_lower:
@@ -83,7 +83,9 @@ def _genre_section_adjustments(genre: str, section_name: str) -> Dict[str, float
             base["low_pass"] -= 700.0
             base["alt_bar_duck_db"] += 0.6
     elif genre == "rnb":
-        base["low_pass"] = max(3200.0, base["low_pass"] - 1200.0)
+        # RNB: warm low-pass with -1200 Hz shift; floor at 5000 Hz so intro (8000→6800 Hz)
+        # and outro (6000→5000 Hz) stay audible even after the genre modifier is applied.
+        base["low_pass"] = max(5000.0, base["low_pass"] - 1200.0)
         base["high_pass"] = max(45.0, base["high_pass"] - 25.0)
         if "hook" in section_lower or "chorus" in section_lower:
             base["gain_db"] -= 0.5
@@ -99,7 +101,9 @@ def _genre_section_adjustments(genre: str, section_name: str) -> Dict[str, float
             base["alt_bar_duck_db"] = max(0.6, base["alt_bar_duck_db"] - 0.2)
     elif genre == "cinematic":
         base["high_pass"] = max(50.0, base["high_pass"] - 20.0)
-        base["low_pass"] = max(2800.0, base["low_pass"] - 1700.0)
+        # Cinematic: -1700 Hz shift for a dark, film-like feel; floor at 5000 Hz so no
+        # section falls below a clearly audible frequency range (e.g. intro: 8000→6300 Hz).
+        base["low_pass"] = max(5000.0, base["low_pass"] - 1700.0)
         if "hook" in section_lower or "chorus" in section_lower:
             base["gain_db"] -= 0.8
         if "bridge" in section_lower:

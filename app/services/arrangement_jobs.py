@@ -1030,9 +1030,10 @@ def _build_varied_section_audio(
 
         # Add audible rhythmic contrast per section type
         if section_type in {"intro"}:
-            # Intro: Gentle filtering for soft start
+            # Intro: Gentle warm filtering — keep the sound musical, not muffled.
+            # Only apply to the very first bar to ease in softly.
             if bar_idx == 0:
-                bar_audio = bar_audio.low_pass_filter(1000)  # Filtered first bar
+                bar_audio = bar_audio.low_pass_filter(6000)  # Subtle air-cut, keeps clarity
             
         elif section_type in {"hook", "drop", "chorus"}:
             # Hook: Bright and punchy with high-frequency emphasis
@@ -1045,32 +1046,24 @@ def _build_varied_section_audio(
                 bar_audio = bar_audio + 2  # Small additional boost
             
         elif section_type in {"verse"}:
-            # Verse: Create texture variation with filtered gaps
+            # Verse: Subtle EQ variation — avoid hard gaps which sound like glitches
             if bar_idx % 6 == 4:
-                # Every 4-6 bars: Insert half-bar silence for rhythmic surprise
-                quarter_bar = max(1, bar_duration_ms // 4)
-                bar_audio = bar_audio[:quarter_bar] + AudioSegment.silent(duration=quarter_bar * 2) + bar_audio[quarter_bar * 3:]
-                bar_audio = bar_audio - 1  # Slight volume reduction to emphasize the gap
+                # Every 5th bar: light volume dip to create gentle breathing room
+                bar_audio = bar_audio - 2
             elif bar_idx % 4 == 0:
-                # Every 4 bars: Apply thin EQ by boosting mids, cutting lows/highs
-                bar_audio = bar_audio.high_pass_filter(200)  # Cut low bass
-                bar_audio = bar_audio.low_pass_filter(6000)  # Cut harsh highs
-                bar_audio = bar_audio - 3  # Slight reduction
+                # Every 4 bars: gentle mid-presence cut for textural variation
+                bar_audio = bar_audio.low_pass_filter(7500) - 1
             else:
                 # Normal verses: light processing for warmth
                 pass
                 
         elif section_type in {"breakdown", "bridge", "break"}:
-            # Breakdown: Sparse with strong filtering
-            if len(section_audio) > 4000 or bar_idx > 0:  # After first bar
-                half_bar = max(1, bar_duration_ms // 2)
-                bar_audio = bar_audio[:half_bar] + AudioSegment.silent(duration=half_bar)
-            # Add filtering for ambient feel
-            bar_audio = bar_audio.low_pass_filter(1500)
+            # Breakdown: Ambient, warm filtering — no hard cuts; keep audio flowing
+            bar_audio = bar_audio.low_pass_filter(3500)
             
         elif section_type == "outro":
-            # Outro: Progressive diminishment
-            fade_db = -(bar_idx * 1.5)  # Progressive volume reduction (-1.5dB per bar)
+            # Outro: Progressive gentle diminishment — cap at -5 dB so it stays audible
+            fade_db = -(min(bar_idx, 6) * 0.8)  # -0.8 dB/bar, max ~-5 dB
             bar_audio = bar_audio + fade_db
 
         section_audio += bar_audio
@@ -1679,10 +1672,10 @@ def _render_producer_arrangement(
         
         pre_dsp_peak = float(section_audio.max_dBFS)
         if section_type == "intro":
-            # INTRO: Gentle entry — moderate level reduction + subtle LPF so stems remain audible
+            # INTRO: Gentle entry — moderate level reduction + soft LPF so stems remain audible
             logger.info(f"Processing INTRO section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
             section_audio = section_audio - 4   # -4 dB: stems already stripped to melody+pads
-            section_audio = section_audio.low_pass_filter(3500)  # Gentle air-cut, not mud
+            section_audio = section_audio.low_pass_filter(8000)  # Soft air-cut, keeps clarity
             section_audio = section_audio.fade_in(min(4000, section_ms // 2))
             logger.info(f"  INTRO post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
             
@@ -1760,7 +1753,7 @@ def _render_producer_arrangement(
             # OUTRO: Fade out, reduced energy
             logger.info(f"Processing OUTRO section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
             section_audio = section_audio - 4   # Slightly quieter (-4 dB)
-            section_audio = section_audio.low_pass_filter(2600)
+            section_audio = section_audio.low_pass_filter(5500)  # Gentle warmth, not underwater
             section_audio = section_audio.fade_out(min(4000, section_ms // 2))
             logger.info(f"  OUTRO post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
 
