@@ -1463,6 +1463,7 @@ async def generate_arrangement(
         render_job_ids=render_job_ids,
         seed_used=seed_used,
         style_preset=style_preset,
+        arrangement_preset=request.arrangement_preset,
         style_profile=json.loads(style_profile_json) if style_profile_json else None,
         structure_preview=structure_preview,
         candidates=candidates,

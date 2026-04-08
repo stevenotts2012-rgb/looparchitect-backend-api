@@ -304,7 +304,7 @@ class AudioArrangementGenerateRequest(BaseModel):
         description="Whether generated arrangements should be persisted to user history immediately",
     )
 
-    # ---- Reference-Guided Arrangement Mode (Phase 4, feature-flagged) ----
+    # ---- Arrangement Preset ----
     arrangement_preset: Optional[str] = Field(
         default="trap",
         description=(
@@ -312,6 +312,13 @@ class AudioArrangementGenerateRequest(BaseModel):
             "Supported values: trap (default), drill, cinematic, lofi, house, afrobeats."
         ),
     )
+
+    @field_validator("arrangement_preset", mode="before")
+    @classmethod
+    def normalise_arrangement_preset(cls, v: object) -> str:
+        """Normalise to a known preset key, falling back to 'trap' for unknowns."""
+        from app.services.arrangement_presets import resolve_preset_name
+        return resolve_preset_name(str(v) if v is not None else None)
 
     reference_analysis_id: Optional[str] = Field(
         default=None,
@@ -381,6 +388,10 @@ class AudioArrangementGenerateResponse(BaseModel):
     render_job_ids: List[str] = Field(default_factory=list, description="All render job IDs (one per variation)")
     seed_used: Optional[int] = Field(default=None, description="Resolved seed used for deterministic generation")
     style_preset: Optional[str] = Field(default=None, description="Resolved style preset id")
+    arrangement_preset: Optional[str] = Field(
+        default=None,
+        description="Resolved arrangement preset applied (trap, drill, cinematic, lofi, house, afrobeats).",
+    )
     style_profile: Optional[dict] = Field(
         default=None,
         description="V2: Parsed style profile from LLM (includes intent, attributes, sections)",
