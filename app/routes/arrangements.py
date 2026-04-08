@@ -1388,6 +1388,7 @@ async def generate_arrangement(
             "arrangement_id": arrangement.id,
             "correlation_id": correlation_id,
             "variation_index": variation_index,
+            "arrangement_preset": request.arrangement_preset or "trap",
         }
         try:
             job, _ = create_render_job(db, arrangement.loop_id, enqueue_params)

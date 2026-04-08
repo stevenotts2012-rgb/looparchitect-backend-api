@@ -305,6 +305,14 @@ class AudioArrangementGenerateRequest(BaseModel):
     )
 
     # ---- Reference-Guided Arrangement Mode (Phase 4, feature-flagged) ----
+    arrangement_preset: Optional[str] = Field(
+        default="trap",
+        description=(
+            "Genre preset that shapes section density, role priorities, and transitions. "
+            "Supported values: trap (default), drill, cinematic, lofi, house, afrobeats."
+        ),
+    )
+
     reference_analysis_id: Optional[str] = Field(
         default=None,
         description=(
@@ -547,6 +555,10 @@ class ArrangementPlannerInput(BaseModel):
     preferred_structure: Optional[List[str]] = None
     target_total_bars: Optional[int] = Field(default=None, ge=4, le=512)
     source_type: Literal["loop", "stem_pack", "unknown"] = "unknown"
+    arrangement_preset: Optional[str] = Field(
+        default=None,
+        description="Genre preset to apply (trap, drill, cinematic, lofi, house, afrobeats).",
+    )
 
 
 class ArrangementPlannerConfig(BaseModel):
