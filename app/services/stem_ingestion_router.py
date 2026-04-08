@@ -91,13 +91,11 @@ def build_manifest_from_uploaded_stems(
             canonical_role = mapper_result.canonical_role
             confidence = mapper_result.confidence
             fallback = mapper_result.fallback
-            matched_keywords = mapper_result.matched_keywords
         else:
             # Fall back to the existing broad classification
             canonical_role = broad_role
             confidence = stem_classification.confidence
             fallback = True
-            matched_keywords = list(stem_classification.matched_keywords)
 
         actual_broad = CANONICAL_TO_BROAD.get(canonical_role, canonical_role)
         # Resolve the storage key: try canonical broad, then original broad role

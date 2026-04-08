@@ -108,14 +108,16 @@ def _classify_drums_subrole(audio: AudioSegment) -> SubRoleCandidate:
         mid = audio.high_pass_filter(300).low_pass_filter(3000)
         hi = audio.high_pass_filter(3000)
 
-        sub_r = max(1, sub.rms) / total_rms
-        low_r = max(1, low.rms) / total_rms
-        mid_r = max(1, mid.rms) / total_rms
-        hi_r = max(1, hi.rms) / total_rms
+        # Use a small epsilon to avoid division artifacts while preserving band ratios
+        _EPS = 0.001
+        sub_r = max(_EPS, sub.rms) / total_rms
+        low_r = max(_EPS, low.rms) / total_rms
+        mid_r = max(_EPS, mid.rms) / total_rms
+        hi_r = max(_EPS, hi.rms) / total_rms
 
-        # Transient density proxy
+        # Transient density proxy: peak amplitude relative to average RMS
         try:
-            peak_ratio = max(1, audio.max) / total_rms
+            peak_ratio = max(0.0, audio.max) / total_rms
         except Exception:
             peak_ratio = 1.0
 
@@ -151,12 +153,13 @@ def _classify_bass_subrole(audio: AudioSegment) -> SubRoleCandidate:
     """
     try:
         total_rms = max(1, audio.rms)
+        _EPS = 0.001
 
         sub = audio.low_pass_filter(80)
         hi = audio.high_pass_filter(3000)
 
-        sub_r = max(1, sub.rms) / total_rms
-        hi_r = max(1, hi.rms) / total_rms
+        sub_r = max(_EPS, sub.rms) / total_rms
+        hi_r = max(_EPS, hi.rms) / total_rms
 
         # 808: extremely sub-heavy, barely any high-frequency content
         if sub_r > 0.85 and hi_r < 0.20:
@@ -176,19 +179,20 @@ def _classify_other_subrole(audio: AudioSegment) -> SubRoleCandidate:
     """
     try:
         total_rms = max(1, audio.rms)
+        _EPS = 0.001
 
         sub = audio.low_pass_filter(80)
         low = audio.high_pass_filter(80).low_pass_filter(300)
         mid = audio.high_pass_filter(300).low_pass_filter(3000)
         hi = audio.high_pass_filter(3000)
 
-        sub_r = max(1, sub.rms) / total_rms
-        low_r = max(1, low.rms) / total_rms
-        mid_r = max(1, mid.rms) / total_rms
-        hi_r = max(1, hi.rms) / total_rms
+        sub_r = max(_EPS, sub.rms) / total_rms
+        low_r = max(_EPS, low.rms) / total_rms
+        mid_r = max(_EPS, mid.rms) / total_rms
+        hi_r = max(_EPS, hi.rms) / total_rms
 
         try:
-            peak_ratio = max(1, audio.max) / total_rms
+            peak_ratio = max(0.0, audio.max) / total_rms
         except Exception:
             peak_ratio = 1.0
 

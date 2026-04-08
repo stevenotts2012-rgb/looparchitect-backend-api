@@ -481,7 +481,7 @@ def stem_role_from_canonical(canonical_role: str) -> StemRole:
 
 
 def build_engine_from_manifest(
-    manifest: "CanonicalStemManifest",  # type: ignore[name-defined]
+    manifest: "CanonicalStemManifest",
     tempo: int,
     key: str,
 ) -> "StemArrangementEngine":

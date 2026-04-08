@@ -622,8 +622,9 @@ async def create_loop_with_upload(
                 )
                 # Store the manifest as part of the analysis_json payload
                 existing_payload = json.loads(loop.analysis_json or "{}")
-                existing_payload["stem_separation"]["canonical_manifest"] = canonical_manifest.to_dict()
-                existing_payload["stem_separation"]["upload_mode"] = _src_mode
+                stem_sep = existing_payload.setdefault("stem_separation", {})
+                stem_sep["canonical_manifest"] = canonical_manifest.to_dict()
+                stem_sep["upload_mode"] = _src_mode
                 loop.analysis_json = json.dumps(existing_payload)
             except Exception as manifest_exc:
                 logger.debug(

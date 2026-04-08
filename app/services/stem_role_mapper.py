@@ -253,6 +253,12 @@ def _accumulate(
     conf: float,
     keyword: str,
 ) -> None:
+    """Accumulate role scores and keyword hits.
+
+    The score for a role is always the highest confidence seen so far.
+    Keywords are accumulated independently so the multi-hit bonus can count
+    how many distinct aliases fired for this role.
+    """
     if role not in scores or conf > scores[role]:
         scores[role] = conf
     kw_hits.setdefault(role, [])

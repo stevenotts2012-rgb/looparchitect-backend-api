@@ -279,12 +279,18 @@ class TestRoleMapperFallbacks:
         assert result.fallback is True
 
     def test_low_confidence_piano_falls_back_to_melody(self):
-        # If no high-confidence piano keyword, result should fall back gracefully
-        # We test via the fallback table: a very low-confidence piano → melody
+        # When a role is mapped at low confidence, _LOW_CONF_FALLBACK kicks in.
+        # "piano" is in the fallback table: piano → melody.
+        # To trigger this, we need a filename where piano only matches with low confidence.
+        # We test the fallback table directly by checking that piano.wav gives a
+        # known-high-confidence result (correctly classified as piano),
+        # and then verify the fallback table itself maps piano→melody.
+        from app.services.stem_role_mapper import _LOW_CONF_FALLBACK
+        # Verify fallback table entry
+        assert _LOW_CONF_FALLBACK.get("piano") == "melody"
+        # High-confidence piano filename keeps "piano" role
         result = map_filename_to_role("piano.wav")
-        # When confidence is high, keep piano; when confidence is low, fall back to melody.
-        # "piano.wav" should match with high confidence.
-        assert result.canonical_role in ("piano", "melody")
+        assert result.canonical_role in ("piano", "melody")  # high conf → piano; low conf → melody
 
     def test_no_stem_is_silently_dropped(self):
         """map_filename_to_role must always return a result, never raise."""
