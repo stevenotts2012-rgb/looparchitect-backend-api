@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     feature_stem_separation: bool = Field(default=False, validation_alias="FEATURE_STEM_SEPARATION")
     feature_mastering_stage: bool = Field(default=True, validation_alias="FEATURE_MASTERING_STAGE")
     stem_separation_backend: str = Field(default="builtin", validation_alias="STEM_SEPARATION_BACKEND")
+    demucs_timeout_seconds: int = Field(default=120, validation_alias="DEMUCS_TIMEOUT_SECONDS")
     mastering_profile_default: str = Field(default="transparent", validation_alias="MASTERING_PROFILE_DEFAULT")
     dev_fallback_loop_only: bool = Field(default=False, validation_alias="DEV_FALLBACK_LOOP_ONLY")
     

@@ -16,7 +16,7 @@ from app.models.schemas import LoopCreate, LoopResponse, LoopUpdate
 from app.services.loop_service import loop_service
 from app.services.loop_analyzer import loop_analyzer
 from app.services.audit_logging import log_feature_event
-from app.services.stem_separation import separate_and_store_stems
+from app.services.stem_separation import separate_and_store_stems, StemSeparationResult
 from app.services.stem_pack_service import (
     StemPackError,
     StemSourceFile,
@@ -36,7 +36,14 @@ def _build_stem_analysis_json(
     source_filename: str,
     loop_id: int,
     source_key: str,
-) -> str:
+) -> tuple[str, StemSeparationResult | None]:
+    """Run stem separation and return (analysis_json_str, StemSeparationResult | None).
+
+    The second element is ``None`` when stem separation is disabled or the audio
+    could not be decoded.  Callers should use the result to populate stem-pack DB
+    columns so that both the arrangement pipeline and the render-path router see
+    the separated stems.
+    """
     payload = dict(existing_analysis or {})
     if not settings.feature_stem_separation:
         payload["stem_separation"] = {
@@ -45,7 +52,7 @@ def _build_stem_analysis_json(
             "succeeded": False,
             "reason": "feature_disabled",
         }
-        return json.dumps(payload)
+        return json.dumps(payload), None
 
     try:
         source_audio = AudioSegment.from_file(io.BytesIO(source_content), format=source_filename.split(".")[-1].lower())
@@ -57,7 +64,7 @@ def _build_stem_analysis_json(
             "succeeded": False,
             "error": f"decode_failed: {e}",
         }
-        return json.dumps(payload)
+        return json.dumps(payload), None
 
     stem_result = separate_and_store_stems(
         source_audio=source_audio,
@@ -65,7 +72,35 @@ def _build_stem_analysis_json(
         source_key=source_key,
     )
     payload["stem_separation"] = stem_result.to_dict()
-    return json.dumps(payload)
+    return json.dumps(payload), stem_result
+
+
+def _populate_stem_pack_fields(loop: Loop, stem_result: StemSeparationResult) -> None:
+    """Populate stem-pack DB columns from a successful StemSeparationResult.
+
+    This ensures both the arrangement pipeline (reads ``analysis_json``) and the
+    render-path router (reads ``is_stem_pack`` / ``stem_*_json`` columns) see the
+    separated stems.  Called only when ``stem_result.succeeded`` is True.
+    """
+    if not stem_result.succeeded:
+        return
+    loop.is_stem_pack = "true"
+    loop.stem_roles_json = json.dumps(stem_result.stem_s3_keys)
+    loop.stem_files_json = json.dumps(
+        {
+            role: {"file_key": key, "s3_key": key}
+            for role, key in stem_result.stem_s3_keys.items()
+        }
+    )
+    loop.stem_validation_json = json.dumps(
+        {
+            "is_valid": True,
+            "auto_aligned": True,
+            "confidence": 1.0,
+            "fallback_to_loop": False,
+            "warnings": [],
+        }
+    )
 
 
 def _build_uploaded_stem_analysis_json(existing_analysis: dict, *, stem_metadata: dict) -> str:
@@ -208,13 +243,15 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
         db.commit()
         db.refresh(new_loop)
 
-        new_loop.analysis_json = _build_stem_analysis_json(
+        new_loop.analysis_json, _stem_sep_result = _build_stem_analysis_json(
             analysis_result,
             source_content=content,
             source_filename=safe_filename,
             loop_id=new_loop.id,
             source_key=file_key,
         )
+        if _stem_sep_result is not None:
+            _populate_stem_pack_fields(new_loop, _stem_sep_result)
         db.commit()
         db.refresh(new_loop)
 
@@ -499,13 +536,15 @@ async def create_loop_with_upload(
         db.refresh(loop)
 
         if single_file_mode:
-            loop.analysis_json = _build_stem_analysis_json(
+            loop.analysis_json, _stem_sep_result = _build_stem_analysis_json(
                 analysis_result,
                 source_content=content,
                 source_filename=safe_filename,
                 loop_id=loop.id,
                 source_key=file_key,
             )
+            if _stem_sep_result is not None:
+                _populate_stem_pack_fields(loop, _stem_sep_result)
         else:
             stem_keys = persist_role_stems(loop.id, ingest_result.role_stems)
             uploaded_stem_metadata = ingest_result.to_metadata(

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import io
 import logging
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydub import AudioSegment
@@ -50,6 +53,71 @@ def _builtin_stems(audio: AudioSegment) -> dict[str, AudioSegment]:
     }
 
 
+def _demucs_stems(audio: AudioSegment, timeout_seconds: float) -> dict[str, AudioSegment]:
+    """Run Demucs stem separation via subprocess, returning up to 4 stems.
+
+    Uses the ``htdemucs`` model which produces: drums, bass, vocals, other.
+    Raises ``RuntimeError`` on failure and ``subprocess.TimeoutExpired`` on timeout
+    so that callers can fall back to the builtin separator.
+
+    Args:
+        audio: Source audio to separate.
+        timeout_seconds: Maximum wall-clock seconds allowed for the subprocess.
+
+    Returns:
+        Dict mapping stem name to ``AudioSegment``.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = Path(tmpdir) / "input.wav"
+        out_dir = Path(tmpdir) / "out"
+        out_dir.mkdir()
+
+        audio.export(str(input_path), format="wav")
+
+        cmd = [
+            "python",
+            "-m",
+            "demucs",
+            "--out",
+            str(out_dir),
+            "-n",
+            "htdemucs",
+            str(input_path),
+        ]
+
+        proc = subprocess.run(
+            cmd,
+            timeout=timeout_seconds,
+            capture_output=True,
+            text=True,
+        )
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Demucs exited with code {proc.returncode}: {proc.stderr[:500]}"
+            )
+
+        # htdemucs writes: <out_dir>/htdemucs/<input_stem>/{drums,bass,vocals,other}.wav
+        stem_dir = out_dir / "htdemucs" / input_path.stem
+        if not stem_dir.exists():
+            raise RuntimeError(
+                f"Demucs output directory not found at expected path: {stem_dir}"
+            )
+
+        stems: dict[str, AudioSegment] = {}
+        for stem_name in ("drums", "bass", "vocals", "other"):
+            stem_path = stem_dir / f"{stem_name}.wav"
+            if stem_path.exists():
+                stems[stem_name] = AudioSegment.from_wav(str(stem_path))
+            else:
+                logger.warning("Demucs output missing expected stem: %s", stem_name)
+
+        if not stems:
+            raise RuntimeError("Demucs produced no recognizable output stems")
+
+        return stems
+
+
 def _export_segment_to_wav_bytes(audio: AudioSegment) -> bytes:
     output = io.BytesIO()
     audio.export(output, format="wav")
@@ -78,6 +146,29 @@ def separate_and_store_stems(
     try:
         if backend in {"builtin", "mock"}:
             stems = _builtin_stems(source_audio)
+        elif backend == "demucs":
+            timeout = float(settings.demucs_timeout_seconds)
+            try:
+                stems = _demucs_stems(source_audio, timeout_seconds=timeout)
+                logger.info(
+                    "Demucs separation succeeded for loop_id=%s: stems=%s",
+                    loop_id,
+                    list(stems.keys()),
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Demucs timed out after %.0fs for loop_id=%s; falling back to builtin",
+                    timeout,
+                    loop_id,
+                )
+                stems = _builtin_stems(source_audio)
+            except Exception as demucs_err:
+                logger.warning(
+                    "Demucs failed for loop_id=%s (%s); falling back to builtin",
+                    loop_id,
+                    demucs_err,
+                )
+                stems = _builtin_stems(source_audio)
         else:
             raise ValueError(f"Unsupported stem backend: {backend}")
 
