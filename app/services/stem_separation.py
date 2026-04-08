@@ -17,6 +17,8 @@ from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
 
+_MAX_STDERR_LOG_LENGTH = 500
+
 
 @dataclass
 class StemSeparationResult:
@@ -94,7 +96,7 @@ def _demucs_stems(audio: AudioSegment, timeout_seconds: float) -> dict[str, Audi
 
         if proc.returncode != 0:
             raise RuntimeError(
-                f"Demucs exited with code {proc.returncode}: {proc.stderr[:500]}"
+                f"Demucs exited with code {proc.returncode}: {proc.stderr[:_MAX_STDERR_LOG_LENGTH]}"
             )
 
         # htdemucs writes: <out_dir>/htdemucs/<input_stem>/{drums,bass,vocals,other}.wav
