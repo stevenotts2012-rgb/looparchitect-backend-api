@@ -88,6 +88,18 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="REFERENCE_SECTION_ANALYSIS",
     )
+
+    # Advanced Stem Separation V2 — two-stage separation pipeline for single-file uploads.
+    # Stage 1: broad stem separation (drums / bass / vocals / other).
+    # Stage 2: spectral/temporal analysis to derive richer sub-roles
+    #   (kick / snare / hi_hat / 808 / piano / guitar / pads / arp / …).
+    # When disabled (default) the existing 4-stem builtin separation is used unchanged.
+    # Enable with ADVANCED_STEM_SEPARATION_V2=true for staged rollout.
+    feature_advanced_stem_separation_v2: bool = Field(
+        default=False,
+        validation_alias="ADVANCED_STEM_SEPARATION_V2",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")

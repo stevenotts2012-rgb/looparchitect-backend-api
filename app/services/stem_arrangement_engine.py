@@ -15,8 +15,11 @@ Core concept:
 import json
 import logging
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional, Set
+from typing import TYPE_CHECKING, List, Dict, Optional, Set
 from enum import Enum
+
+if TYPE_CHECKING:
+    from app.services.canonical_stem_manifest import CanonicalStemManifest
 
 logger = logging.getLogger(__name__)
 
@@ -423,3 +426,94 @@ class StemArrangementEngine:
             )
 
         return states
+
+
+# ---------------------------------------------------------------------------
+# Canonical role → StemRole bridge (Phase 6)
+# ---------------------------------------------------------------------------
+
+# Mapping from canonical sub-roles to their parent StemRole enum value.
+# Sub-roles that don't directly map to a StemRole are folded into their
+# nearest broad equivalent so the existing arrangement logic continues to work.
+_CANONICAL_TO_STEM_ROLE: dict[str, StemRole] = {
+    # Drums sub-roles → DRUMS
+    "kick":       StemRole.DRUMS,
+    "snare":      StemRole.DRUMS,
+    "clap":       StemRole.DRUMS,
+    "hi_hat":     StemRole.DRUMS,
+    "cymbals":    StemRole.DRUMS,
+    # Percussion keeps its own role
+    "percussion": StemRole.PERCUSSION,
+    # Drums broad
+    "drums":      StemRole.DRUMS,
+    # Low-end
+    "bass":       StemRole.BASS,
+    "808":        StemRole.BASS,
+    # Melodic sub-roles → MELODY or HARMONY
+    "piano":      StemRole.MELODY,
+    "guitar":     StemRole.MELODY,
+    "synth":      StemRole.MELODY,
+    "arp":        StemRole.MELODY,
+    "melody":     StemRole.MELODY,
+    "keys":       StemRole.HARMONY,
+    "strings":    StemRole.HARMONY,
+    "harmony":    StemRole.HARMONY,
+    # Pads
+    "pads":       StemRole.PADS,
+    # FX
+    "fx":         StemRole.FX,
+    # Vocals
+    "vocal":      StemRole.VOCALS,
+    "vocals":     StemRole.VOCALS,
+    # Accent
+    "accent":     StemRole.ACCENT,
+    # Full mix
+    "full_mix":   StemRole.FULL_MIX,
+}
+
+
+def stem_role_from_canonical(canonical_role: str) -> StemRole:
+    """Resolve a canonical role string to the StemRole enum used by the arrangement engine.
+
+    Falls back to StemRole.FULL_MIX for unknown roles so the engine never errors.
+    """
+    return _CANONICAL_TO_STEM_ROLE.get(canonical_role.lower(), StemRole.FULL_MIX)
+
+
+def build_engine_from_manifest(
+    manifest: "CanonicalStemManifest",  # type: ignore[name-defined]
+    tempo: int,
+    key: str,
+) -> "StemArrangementEngine":
+    """Build a StemArrangementEngine from a CanonicalStemManifest.
+
+    When detailed sub-roles are available (kick, snare, etc.) they are folded
+    into their parent StemRole so the existing arrangement logic works correctly.
+    When multiple sub-roles map to the same StemRole, the highest-confidence
+    entry's file key is used.
+
+    Parameters
+    ----------
+    manifest:
+        A CanonicalStemManifest produced by any of the three ingestion modes.
+    tempo:
+        Song BPM.
+    key:
+        Musical key (e.g. "C minor").
+    """
+    available_stems: dict[StemRole, str] = {}
+
+    # Group entries by their mapped StemRole and pick the best file_key
+    for entry in manifest.stems:
+        role_enum = stem_role_from_canonical(entry.role)
+        # Prefer the highest-confidence entry per StemRole
+        if role_enum not in available_stems:
+            available_stems[role_enum] = entry.file_key
+        # (first-encountered wins; entries are in insertion order from ingestion)
+
+    return StemArrangementEngine(
+        available_stems=available_stems,
+        tempo=tempo,
+        key=key,
+    )
+

@@ -24,6 +24,14 @@ from app.services.stem_pack_service import (
     ingest_stem_zip,
     persist_role_stems,
 )
+from app.services.stem_ingestion_router import (
+    SOURCE_MODE_MULTI_STEM,
+    SOURCE_MODE_SINGLE_FILE,
+    SOURCE_MODE_ZIP_STEM,
+    build_manifest_from_ai_separation,
+    build_manifest_from_uploaded_stems,
+)
+from app.services.canonical_stem_manifest import SOURCE_UPLOADED_STEM, SOURCE_ZIP_STEM
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -59,12 +67,68 @@ def _build_stem_analysis_json(
         }
         return json.dumps(payload)
 
+    # Phase 3/8: use advanced two-stage separation when flag is enabled
+    if settings.feature_advanced_stem_separation_v2:
+        try:
+            from app.services.advanced_stem_separation import run_advanced_separation
+            adv_result = run_advanced_separation(
+                source_audio,
+                loop_id=loop_id,
+                source_key=source_key,
+                backend=(settings.stem_separation_backend or "builtin").strip().lower(),
+            )
+            if adv_result.succeeded:
+                manifest = adv_result.to_manifest(loop_id)
+                payload["stem_separation"] = {
+                    "enabled": True,
+                    "backend": adv_result.backend,
+                    "succeeded": True,
+                    "upload_mode": SOURCE_MODE_SINGLE_FILE,
+                    "stems_generated": manifest.broad_roles,
+                    "stem_s3_keys": manifest.stem_keys(),
+                    "canonical_manifest": manifest.to_dict(),
+                }
+                return json.dumps(payload)
+            # Advanced separation failed — fall through to legacy path
+            logger.warning(
+                "Advanced stem separation failed for loop_id=%s, falling back to legacy: %s",
+                loop_id,
+                adv_result.error,
+            )
+        except Exception as adv_exc:  # pragma: no cover — unexpected errors are non-fatal
+            logger.warning(
+                "Unexpected error in advanced stem separation for loop_id=%s: %s",
+                loop_id,
+                adv_exc,
+                exc_info=True,
+            )
+
+    # Legacy path: broad 4-stem separation
     stem_result = separate_and_store_stems(
         source_audio=source_audio,
         loop_id=loop_id,
         source_key=source_key,
     )
-    payload["stem_separation"] = stem_result.to_dict()
+    separation_dict = stem_result.to_dict()
+
+    # Phase 5: always build a canonical manifest from the AI-separated stems,
+    # even on the legacy path, so downstream consumers have a uniform object.
+    if stem_result.succeeded and stem_result.stem_s3_keys:
+        try:
+            manifest = build_manifest_from_ai_separation(
+                stem_result.stem_s3_keys,
+                loop_id=loop_id,
+            )
+            separation_dict["canonical_manifest"] = manifest.to_dict()
+            separation_dict["upload_mode"] = SOURCE_MODE_SINGLE_FILE
+        except Exception as manifest_exc:
+            logger.debug(
+                "Canonical manifest generation failed for loop_id=%s: %s",
+                loop_id,
+                manifest_exc,
+            )
+
+    payload["stem_separation"] = separation_dict
     return json.dumps(payload)
 
 
@@ -544,6 +608,29 @@ async def create_loop_with_upload(
                 analysis_result,
                 stem_metadata=uploaded_stem_metadata,
             )
+
+            # Phase 5: build and persist the canonical manifest for multi-stem / ZIP modes
+            try:
+                _src_type = SOURCE_ZIP_STEM if stem_zip_mode else SOURCE_UPLOADED_STEM
+                _src_mode = SOURCE_MODE_ZIP_STEM if stem_zip_mode else SOURCE_MODE_MULTI_STEM
+                canonical_manifest = build_manifest_from_uploaded_stems(
+                    ingest_result,
+                    loop_id=loop.id,
+                    stem_s3_keys=stem_keys,
+                    source_type=_src_type,
+                    source_mode=_src_mode,
+                )
+                # Store the manifest as part of the analysis_json payload
+                existing_payload = json.loads(loop.analysis_json or "{}")
+                existing_payload["stem_separation"]["canonical_manifest"] = canonical_manifest.to_dict()
+                existing_payload["stem_separation"]["upload_mode"] = _src_mode
+                loop.analysis_json = json.dumps(existing_payload)
+            except Exception as manifest_exc:
+                logger.debug(
+                    "Canonical manifest generation failed for loop_id=%s: %s",
+                    loop.id,
+                    manifest_exc,
+                )
         db.commit()
         db.refresh(loop)
 
