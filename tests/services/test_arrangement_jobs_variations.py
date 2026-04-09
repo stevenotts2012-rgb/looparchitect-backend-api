@@ -482,6 +482,192 @@ def test_phrase_plan_injected_without_stem_metadata_when_choreography_enabled(mo
     assert "second_phrase_roles" in phrase
 
 
+def test_use_stems_is_true_when_non_empty_stems_passed(monkeypatch) -> None:
+    """When _render_producer_arrangement receives a non-empty stems dict it must
+    activate stem mode (use_stems=True) and route every section through
+    _build_section_audio_from_stems — never through loop-variation or stereo
+    fallback paths.
+
+    This is the regression guard for the 'stem-render activation bug': if
+    stems are successfully loaded from metadata, they must actually be used.
+    """
+    stem_calls: list[dict] = []
+
+    def _capture_stem_build(**kwargs):
+        stem_calls.append({"stems": list((kwargs.get("stems") or {}).keys())})
+        return AudioSegment.silent(duration=kwargs.get("section_bars", 2) * 2000)
+
+    monkeypatch.setattr(
+        "app.services.arrangement_jobs._build_section_audio_from_stems",
+        _capture_stem_build,
+    )
+    monkeypatch.setattr(
+        "app.services.arrangement_jobs._repeat_to_duration",
+        lambda *_, **__: (_ for _ in ()).throw(
+            AssertionError("loop-variation path must not fire when stems are present")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.arrangement_jobs._build_varied_section_audio",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("stereo-fallback path must not fire when stems are present")
+        ),
+    )
+
+    stems = {
+        "drums": AudioSegment.silent(duration=2000),
+        "bass": AudioSegment.silent(duration=2000),
+        "melody": AudioSegment.silent(duration=2000),
+    }
+
+    producer_arrangement = {
+        "sections": [
+            {
+                "name": "Hook",
+                "type": "hook",
+                "bar_start": 0,
+                "bars": 2,
+                "energy": 0.9,
+                "instruments": ["drums", "bass", "melody"],
+            }
+        ],
+        "tracks": [],
+        "transitions": [],
+        "energy_curve": [],
+        "total_bars": 2,
+    }
+
+    arranged, timeline_json = _render_producer_arrangement(
+        loop_audio=AudioSegment.silent(duration=2000),
+        producer_arrangement=producer_arrangement,
+        bpm=120.0,
+        stems=stems,
+        loop_variations=None,
+    )
+
+    # Stem builder must have been called (confirming use_stems=True)
+    assert len(stem_calls) >= 1, "Expected _build_section_audio_from_stems to be called at least once"
+
+    # The timeline must record the stem keys that were active
+    timeline = json.loads(timeline_json)
+    runtime_stems = timeline["sections"][0]["runtime_active_stems"]
+    assert len(runtime_stems) > 0, (
+        f"runtime_active_stems is empty; stems were not propagated to the timeline. "
+        f"Got: {runtime_stems}"
+    )
+
+
+def test_intro_hook_bridge_use_different_stem_sets_when_stems_present(monkeypatch) -> None:
+    """When stems are available, intro / hook / bridge sections must each be
+    rendered with their own stem subset.
+
+    Intro  → melody-focused (no drums/bass)
+    Hook   → full energy (drums + bass + melody)
+    Bridge → sparse (melody/pads, no drums)
+
+    This test verifies that per-section stem differentiation is maintained
+    through the render pipeline — a regression guard against any change that
+    would collapse all sections onto a single shared stem mix.
+    """
+    stem_call_log: list[dict] = []
+
+    def _capture(**kwargs):
+        stem_call_log.append({
+            "keys": sorted((kwargs.get("stems") or {}).keys()),
+            "section_bars": kwargs.get("section_bars", 2),
+        })
+        bars = kwargs.get("section_bars", 2)
+        bar_ms = kwargs.get("bar_duration_ms", 2000)
+        return AudioSegment.silent(duration=bars * bar_ms)
+
+    monkeypatch.setattr(
+        "app.services.arrangement_jobs._build_section_audio_from_stems",
+        _capture,
+    )
+
+    stems = {
+        "drums": AudioSegment.silent(duration=2000),
+        "bass": AudioSegment.silent(duration=2000),
+        "melody": AudioSegment.silent(duration=2000),
+        "pads": AudioSegment.silent(duration=2000),
+    }
+
+    producer_arrangement = {
+        "sections": [
+            {
+                "name": "Intro",
+                "type": "intro",
+                "bar_start": 0,
+                "bars": 2,
+                "energy": 0.3,
+                "instruments": ["melody"],
+            },
+            {
+                "name": "Hook",
+                "type": "hook",
+                "bar_start": 2,
+                "bars": 2,
+                "energy": 0.9,
+                "instruments": ["drums", "bass", "melody"],
+            },
+            {
+                "name": "Bridge",
+                "type": "bridge",
+                "bar_start": 4,
+                "bars": 2,
+                "energy": 0.5,
+                "instruments": ["melody", "pads"],
+            },
+        ],
+        "tracks": [],
+        "transitions": [],
+        "energy_curve": [],
+        "total_bars": 6,
+    }
+
+    arranged, timeline_json = _render_producer_arrangement(
+        loop_audio=AudioSegment.silent(duration=2000),
+        producer_arrangement=producer_arrangement,
+        bpm=120.0,
+        stems=stems,
+        loop_variations=None,
+    )
+
+    assert len(arranged) > 0
+
+    # Each section must have been rendered through the stem path
+    assert len(stem_call_log) == 3, (
+        f"Expected 3 stem-builder calls (intro/hook/bridge), got {len(stem_call_log)}"
+    )
+
+    intro_stems = set(stem_call_log[0]["keys"])
+    hook_stems = set(stem_call_log[1]["keys"])
+    bridge_stems = set(stem_call_log[2]["keys"])
+
+    # Intro must not contain drums or bass
+    assert "drums" not in intro_stems, f"Intro should not include drums; got {intro_stems}"
+    assert "bass" not in intro_stems, f"Intro should not include bass; got {intro_stems}"
+
+    # Hook must include drums and bass (full energy)
+    assert "drums" in hook_stems, f"Hook must include drums; got {hook_stems}"
+    assert "bass" in hook_stems, f"Hook must include bass; got {hook_stems}"
+
+    # Bridge must not contain drums (sparse section)
+    assert "drums" not in bridge_stems, f"Bridge should not include drums; got {bridge_stems}"
+
+    # All three sections must have distinct stem sets
+    assert intro_stems != hook_stems, "Intro and Hook must use different stem sets"
+    assert hook_stems != bridge_stems, "Hook and Bridge must use different stem sets"
+    assert intro_stems != bridge_stems, "Intro and Bridge must use different stem sets"
+
+    # The timeline must reflect each section's runtime stem snapshot
+    timeline = json.loads(timeline_json)
+    for sec in timeline["sections"]:
+        assert len(sec["runtime_active_stems"]) > 0, (
+            f"Section '{sec['name']}' has empty runtime_active_stems; stems not tracked"
+        )
+
+
 def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(caplog) -> None:
     """map_instruments_to_stems with an empty instruments list must NOT silently expand
     to all stems without logging.  After the fix, the last-resort path is marked with a
