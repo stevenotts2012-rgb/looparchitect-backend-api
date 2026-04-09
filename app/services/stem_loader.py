@@ -318,6 +318,14 @@ def map_instruments_to_stems(
     exclude_full_mix = len(isolated_available) >= 2
 
     if not instruments:
+        # Last-resort: no instrument list was supplied, so return all available stems.
+        # This should only be reached when _apply_stem_primary_section_states did not run
+        # or produced an empty instruments list.  Log at WARNING so it is visible in prod.
+        logger.warning(
+            "map_instruments_to_stems: empty instruments list — returning all %d stems as last resort: %s",
+            len(available_stems),
+            list(available_stems.keys()),
+        )
         selected_names = list(available_stems.keys())
     else:
         selected_names = []
