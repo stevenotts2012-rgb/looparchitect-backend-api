@@ -1496,7 +1496,10 @@ def _render_producer_arrangement(
         Tuple of (arranged_audio, timeline_json)
     """
     use_stems = bool(stems and len(stems) > 0)
-    use_loop_variations = bool(loop_variations and len(loop_variations) > 0)
+    # Loop variations are only used when stems are not available; explicitly
+    # disable them when use_stems is True so the loop-variation branch can
+    # never fire while real stem layers are present.
+    use_loop_variations = bool(not use_stems and loop_variations and len(loop_variations) > 0)
     logger.info(
         f"Rendering with ProducerArrangement structure "
         f"(loop_variations={'ENABLED' if use_loop_variations else 'DISABLED'}, "
@@ -2600,7 +2603,7 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 loaded_stems = load_stems_from_metadata(stem_metadata, timeout_seconds=60.0)
 
                 logger.info(
-                    "✅ STEMS LOADED: %s - using loop variation engine",
+                    "✅ STEMS LOADED: %s - using stem rendering engine",
                     list(loaded_stems.keys()),
                 )
 
