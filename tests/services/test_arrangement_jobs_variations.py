@@ -482,6 +482,74 @@ def test_phrase_plan_injected_without_stem_metadata_when_choreography_enabled(mo
     assert "second_phrase_roles" in phrase
 
 
+def test_section_roles_assigned_from_incomplete_stem_metadata_with_s3_keys() -> None:
+    """Salvage path: stem_metadata present but succeeded=False must still derive
+    roles from stem_s3_keys so per-section differentiation is preserved in the
+    render plan, even though audio loading is skipped (use_stems will be False)."""
+    sections = [
+        {"name": "Intro", "type": "intro", "bars": 4},
+        {"name": "Hook", "type": "hook", "bars": 8},
+        {"name": "Outro", "type": "outro", "bars": 4},
+    ]
+    incomplete_metadata = {
+        "enabled": True,
+        "succeeded": False,
+        "stem_s3_keys": {"drums": "s3://bucket/drums.wav", "bass": "s3://bucket/bass.wav", "melody": "s3://bucket/melody.wav"},
+    }
+
+    updated = _apply_stem_primary_section_states(sections, stem_metadata=incomplete_metadata)
+
+    # Sections must have been processed (stem_primary flag set)
+    assert all(s.get("stem_primary") is True for s in updated), (
+        "stem_primary not set — salvage path did not run"
+    )
+    # Every section must have non-empty instruments
+    assert all(len(s.get("instruments", [])) > 0 for s in updated), (
+        "some sections have empty instruments — salvage role assignment failed"
+    )
+    # Intro and hook must have distinct role sets
+    assert set(updated[0]["instruments"]) != set(updated[1]["instruments"]), (
+        "intro and hook got identical instruments — salvage path produced no differentiation"
+    )
+
+
+def test_section_roles_assigned_from_incomplete_stem_metadata_with_roles_detected() -> None:
+    """Salvage path: roles_detected in metadata is used even when succeeded=False."""
+    sections = [
+        {"name": "Verse", "type": "verse", "bars": 8},
+        {"name": "Hook", "type": "hook", "bars": 8},
+    ]
+    incomplete_metadata = {
+        "enabled": True,
+        "succeeded": False,
+        "roles_detected": ["drums", "bass", "melody", "pads"],
+    }
+
+    updated = _apply_stem_primary_section_states(sections, stem_metadata=incomplete_metadata)
+
+    assert all(s.get("stem_primary") is True for s in updated)
+    verse_roles = set(updated[0]["instruments"])
+    hook_roles = set(updated[1]["instruments"])
+    # Hook must include rhythm stems; verse and hook must differ
+    assert "drums" in hook_roles and "bass" in hook_roles
+    assert verse_roles != hook_roles
+    assert len(hook_roles) > len(verse_roles)
+
+
+def test_incomplete_stem_metadata_with_no_keys_returns_sections_unchanged() -> None:
+    """Salvage path must not do anything when metadata has no usable keys."""
+    sections = [
+        {"name": "Intro", "type": "intro", "bars": 4, "instruments": ["melody"]},
+    ]
+    empty_metadata = {"enabled": True, "succeeded": False}
+
+    updated = _apply_stem_primary_section_states(sections, stem_metadata=empty_metadata)
+
+    # No processing should have happened
+    assert updated[0].get("stem_primary") is not True
+    assert updated[0]["instruments"] == ["melody"]
+
+
 def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(caplog) -> None:
     """map_instruments_to_stems with an empty instruments list must NOT silently expand
     to all stems without logging.  After the fix, the last-resort path is marked with a
