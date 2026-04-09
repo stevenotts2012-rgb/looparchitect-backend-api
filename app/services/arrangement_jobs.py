@@ -657,19 +657,10 @@ def _apply_stem_primary_section_states(
     arrangement_preset: str | None = None,
     available_stem_keys: list[str] | None = None,
 ) -> list[dict]:
-    # Derive available_roles using a three-tier priority:
-    #
-    # 1. Primary  — stem_metadata is present, enabled, AND succeeded: use its
-    #               roles_detected / stem_s3_keys (most reliable source).
-    # 2. Secondary — loaded stem keys provided by the caller (e.g. successfully
-    #               loaded audio files): use those keys directly.
-    # 3. Salvage  — stem_metadata is present but disabled or not yet succeeded
-    #               (transient failure, still-processing, etc.): extract whatever
-    #               key names are recorded in the metadata so section differentiation
-    #               still happens.  Audio loading is NOT attempted here; this path
-    #               only enriches the render-plan structure.
-    #
-    # If none of the three tiers yields usable roles, return early unchanged.
+    # Derive available_roles from stem_metadata when it is present and valid (primary path).
+    # When stem_metadata is absent or incomplete, fall back to the actual loaded stem keys
+    # so per-section differentiation still happens even when the DB metadata record has not
+    # been written yet, was disabled, or reported failure.
     if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
         roles_source = (
             stem_metadata.get("roles_detected")
@@ -686,28 +677,6 @@ def _apply_stem_primary_section_states(
         )
         available_roles = _ordered_unique_roles([
             str(k).strip().lower() for k in available_stem_keys if str(k).strip()
-        ])
-    elif stem_metadata:
-        # Salvage path: metadata is present but not fully valid (disabled / not yet
-        # succeeded).  Extract whatever role names are recorded so per-section
-        # differentiation is preserved in the render plan.  Since audio loading was
-        # not attempted for this metadata, use_stems will be False at render time and
-        # these roles serve as structural guidance only.
-        salvaged_roles: list = stem_metadata.get("roles_detected") or []
-        if not salvaged_roles:
-            salvaged_roles = list((stem_metadata.get("stem_s3_keys") or {}).keys())
-        if not salvaged_roles:
-            return sections
-        logger.info(
-            "stem_metadata present but incomplete (enabled=%s, succeeded=%s) — "
-            "salvaging %d role(s) from metadata keys: %s",
-            stem_metadata.get("enabled"),
-            stem_metadata.get("succeeded"),
-            len(salvaged_roles),
-            salvaged_roles,
-        )
-        available_roles = _ordered_unique_roles([
-            str(r).strip().lower() for r in salvaged_roles if str(r).strip()
         ])
     else:
         return sections
