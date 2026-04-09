@@ -501,17 +501,19 @@ def test_use_stems_is_true_when_non_empty_stems_passed(monkeypatch) -> None:
         "app.services.arrangement_jobs._build_section_audio_from_stems",
         _capture_stem_build,
     )
+    def _reject_loop_variation(*args, **kwargs):
+        raise AssertionError("loop-variation path must not fire when stems are present")
+
+    def _reject_stereo_fallback(**kwargs):
+        raise AssertionError("stereo-fallback path must not fire when stems are present")
+
     monkeypatch.setattr(
         "app.services.arrangement_jobs._repeat_to_duration",
-        lambda *_, **__: (_ for _ in ()).throw(
-            AssertionError("loop-variation path must not fire when stems are present")
-        ),
+        _reject_loop_variation,
     )
     monkeypatch.setattr(
         "app.services.arrangement_jobs._build_varied_section_audio",
-        lambda **_: (_ for _ in ()).throw(
-            AssertionError("stereo-fallback path must not fire when stems are present")
-        ),
+        _reject_stereo_fallback,
     )
 
     stems = {
