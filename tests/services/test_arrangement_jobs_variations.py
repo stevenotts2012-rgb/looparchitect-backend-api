@@ -482,13 +482,12 @@ def test_phrase_plan_injected_without_stem_metadata_when_choreography_enabled(mo
     assert "second_phrase_roles" in phrase
 
 
-def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(monkeypatch) -> None:
+def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(caplog) -> None:
     """map_instruments_to_stems with an empty instruments list must NOT silently expand
     to all stems without logging.  After the fix, the last-resort path is marked with a
     warning and the _stem_fallback_all flag is set on the section when triggered from
     _render_producer_arrangement."""
     import logging
-    import warnings
     from pydub.generators import Sine
     from app.services.stem_loader import map_instruments_to_stems
 
@@ -498,24 +497,12 @@ def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(mo
         "melody": Sine(440).to_audio_segment(duration=500),
     }
 
-    logged_warnings: list[str] = []
-
-    class _WarnCapture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            if record.levelno >= logging.WARNING:
-                logged_warnings.append(record.getMessage())
-
-    handler = _WarnCapture()
-    stem_logger = logging.getLogger("app.services.stem_loader")
-    stem_logger.addHandler(handler)
-    try:
+    with caplog.at_level(logging.WARNING, logger="app.services.stem_loader"):
         result = map_instruments_to_stems([], available)
-    finally:
-        stem_logger.removeHandler(handler)
 
     # Must return all stems (last-resort behaviour is preserved)
     assert set(result.keys()) == {"drums", "bass", "melody"}
     # Must have emitted a warning so the fallback is visible in prod logs
-    assert any("last resort" in w.lower() for w in logged_warnings), (
-        f"Expected a last-resort warning; got: {logged_warnings}"
+    assert any("last resort" in record.getMessage().lower() for record in caplog.records), (
+        f"Expected a last-resort warning; got messages: {[r.getMessage() for r in caplog.records]}"
     )

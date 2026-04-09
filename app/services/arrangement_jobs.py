@@ -662,10 +662,12 @@ def _apply_stem_primary_section_states(
     # so per-section differentiation still happens even when the DB metadata record has not
     # been written yet, was disabled, or reported failure.
     if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+        roles_source = (
+            stem_metadata.get("roles_detected")
+            or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+        )
         available_roles = _ordered_unique_roles([
-            str(role).strip().lower()
-            for role in (stem_metadata.get("roles_detected") or (stem_metadata.get("stem_s3_keys") or {}).keys())
-            if str(role).strip()
+            str(role).strip().lower() for role in roles_source if str(role).strip()
         ])
     elif available_stem_keys:
         logger.info(
