@@ -655,15 +655,32 @@ def _apply_stem_primary_section_states(
     sections: list[dict],
     stem_metadata: dict | None,
     arrangement_preset: str | None = None,
+    available_stem_keys: list[str] | None = None,
 ) -> list[dict]:
-    if not stem_metadata or not stem_metadata.get("enabled") or not stem_metadata.get("succeeded"):
+    # Derive available_roles from stem_metadata when it is present and valid (primary path).
+    # When stem_metadata is absent or incomplete, fall back to the actual loaded stem keys
+    # so per-section differentiation still happens even when the DB metadata record has not
+    # been written yet, was disabled, or reported failure.
+    if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+        roles_source = (
+            stem_metadata.get("roles_detected")
+            or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+        )
+        available_roles = _ordered_unique_roles([
+            str(role).strip().lower() for role in roles_source if str(role).strip()
+        ])
+    elif available_stem_keys:
+        logger.info(
+            "stem_metadata absent/incomplete — deriving available_roles from %d loaded stem keys: %s",
+            len(available_stem_keys),
+            available_stem_keys,
+        )
+        available_roles = _ordered_unique_roles([
+            str(k).strip().lower() for k in available_stem_keys if str(k).strip()
+        ])
+    else:
         return sections
 
-    available_roles = _ordered_unique_roles([
-        str(role).strip().lower()
-        for role in (stem_metadata.get("roles_detected") or (stem_metadata.get("stem_s3_keys") or {}).keys())
-        if str(role).strip()
-    ])
     if not available_roles:
         return sections
 
@@ -1545,10 +1562,16 @@ def _render_producer_arrangement(
 
             if not enabled_stems:
                 logger.warning(
-                    f"No stems matched instruments {section_instruments}, "
-                    f"using all {list(stems.keys())}"
+                    "LAST_RESORT_FALLBACK section='%s' type=%s: no stems matched instruments %s, "
+                    "falling back to all available stems %s. "
+                    "Fix by ensuring _apply_stem_primary_section_states assigns roles before render.",
+                    section_name,
+                    section_type,
+                    section_instruments,
+                    list(stems.keys()),
                 )
                 enabled_stems = stems
+                section["_stem_fallback_all"] = True
 
             logger.info(
                 "STEM_SECTION_RENDER section='%s' type=%s requested=%s active=%s full_mix_active=%s",
@@ -2107,6 +2130,7 @@ def _build_pre_render_plan(
     stem_metadata: dict | None = None,
     loop_variation_manifest: dict | None = None,
     arrangement_preset: str | None = None,
+    available_stem_keys: list[str] | None = None,
 ) -> dict:
     """Build render_plan_json before rendering begins so all render paths consume the same plan."""
 
@@ -2231,7 +2255,7 @@ def _build_pre_render_plan(
             for s in sections
         ]
 
-    sections = _apply_stem_primary_section_states(sections, stem_metadata, arrangement_preset)
+    sections = _apply_stem_primary_section_states(sections, stem_metadata, arrangement_preset, available_stem_keys)
     sections = assign_section_variants(sections, loop_variation_manifest)
     transition_payload = build_transition_plan(
         sections=sections,
@@ -2647,6 +2671,7 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             stem_metadata=stem_metadata,
             loop_variation_manifest=loop_variation_manifest,
             arrangement_preset=arrangement_preset,
+            available_stem_keys=list(loaded_stems.keys()) if loaded_stems else None,
         )
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()

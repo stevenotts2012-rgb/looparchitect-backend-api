@@ -396,3 +396,113 @@ def test_runtime_applies_transition_events_and_exposes_them_in_timeline() -> Non
     hook_head = arranged[5000:5500]
     assert verse_tail.rms < tone[3000:3950].rms
     assert hook_head.rms >= tone[0:500].rms
+
+
+# ===========================================================================
+# Bug fix — stem-enforcement without stem_metadata
+# ===========================================================================
+
+def test_section_roles_differ_when_stem_metadata_missing_but_stem_keys_provided() -> None:
+    """Per-section role assignment must happen even when stem_metadata is absent,
+    as long as available_stem_keys is supplied (e.g. from loaded stems)."""
+    sections = [
+        {"name": "Intro", "type": "intro", "bars": 4},
+        {"name": "Verse", "type": "verse", "bars": 8},
+        {"name": "Hook", "type": "hook", "bars": 8},
+        {"name": "Outro", "type": "outro", "bars": 4},
+    ]
+    stem_keys = ["drums", "bass", "melody", "pads"]
+
+    updated = _apply_stem_primary_section_states(
+        sections,
+        stem_metadata=None,
+        available_stem_keys=stem_keys,
+    )
+
+    # Every section must have been processed (stem_primary flag set)
+    assert all(section.get("stem_primary") is True for section in updated)
+    # All sections must have non-empty instruments
+    assert all(len(section.get("instruments", [])) > 0 for section in updated)
+
+
+def test_intro_roles_differ_from_hook_roles_without_stem_metadata() -> None:
+    """Intro and hook must receive different stem subsets when only stem keys are
+    known (no stem_metadata).  Intro excludes drums/bass; hook includes them."""
+    sections = [
+        {"name": "Intro", "type": "intro", "bars": 4},
+        {"name": "Hook", "type": "hook", "bars": 8},
+    ]
+    stem_keys = ["drums", "bass", "melody", "pads"]
+
+    updated = _apply_stem_primary_section_states(
+        sections,
+        stem_metadata=None,
+        available_stem_keys=stem_keys,
+    )
+
+    intro_roles = set(updated[0]["instruments"])
+    hook_roles = set(updated[1]["instruments"])
+
+    # Intro must not contain drums or bass (role exclusions apply)
+    assert "drums" not in intro_roles
+    assert "bass" not in intro_roles
+    # Hook must contain drums and bass (full energy section)
+    assert "drums" in hook_roles
+    assert "bass" in hook_roles
+    # They must be distinct
+    assert intro_roles != hook_roles
+
+
+def test_phrase_plan_injected_without_stem_metadata_when_choreography_enabled(monkeypatch) -> None:
+    """phrase_plan must be injected when available_stem_keys is provided and
+    SECTION_CHOREOGRAPHY_V2 + PRODUCER_SECTION_IDENTITY_V2 are both enabled,
+    regardless of whether stem_metadata is present."""
+    import unittest.mock
+
+    sections = [
+        {"name": "Hook", "type": "hook", "bar_start": 0, "bars": 8},
+    ]
+    stem_keys = ["drums", "bass", "melody", "pads", "fx"]
+
+    with unittest.mock.patch("app.services.arrangement_jobs.settings") as mock_settings:
+        mock_settings.feature_producer_section_identity_v2 = True
+        mock_settings.feature_section_choreography_v2 = True
+        updated = _apply_stem_primary_section_states(
+            sections,
+            stem_metadata=None,
+            available_stem_keys=stem_keys,
+        )
+
+    # phrase_plan must be present (choreography injects it for sections with bars > 4)
+    assert "phrase_plan" in updated[0], (
+        "phrase_plan was not injected; early-return guard is still blocking choreography"
+    )
+    phrase = updated[0]["phrase_plan"]
+    assert "first_phrase_roles" in phrase
+    assert "second_phrase_roles" in phrase
+
+
+def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(caplog) -> None:
+    """map_instruments_to_stems with an empty instruments list must NOT silently expand
+    to all stems without logging.  After the fix, the last-resort path is marked with a
+    warning and the _stem_fallback_all flag is set on the section when triggered from
+    _render_producer_arrangement."""
+    import logging
+    from pydub.generators import Sine
+    from app.services.stem_loader import map_instruments_to_stems
+
+    available = {
+        "drums": Sine(80).to_audio_segment(duration=500),
+        "bass": Sine(120).to_audio_segment(duration=500),
+        "melody": Sine(440).to_audio_segment(duration=500),
+    }
+
+    with caplog.at_level(logging.WARNING, logger="app.services.stem_loader"):
+        result = map_instruments_to_stems([], available)
+
+    # Must return all stems (last-resort behaviour is preserved)
+    assert set(result.keys()) == {"drums", "bass", "melody"}
+    # Must have emitted a warning so the fallback is visible in prod logs
+    assert any("last resort" in record.getMessage().lower() for record in caplog.records), (
+        f"Expected a last-resort warning; got messages: {[r.getMessage() for r in caplog.records]}"
+    )
