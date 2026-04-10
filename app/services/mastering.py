@@ -55,17 +55,16 @@ def apply_mastering(audio: AudioSegment, *, genre: str | None) -> MasteringResul
     mastered = audio
 
     if profile == "rnb_smooth":
-        body = mastered.low_pass_filter(12000) + 1
-        air = mastered.high_pass_filter(6500) - 5
-        mastered = body.overlay(air)
-        mastered = mastered.low_pass_filter(15000)
+        # Warm the top end and add gentle body; avoid stacking copies of the signal.
+        mastered = mastered.low_pass_filter(13000) + 0.5
     elif profile == "low_end_focus":
-        sub = mastered.low_pass_filter(180) + 2
-        presence = mastered.high_pass_filter(2500) - 2
-        mastered = mastered.overlay(sub).overlay(presence)
+        # Trap: remove truly subsonic rumble, gentle high-end roll for warmth.
+        # Do NOT overlay copies of the signal — that causes sub mud and potential clipping.
+        mastered = mastered.high_pass_filter(30)
+        mastered = mastered.low_pass_filter(16000)
     else:
-        gentle_body = mastered.low_pass_filter(14000) + 0.5
-        mastered = mastered.overlay(gentle_body, gain_during_overlay=-1)
+        # Transparent: gentle high-end roll only; no signal duplication.
+        mastered = mastered.low_pass_filter(16000)
 
     post_peak = _safe_peak(mastered)
     target_ceiling_dbfs = -1.0

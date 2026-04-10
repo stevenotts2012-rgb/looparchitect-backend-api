@@ -1066,64 +1066,53 @@ def _build_varied_section_audio(
     section_idx: int,
     section_type: str,
 ) -> AudioSegment:
-    """Create a section from loop audio with per-bar variation so output is not a static repeat.
-    
-    Applies audible effects per section type:
-    - Intro: Subtle filtered start
-    - Verse: Thin EQ + rhythmic gaps every 4 bars for variation
-    - Hook/Drop: Bright, punchy high-frequency emphasis  
-    - Breakdown/Bridge: Sparse gaps, filtered
-    - Outro: Fading diminishment
+    """Create a section from loop audio with section-type DSP shaping.
+
+    The loop is repeated cleanly without any per-bar position rotation so the
+    rhythmic grid (kick on 1, snare on 2 and 4, hi-hats on 16ths, etc.) is
+    preserved exactly as designed.  Section-type differentiation is achieved
+    through gain and subtle EQ only — never through rotation or slicing.
+
+    Applies section-type DSP:
+    - Intro: Very gentle air-cut on the first bar only to ease in softly
+    - Verse: Clean repeat; very mild periodic dip every 6 bars for breath
+    - Hook/Drop: Clean repeat; the section-level +boost in _render_producer_arrangement
+                 handles loudness — no per-bar overlay needed here
+    - Breakdown/Bridge: Gentle warmth filter (cut extreme highs only) to thin energy
+    - Outro: Progressive gain taper; loop plays cleanly to end
     """
     section_audio = AudioSegment.silent(duration=0)
-    loop_len = len(loop_audio)
-    quarter = max(1, loop_len // 4)
 
+    # Build one complete section by repeating the loop bar-aligned.
+    # The loop is played from its natural start every bar so the drum grid lands
+    # correctly.  Using _repeat_to_duration on the whole section and then slicing
+    # would work but building bar-by-bar allows per-bar DSP below.
     for bar_idx in range(max(1, section_bars)):
-        bar_source = loop_audio
-        # Rotate source position per bar/section to avoid identical loop restarts.
-        offset = ((section_idx * 3) + bar_idx) * quarter % loop_len
-        if offset > 0:
-            bar_source = loop_audio[offset:] + loop_audio[:offset]
+        bar_audio = _repeat_to_duration(loop_audio, bar_duration_ms)
 
-        bar_audio = _repeat_to_duration(bar_source, bar_duration_ms)
-
-        # Add audible rhythmic contrast per section type
-        if section_type in {"intro"}:
-            # Intro: Gentle warm filtering — keep the sound musical, not muffled.
-            # Only apply to the very first bar to ease in softly.
+        # Apply section-type shaping (gain/EQ only — no rotation, no slicing)
+        if section_type == "intro":
+            # First bar only: very subtle air-cut so the intro eases in
             if bar_idx == 0:
-                bar_audio = bar_audio.low_pass_filter(6000)  # Subtle air-cut, keeps clarity
-            
+                bar_audio = bar_audio.low_pass_filter(9000)
+
         elif section_type in {"hook", "drop", "chorus"}:
-            # Hook: Bright and punchy with high-frequency emphasis
-            if bar_idx % 2 == 0:
-                # Even bars: brighten with high-pass filter + boost
-                accent = bar_audio.high_pass_filter(150) + 3
-                bar_audio = bar_audio.overlay(accent, gain_during_overlay=-3)  # Boost HF
-            else:
-                # Odd bars: add extra punch
-                bar_audio = bar_audio + 2  # Small additional boost
-            
-        elif section_type in {"verse"}:
-            # Verse: Subtle EQ variation — avoid hard gaps which sound like glitches
+            # Hooks are handled at the section level (+boost in _render_producer_arrangement).
+            # No per-bar processing needed here.
+            pass
+
+        elif section_type == "verse":
+            # Very mild periodic dip every 6 bars to add a small breathing moment
             if bar_idx % 6 == 4:
-                # Every 5th bar: light volume dip to create gentle breathing room
-                bar_audio = bar_audio - 2
-            elif bar_idx % 4 == 0:
-                # Every 4 bars: gentle mid-presence cut for textural variation
-                bar_audio = bar_audio.low_pass_filter(7500) - 1
-            else:
-                # Normal verses: light processing for warmth
-                pass
-                
+                bar_audio = bar_audio - 1
+
         elif section_type in {"breakdown", "bridge", "break"}:
-            # Breakdown: Ambient, warm filtering — no hard cuts; keep audio flowing
-            bar_audio = bar_audio.low_pass_filter(3500)
-            
+            # Thin the top end slightly for an airy/stripped feel; keep full body
+            bar_audio = bar_audio.low_pass_filter(6500)
+
         elif section_type == "outro":
-            # Outro: Progressive gentle diminishment — cap at -5 dB so it stays audible
-            fade_db = -(min(bar_idx, 6) * 0.8)  # -0.8 dB/bar, max ~-5 dB
+            # Gentle progressive taper: -0.6 dB/bar, capped at -4 dB so outro stays audible
+            fade_db = -(min(bar_idx, 6) * 0.6)
             bar_audio = bar_audio + fade_db
 
         section_audio += bar_audio
@@ -1251,9 +1240,11 @@ def _apply_producer_move_effect(
         return AudioSegment.silent(duration=drop_len) + segment[drop_len:]
 
     if move_type == "bass_pause":
-        pause_bars = float(params.get("pause_bars", 0.5) or 0.5)
+        # Cap at 0.25 bars (1 beat) so the bass briefly pauses without sounding broken.
+        pause_bars = float(params.get("pause_bars", 0.25) or 0.25)
+        pause_bars = min(0.25, pause_bars)
         pause_len = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
-        head = segment[:pause_len].high_pass_filter(260) - (5 if stem_available else 3)
+        head = segment[:pause_len].high_pass_filter(260) - (3 if stem_available else 2)
         return head + segment[pause_len:]
 
     if move_type == "disable_stem":
@@ -1319,16 +1310,20 @@ def _apply_producer_move_effect(
         return width
 
     if move_type == "bridge_strip":
-        stripped = segment.high_pass_filter(220 if stem_available else 180).low_pass_filter(2400 if stem_available else 2800) - (4 + 2 * intensity)
+        # Reduce level; remove subsonic rumble only.  Do NOT apply a low-pass
+        # filter that kills the body of the sound — that creates a phone-call effect.
+        stripped = segment.high_pass_filter(60) - (3 + 1 * intensity)
         return stripped
 
     if move_type == "outro_strip":
-        strip = segment.low_pass_filter(1800 if stem_available else 2200) - (4 + 3 * intensity)
+        strip = segment.low_pass_filter(11000) - (3 + 2 * intensity)
         return strip.fade_out(min(len(strip), int(bar_duration_ms * 0.85)))
 
     if move_type == "pre_hook_drum_mute":
-        pause_bars = float(params.get("pause_bars", 0.45 + (0.35 * intensity)) or (0.45 + (0.35 * intensity)))
-        mute_ms = int(min(len(segment), bar_duration_ms * max(0.2, pause_bars)))
+        # Cap at 0.25 bars (1 beat) to create tension without dead air.
+        pause_bars = float(params.get("pause_bars", 0.25) or 0.25)
+        pause_bars = min(0.25, pause_bars)
+        mute_ms = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
         return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
 
     if move_type == "silence_drop_before_hook":
@@ -1374,7 +1369,8 @@ def _apply_producer_move_effect(
         return expanded.overlay(bright).overlay(body)
 
     if move_type == "outro_strip_down":
-        stripped = segment.low_pass_filter(2200) - (4 + 3 * intensity)
+        # Gentle level reduction and a warm (not muffled) top-end roll-off.
+        stripped = segment.low_pass_filter(11000) - (3 + 2 * intensity)
         return stripped.fade_out(min(len(stripped), int(bar_duration_ms * 0.8)))
 
     if move_type == "call_response_variation":
@@ -1421,17 +1417,9 @@ def _build_section_audio_from_stems(
     stem_count = max(1, len(stems))
     
     for stem_name, stem_audio in stems.items():
-        # Repeat stem to fill section duration
+        # Repeat stem to fill section duration starting from the natural loop
+        # start so the drum grid (kick on 1, snare on 2+4, etc.) lands correctly.
         stem_repeated = _repeat_to_duration(stem_audio, target_ms)
-        
-        # Apply per-bar offset for variation (same as stereo mode)
-        stem_len = len(stem_audio)
-        if stem_len > 0:
-            quarter = max(1, stem_len // 4)
-            offset = (section_idx * 3) * quarter % stem_len
-            if offset > 0:
-                stem_repeated = stem_repeated[offset:] + stem_repeated[:offset]
-                stem_repeated = stem_repeated[:target_ms]
 
         stem_repeated = stem_repeated.apply_gain(_stem_premix_gain_db(stem_name, stem_count))
         
@@ -1799,30 +1787,32 @@ def _render_producer_arrangement(
 
         elif section_type in {"pre_hook", "buildup", "build_up", "build"}:
             logger.info(f"Processing PRE_HOOK section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
-            section_audio = section_audio.high_pass_filter(180) + 1
-            section_audio = section_audio.low_pass_filter(5000)
+            # Remove subsonic rumble; keep the full spectrum to preserve energy build.
+            section_audio = section_audio.high_pass_filter(60) + 1
+            # Tension tail: brief presence lift on the last bar to launch into the hook
             pre_hook_tail = min(len(section_audio), int(bar_duration_ms))
             if pre_hook_tail > 0:
                 lead = section_audio[:-pre_hook_tail]
-                tail = section_audio[-pre_hook_tail:].high_pass_filter(600) + 2
+                tail = section_audio[-pre_hook_tail:] + 1
                 section_audio = lead + tail
             logger.info(f"  PRE_HOOK post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
             
         elif section_type in {"breakdown", "bridge"}:
-            # BREAKDOWN/BRIDGE: Stripped, ambient — keep stems intact, apply mild EQ + gain
+            # BREAKDOWN/BRIDGE: Stripped, atmospheric — moderate level reduction with
+            # gentle high-shelf cut to thin the energy.  Keep enough body so it still
+            # sounds musical; avoid stacking multiple large cuts that make it inaudible.
             logger.info(f"Processing BREAKDOWN section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
-            section_audio = section_audio - 6  # Moderate reduction (-6 dB)
-            section_audio = section_audio.low_pass_filter(7000)  # Air reduction only, keep body
-            section_audio = section_audio.high_pass_filter(60)   # Remove sub rumble
-            section_audio = section_audio - 2
-            # NOTE: do NOT chunk/slice the audio — that creates abrupt cuts in loops
+            section_audio = section_audio - 4          # -4 dB: noticeably quieter but still present
+            section_audio = section_audio.low_pass_filter(10000)  # Gentle air reduction only
+            section_audio = section_audio.high_pass_filter(60)    # Remove sub rumble
             logger.info(f"  BREAKDOWN post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
                 
         elif section_type == "outro":
-            # OUTRO: Fade out, reduced energy
+            # OUTRO: Gentle strip-down — reduce level and warm the top end without
+            # sounding muffled.  Fade is applied to create a clean close.
             logger.info(f"Processing OUTRO section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
-            section_audio = section_audio - 4   # Slightly quieter (-4 dB)
-            section_audio = section_audio.low_pass_filter(5500)  # Gentle warmth, not underwater
+            section_audio = section_audio - 4           # Slightly quieter (-4 dB)
+            section_audio = section_audio.low_pass_filter(11000)  # Mild warmth; keeps clarity
             section_audio = section_audio.fade_out(min(4000, section_ms // 2))
             logger.info(f"  OUTRO post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
 

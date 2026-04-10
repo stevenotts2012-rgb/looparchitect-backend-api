@@ -5,11 +5,13 @@ from app.style_engine.types import SectionTemplate, StyleParameters, StylePreset
 
 DEFAULT_TEMPLATE: tuple[SectionTemplate, ...] = (
     SectionTemplate(name="intro", bars=8, energy=0.30),
-    SectionTemplate(name="hook", bars=8, energy=0.82),
     SectionTemplate(name="verse", bars=16, energy=0.62),
-    SectionTemplate(name="bridge", bars=8, energy=0.52),
-    SectionTemplate(name="drop", bars=8, energy=0.92),
-    SectionTemplate(name="outro", bars=8, energy=0.40),
+    SectionTemplate(name="hook", bars=8, energy=0.82),
+    SectionTemplate(name="verse", bars=16, energy=0.65),
+    SectionTemplate(name="hook", bars=8, energy=0.85),
+    SectionTemplate(name="bridge", bars=8, energy=0.50),
+    SectionTemplate(name="hook", bars=8, energy=0.90),
+    SectionTemplate(name="outro", bars=8, energy=0.35),
 )
 
 
