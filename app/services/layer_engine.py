@@ -257,7 +257,7 @@ class LayerEngine:
                 # Process stereo separately
                 l_filtered = LayerEngine._apply_highpass_filter_mono(samples[:, 0], cutoff_hz, audio.frame_rate, order)
                 r_filtered = LayerEngine._apply_highpass_filter_mono(samples[:, 1], cutoff_hz, audio.frame_rate, order)
-                filtered = np.column_stack((l_filtered, r_filtered)).flatten('F')
+                filtered = np.column_stack((l_filtered, r_filtered)).flatten()
             else:
                 filtered = LayerEngine._apply_highpass_filter_mono(samples, cutoff_hz, audio.frame_rate, order)
             
@@ -326,7 +326,7 @@ class LayerEngine:
                 # Process stereo separately
                 l_filtered = LayerEngine._apply_lowpass_filter_mono(samples[:, 0], cutoff_hz, audio.frame_rate, order)
                 r_filtered = LayerEngine._apply_lowpass_filter_mono(samples[:, 1], cutoff_hz, audio.frame_rate, order)
-                filtered = np.column_stack((l_filtered, r_filtered)).flatten('F')
+                filtered = np.column_stack((l_filtered, r_filtered)).flatten()
             else:
                 filtered = LayerEngine._apply_lowpass_filter_mono(samples, cutoff_hz, audio.frame_rate, order)
             
@@ -396,7 +396,7 @@ class LayerEngine:
                 # Process stereo separately
                 l_filtered = LayerEngine._apply_notch_filter_mono(samples[:, 0], center_hz, width_hz, audio.frame_rate, order)
                 r_filtered = LayerEngine._apply_notch_filter_mono(samples[:, 1], center_hz, width_hz, audio.frame_rate, order)
-                filtered = np.column_stack((l_filtered, r_filtered)).flatten('F')
+                filtered = np.column_stack((l_filtered, r_filtered)).flatten()
             else:
                 filtered = LayerEngine._apply_notch_filter_mono(samples, center_hz, width_hz, audio.frame_rate, order)
             

@@ -325,7 +325,7 @@ class EnergyModulationEngine:
                     q=q,
                     sample_rate=audio.frame_rate,
                 )
-                filtered = np.column_stack((l_filtered, r_filtered)).flatten('F')
+                filtered = np.column_stack((l_filtered, r_filtered)).flatten()
             else:
                 filtered = EnergyModulationEngine._presence_eq_mono(
                     samples,
