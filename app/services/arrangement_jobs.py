@@ -1068,54 +1068,52 @@ def _build_varied_section_audio(
 ) -> AudioSegment:
     """Create a section from loop audio with section-type DSP shaping.
 
-    The loop is repeated cleanly without any per-bar position rotation so the
-    rhythmic grid (kick on 1, snare on 2 and 4, hi-hats on 16ths, etc.) is
-    preserved exactly as designed.  Section-type differentiation is achieved
-    through gain and subtle EQ only — never through rotation or slicing.
+    The loop is tiled with ``_repeat_to_duration`` so its full musical content
+    (e.g. all four bars of a 4-bar pattern) plays through naturally within the
+    section.  Previously the function re-started the loop from position 0 every
+    bar, which caused only the *first* bar of a multi-bar loop to be heard for
+    the entire section — the root cause of "beat just looping over".
+
+    Section-type differentiation is achieved through gain and subtle EQ only.
 
     Applies section-type DSP:
     - Intro: Very gentle air-cut on the first bar only to ease in softly
-    - Verse: Clean repeat; very mild periodic dip every 6 bars for breath
+    - Verse: Clean repeat; no per-bar processing needed
     - Hook/Drop: Clean repeat; the section-level +boost in _render_producer_arrangement
                  handles loudness — no per-bar overlay needed here
     - Breakdown/Bridge: Gentle warmth filter (cut extreme highs only) to thin energy
     - Outro: Progressive gain taper; loop plays cleanly to end
     """
-    section_audio = AudioSegment.silent(duration=0)
+    section_ms = max(1, section_bars) * bar_duration_ms
 
-    # Build one complete section by repeating the loop bar-aligned.
-    # The loop is played from its natural start every bar so the drum grid lands
-    # correctly.  Using _repeat_to_duration on the whole section and then slicing
-    # would work but building bar-by-bar allows per-bar DSP below.
-    for bar_idx in range(max(1, section_bars)):
-        bar_audio = _repeat_to_duration(loop_audio, bar_duration_ms)
+    # Tile the full loop across the entire section so multi-bar loops (e.g. a
+    # 4-bar drum pattern) advance naturally instead of restarting at bar 1 every
+    # bar.  For single-bar loops this is equivalent to the old bar-by-bar repeat.
+    section_audio = _repeat_to_duration(loop_audio, section_ms)
 
-        # Apply section-type shaping (gain/EQ only — no rotation, no slicing)
-        if section_type == "intro":
-            # First bar only: very subtle air-cut so the intro eases in
-            if bar_idx == 0:
-                bar_audio = bar_audio.low_pass_filter(9000)
+    # Apply section-type shaping (gain/EQ only — no rotation, no slicing)
+    if section_type == "intro":
+        # Very subtle air-cut on the first bar only so the intro eases in
+        first_bar_end = min(len(section_audio), bar_duration_ms)
+        first_bar = section_audio[:first_bar_end].low_pass_filter(9000)
+        section_audio = first_bar + section_audio[first_bar_end:]
 
-        elif section_type in {"hook", "drop", "chorus"}:
-            # Hooks are handled at the section level (+boost in _render_producer_arrangement).
-            # No per-bar processing needed here.
-            pass
+    elif section_type in {"hook", "drop", "chorus"}:
+        # Hooks are handled at the section level (+boost in _render_producer_arrangement).
+        # No per-section processing needed here.
+        pass
 
-        elif section_type == "verse":
-            # Very mild periodic dip every 6 bars to add a small breathing moment
-            if bar_idx % 6 == 4:
-                bar_audio = bar_audio - 1
+    elif section_type in {"breakdown", "bridge", "break"}:
+        # Thin the top end slightly for an airy/stripped feel; keep full body
+        section_audio = section_audio.low_pass_filter(6500)
 
-        elif section_type in {"breakdown", "bridge", "break"}:
-            # Thin the top end slightly for an airy/stripped feel; keep full body
-            bar_audio = bar_audio.low_pass_filter(6500)
-
-        elif section_type == "outro":
-            # Gentle progressive taper: -0.6 dB/bar, capped at -4 dB so outro stays audible
-            fade_db = -(min(bar_idx, 6) * 0.6)
-            bar_audio = bar_audio + fade_db
-
-        section_audio += bar_audio
+    elif section_type == "outro":
+        # Gentle progressive taper: -0.6 dB/bar, capped at -4 dB so outro stays audible,
+        # then fade out the last bar.
+        fade_db = -(min(section_bars, 6) * 0.6)
+        section_audio = (section_audio + fade_db).fade_out(
+            min(len(section_audio), bar_duration_ms)
+        )
 
     return section_audio
 
