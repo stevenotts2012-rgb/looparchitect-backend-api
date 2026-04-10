@@ -1110,7 +1110,7 @@ def _build_varied_section_audio(
     elif section_type == "outro":
         # Gentle progressive taper: -0.6 dB/bar, capped at -4 dB so outro stays audible,
         # then fade out the last bar.
-        fade_db = -(min(section_bars, 6) * 0.6)
+        fade_db = -(min(max(1, section_bars), 6) * 0.6)
         section_audio = (section_audio + fade_db).fade_out(
             min(len(section_audio), bar_duration_ms)
         )
