@@ -94,19 +94,13 @@ def test_apply_stem_primary_section_states_assigns_role_sets_by_section() -> Non
     # --- Section Identity Engine v2 expected role assignments ---
     # The v2 engine enforces profile-specific density bounds and adjacent-section
     # contrast, so sections are genuinely distinct rather than just louder/quieter.
-    #
-    # Intro:   sparse (density_max=2, occurrence=1 → density_min=1) — just pads.
-    # Verse 1: core groove (drums + bass, density_min=2).
-    # Verse 2: escalation=1 adds melody (occurrence=2 → density=3); contrast
-    #          enforcement may reorder but all three roles are active.
-    # Hook 1:  contrast vs verse2 (which had melody) swaps melody for pads to
-    #          achieve required Jaccard distance ≥ 0.40.
-    # Hook 2:  occurrence=2 adds the role not yet present (melody reintroduced)
-    #          while contrast enforcement keeps it distinct from hook1.
-    # Bridge:  sparse, no drums/bass (forbidden) — just pads.
-    # Outro:   sparse, no drums/bass (forbidden) — melodic close.
+    # The exact third role on hook sections (melody vs pads) is determined by the
+    # adjacent-contrast enforcement and is therefore tested as a structural invariant
+    # rather than a precise list, except where the output is fully deterministic.
 
-    # Intro: 1 role (sparse atmospheric opening)
+    # Intro: 1 sparse role (density_min=1, forbidden={drums,bass,percussion}).
+    # Given available roles [full_mix,drums,bass,melody,pads], the first permitted
+    # priority is "pads" — this is deterministic for the given stem_metadata.
     assert updated[0]["active_stem_roles"] == ["pads"]
     # Verse 1 + 2: always include drums and bass; verse 2 adds melody
     assert set(updated[1]["active_stem_roles"]) == {"drums", "bass"}
@@ -119,7 +113,8 @@ def test_apply_stem_primary_section_states_assigns_role_sets_by_section() -> Non
     assert "drums" in updated[4]["active_stem_roles"]
     assert "bass" in updated[4]["active_stem_roles"]
     assert len(updated[4]["active_stem_roles"]) >= 3
-    # Hooks must differ from each other (the identity engine enforces this)
+    # Hooks must differ from each other (the identity engine enforces this via
+    # occurrence-based escalation and evolution logic)
     assert set(updated[3]["active_stem_roles"]) != set(updated[4]["active_stem_roles"]), (
         "Hook 1 and Hook 2 must not have identical stem sets — identity engine should evolve them"
     )
