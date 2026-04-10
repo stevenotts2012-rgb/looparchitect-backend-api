@@ -21,7 +21,12 @@ from typing import Optional
 
 DEFAULT_PRESET = "trap"
 
-VALID_PRESETS = frozenset({"trap", "drill", "cinematic", "lofi", "house", "afrobeats"})
+VALID_PRESETS = frozenset({
+    "trap", "drill", "cinematic", "lofi", "house", "afrobeats",
+    # Producer quality presets (Phase 3)
+    "sparse_trap", "big_hook", "dark_minimal", "melodic_bounce",
+    "drum_forward", "atmospheric",
+})
 
 
 @dataclass(frozen=True)
@@ -419,6 +424,410 @@ ARRANGEMENT_PRESETS: dict[str, ArrangementPresetConfig] = {
                 role_priorities=("percussion", "melody", "pads", "bass"),
                 density_min=2,
                 density_max=3,
+                default_transition_in="crossfade",
+                default_transition_out="none",
+            ),
+        },
+    ),
+
+    # ---- Sparse Trap ---------------------------------------------------------
+    # Maximum sparsity throughout; verse almost empty; hook explodes out of
+    # a minimalist void.  Clutter is the enemy.
+    "sparse_trap": ArrangementPresetConfig(
+        name="sparse_trap",
+        description=(
+            "Ultra-sparse verses with a single rhythmic anchor; hook lands "
+            "as a hard contrast against near-silence."
+        ),
+        section_overrides={
+            "intro": PresetSectionOverride(
+                role_priorities=("pads", "fx"),
+                density_min=1,
+                density_max=1,
+                forbidden_roles=frozenset({"drums", "bass", "percussion", "melody", "vocal", "arp", "synth"}),
+                default_transition_in="none",
+                default_transition_out="fx_rise",
+            ),
+            "verse": PresetSectionOverride(
+                role_priorities=("drums", "bass"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"melody", "pads", "vocal", "arp", "synth", "fx"}),
+                default_transition_in="drum_fill",
+                default_transition_out="mute_drop",
+            ),
+            "pre_hook": PresetSectionOverride(
+                role_priorities=("bass", "drums", "fx"),
+                density_min=1,
+                density_max=2,
+                default_transition_in="fx_rise",
+                default_transition_out="bass_drop",
+            ),
+            "hook": PresetSectionOverride(
+                role_priorities=("drums", "bass", "melody", "synth", "percussion"),
+                density_min=3,
+                density_max=4,
+                default_transition_in="bass_drop",
+                default_transition_out="drum_fill",
+            ),
+            "bridge": PresetSectionOverride(
+                role_priorities=("pads", "fx"),
+                density_min=1,
+                density_max=1,
+                forbidden_roles=frozenset({"drums", "bass", "percussion", "melody", "vocal"}),
+                default_transition_in="mute_drop",
+                default_transition_out="riser",
+            ),
+            "breakdown": PresetSectionOverride(
+                role_priorities=("fx",),
+                density_min=1,
+                density_max=1,
+                forbidden_roles=frozenset({"drums", "bass", "percussion", "melody", "pads", "vocal"}),
+                default_transition_in="silence_drop",
+                default_transition_out="riser",
+            ),
+            "outro": PresetSectionOverride(
+                role_priorities=("drums", "bass"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"melody", "pads", "vocal", "arp", "synth"}),
+                default_transition_in="drum_fill",
+                default_transition_out="none",
+            ),
+        },
+    ),
+
+    # ---- Big Hook ------------------------------------------------------------
+    # Every section exists to set up the hook payoff.  Verse is restrained;
+    # pre_hook builds hard; hook is maximum density and energy.
+    "big_hook": ArrangementPresetConfig(
+        name="big_hook",
+        description=(
+            "Verse exists to tease; pre-hook ramps hard; hook hits with "
+            "every available element for maximum payoff."
+        ),
+        section_overrides={
+            "intro": PresetSectionOverride(
+                role_priorities=("melody", "pads", "fx"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="none",
+                default_transition_out="fx_rise",
+            ),
+            "verse": PresetSectionOverride(
+                role_priorities=("drums", "bass", "melody"),
+                density_min=2,
+                density_max=3,
+                default_transition_in="drum_fill",
+                default_transition_out="fx_rise",
+            ),
+            "pre_hook": PresetSectionOverride(
+                role_priorities=("drums", "bass", "arp", "fx", "melody", "synth"),
+                density_min=3,
+                density_max=4,
+                default_transition_in="fx_rise",
+                default_transition_out="bass_drop",
+            ),
+            "hook": PresetSectionOverride(
+                role_priorities=("drums", "bass", "melody", "synth", "vocal", "pads", "percussion", "arp", "fx"),
+                density_min=4,
+                density_max=6,
+                default_transition_in="bass_drop",
+                default_transition_out="drum_fill",
+            ),
+            "bridge": PresetSectionOverride(
+                role_priorities=("pads", "melody", "vocal"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="mute_drop",
+                default_transition_out="fx_rise",
+            ),
+            "breakdown": PresetSectionOverride(
+                role_priorities=("pads", "fx", "vocal"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="silence_drop",
+                default_transition_out="riser",
+            ),
+            "outro": PresetSectionOverride(
+                role_priorities=("melody", "pads", "fx"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "percussion"}),
+                default_transition_in="crossfade",
+                default_transition_out="none",
+            ),
+        },
+    ),
+
+    # ---- Dark Minimal --------------------------------------------------------
+    # Oppressive negative space; low end and texture only; melody deliberately
+    # suppressed to create tension.  No bright elements unless absolutely needed.
+    "dark_minimal": ArrangementPresetConfig(
+        name="dark_minimal",
+        description=(
+            "Sub-bass and dark texture dominate; melody and bright elements "
+            "suppressed; tension through emptiness."
+        ),
+        section_overrides={
+            "intro": PresetSectionOverride(
+                role_priorities=("pads", "bass"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "melody", "vocal", "arp", "synth", "fx"}),
+                default_transition_in="none",
+                default_transition_out="fx_rise",
+            ),
+            "verse": PresetSectionOverride(
+                role_priorities=("bass", "drums", "pads", "percussion"),
+                density_min=2,
+                density_max=3,
+                forbidden_roles=frozenset({"melody", "vocal", "arp", "synth"}),
+                default_transition_in="drum_fill",
+                default_transition_out="mute_drop",
+            ),
+            "pre_hook": PresetSectionOverride(
+                role_priorities=("bass", "drums", "percussion", "fx"),
+                density_min=2,
+                density_max=3,
+                forbidden_roles=frozenset({"melody", "vocal", "arp", "synth"}),
+                default_transition_in="fx_rise",
+                default_transition_out="bass_drop",
+            ),
+            "hook": PresetSectionOverride(
+                role_priorities=("bass", "drums", "percussion", "pads", "fx", "synth"),
+                density_min=3,
+                density_max=4,
+                forbidden_roles=frozenset({"melody", "vocal", "arp"}),
+                default_transition_in="bass_drop",
+                default_transition_out="drum_fill",
+            ),
+            "bridge": PresetSectionOverride(
+                role_priorities=("bass", "pads", "fx"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "melody", "vocal", "arp", "synth", "percussion"}),
+                default_transition_in="mute_drop",
+                default_transition_out="riser",
+            ),
+            "breakdown": PresetSectionOverride(
+                role_priorities=("pads", "fx", "bass"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "melody", "vocal", "arp", "percussion"}),
+                default_transition_in="silence_drop",
+                default_transition_out="riser",
+            ),
+            "outro": PresetSectionOverride(
+                role_priorities=("bass", "pads", "fx"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "melody", "vocal", "percussion"}),
+                default_transition_in="crossfade",
+                default_transition_out="none",
+            ),
+        },
+    ),
+
+    # ---- Melodic Bounce ------------------------------------------------------
+    # Melody-first throughout; groove is supporting cast; joyful, dense melodies
+    # in hooks with harmonic and arpeggiated layers.
+    "melodic_bounce": ArrangementPresetConfig(
+        name="melodic_bounce",
+        description=(
+            "Melody leads in every section; harmonic layers and arps add bounce; "
+            "rhythm is supportive rather than dominant."
+        ),
+        section_overrides={
+            "intro": PresetSectionOverride(
+                role_priorities=("melody", "arp", "pads"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="none",
+                default_transition_out="drum_fill",
+            ),
+            "verse": PresetSectionOverride(
+                role_priorities=("melody", "pads", "bass", "drums", "arp"),
+                density_min=2,
+                density_max=3,
+                default_transition_in="drum_fill",
+                default_transition_out="fx_rise",
+            ),
+            "pre_hook": PresetSectionOverride(
+                role_priorities=("melody", "arp", "bass", "drums", "synth"),
+                density_min=3,
+                density_max=4,
+                default_transition_in="fx_rise",
+                default_transition_out="fx_hit",
+            ),
+            "hook": PresetSectionOverride(
+                role_priorities=("melody", "arp", "pads", "synth", "vocal", "bass", "drums"),
+                density_min=4,
+                density_max=5,
+                default_transition_in="fx_hit",
+                default_transition_out="drum_fill",
+            ),
+            "bridge": PresetSectionOverride(
+                role_priorities=("melody", "arp", "pads"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="mute_drop",
+                default_transition_out="fx_rise",
+            ),
+            "breakdown": PresetSectionOverride(
+                role_priorities=("pads", "arp", "melody"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="silence_drop",
+                default_transition_out="riser",
+            ),
+            "outro": PresetSectionOverride(
+                role_priorities=("melody", "pads", "arp"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "percussion"}),
+                default_transition_in="crossfade",
+                default_transition_out="none",
+            ),
+        },
+    ),
+
+    # ---- Drum Forward --------------------------------------------------------
+    # Drums and percussion are the primary compositional voice.  Everything
+    # else layers in sparingly; hooks use all percussion elements together.
+    "drum_forward": ArrangementPresetConfig(
+        name="drum_forward",
+        description=(
+            "Drums and percussion lead; groove is the composition; "
+            "melodic elements fill around the rhythm rather than leading it."
+        ),
+        section_overrides={
+            "intro": PresetSectionOverride(
+                role_priorities=("drums", "percussion"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"melody", "pads", "vocal", "arp", "synth"}),
+                default_transition_in="none",
+                default_transition_out="drum_fill",
+            ),
+            "verse": PresetSectionOverride(
+                role_priorities=("drums", "percussion", "bass", "fx"),
+                density_min=2,
+                density_max=3,
+                forbidden_roles=frozenset({"melody", "pads", "vocal", "arp", "synth"}),
+                default_transition_in="drum_fill",
+                default_transition_out="drum_fill",
+            ),
+            "pre_hook": PresetSectionOverride(
+                role_priorities=("drums", "percussion", "bass", "fx", "arp"),
+                density_min=3,
+                density_max=4,
+                default_transition_in="drum_fill",
+                default_transition_out="bass_drop",
+            ),
+            "hook": PresetSectionOverride(
+                role_priorities=("drums", "percussion", "bass", "melody", "synth", "fx"),
+                density_min=4,
+                density_max=5,
+                default_transition_in="bass_drop",
+                default_transition_out="drum_fill",
+            ),
+            "bridge": PresetSectionOverride(
+                role_priorities=("pads", "fx", "melody"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "percussion"}),
+                default_transition_in="mute_drop",
+                default_transition_out="drum_fill",
+            ),
+            "breakdown": PresetSectionOverride(
+                role_priorities=("fx", "pads"),
+                density_min=1,
+                density_max=1,
+                forbidden_roles=frozenset({"drums", "percussion", "bass", "melody"}),
+                default_transition_in="silence_drop",
+                default_transition_out="riser",
+            ),
+            "outro": PresetSectionOverride(
+                role_priorities=("drums", "percussion", "bass"),
+                density_min=2,
+                density_max=3,
+                forbidden_roles=frozenset({"melody", "pads", "vocal", "arp"}),
+                default_transition_in="drum_fill",
+                default_transition_out="none",
+            ),
+        },
+    ),
+
+    # ---- Atmospheric ---------------------------------------------------------
+    # Texture, space, and pads dominate; no hard-hitting groove; pads and FX
+    # carry energy with slow evolving transitions.
+    "atmospheric": ArrangementPresetConfig(
+        name="atmospheric",
+        description=(
+            "Lush pads, evolving textures, and ambient FX lead throughout; "
+            "no hard groove; energy shifts are slow and spatial."
+        ),
+        section_overrides={
+            "intro": PresetSectionOverride(
+                role_priorities=("pads", "fx", "synth"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion", "melody", "vocal"}),
+                default_transition_in="none",
+                default_transition_out="riser",
+            ),
+            "verse": PresetSectionOverride(
+                role_priorities=("pads", "fx", "synth", "melody", "arp"),
+                density_min=2,
+                density_max=3,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="riser",
+                default_transition_out="fx_rise",
+            ),
+            "pre_hook": PresetSectionOverride(
+                role_priorities=("pads", "fx", "arp", "synth", "melody"),
+                density_min=2,
+                density_max=3,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="fx_rise",
+                default_transition_out="fx_hit",
+            ),
+            "hook": PresetSectionOverride(
+                role_priorities=("pads", "fx", "synth", "melody", "arp", "vocal"),
+                density_min=3,
+                density_max=5,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
+                default_transition_in="fx_hit",
+                default_transition_out="riser",
+            ),
+            "bridge": PresetSectionOverride(
+                role_priorities=("pads", "fx"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion", "melody", "vocal"}),
+                default_transition_in="mute_drop",
+                default_transition_out="riser",
+            ),
+            "breakdown": PresetSectionOverride(
+                role_priorities=("pads", "fx"),
+                density_min=1,
+                density_max=1,
+                forbidden_roles=frozenset({"drums", "bass", "percussion", "melody", "vocal", "arp"}),
+                default_transition_in="silence_drop",
+                default_transition_out="riser",
+            ),
+            "outro": PresetSectionOverride(
+                role_priorities=("pads", "fx", "synth"),
+                density_min=1,
+                density_max=2,
+                forbidden_roles=frozenset({"drums", "bass", "percussion"}),
                 default_transition_in="crossfade",
                 default_transition_out="none",
             ),

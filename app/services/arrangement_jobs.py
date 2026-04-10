@@ -159,12 +159,35 @@ def _select_section_stem_roles(
     available_roles: list[str],
     *,
     verse_count: int = 0,
+    source_quality: "str | None" = None,
 ) -> list[str]:
+    """Select stem roles for *section_type* given *available_roles*.
+
+    When *source_quality* is provided the per-mode ``SourceQualityProfile``
+    layer caps are respected in addition to the hardcoded section limits.
+    AI-separated mode enforces lower caps and removes ambiguous roles.
+    """
     section_type = _normalize_section_type(section_type)
+
+    # Load source quality profile (no-op if not available)
+    sq_profile = None
+    try:
+        from app.services.source_quality import get_source_quality_profile
+        sq_profile = get_source_quality_profile(source_quality)
+    except ImportError:
+        pass
+
     isolated_roles = [role for role in available_roles if role in _ISOLATED_STEM_ROLES]
     full_mix_available = "full_mix" in available_roles
     sufficient_isolated = len(isolated_roles) >= 2
     role_source = isolated_roles if sufficient_isolated else available_roles
+
+    # Strip ambiguous roles (full_mix / other) in grouped mode so they don't
+    # crowd out concrete stem selections.
+    if sq_profile and sq_profile.group_ambiguous_roles:
+        role_source = [r for r in role_source if r not in {"full_mix", "other"}]
+        if not role_source:
+            role_source = isolated_roles if sufficient_isolated else available_roles
 
     excluded_roles = _SECTION_ROLE_EXCLUSIONS.get(section_type, set())
     role_source = [role for role in role_source if role not in excluded_roles]
@@ -180,6 +203,20 @@ def _select_section_stem_roles(
 
     min_layers = _SECTION_MIN_LAYERS.get(section_type, 1)
     max_layers = _SECTION_MAX_LAYERS.get(section_type, max(1, len(selected)))
+
+    # Apply source-quality layer caps (always more restrictive, never relaxing)
+    if sq_profile:
+        is_hook = section_type in {"hook", "drop", "chorus"}
+        if is_hook:
+            sq_max = sq_profile.max_layers_hook
+        elif section_type in {"intro", "verse"}:
+            sq_max = sq_profile.max_intro_verse_layers
+        elif section_type in {"breakdown", "bridge"}:
+            sq_max = sq_profile.max_breakdown_layers
+        else:
+            sq_max = sq_profile.max_layers_non_hook
+        max_layers = min(max_layers, sq_max)
+
     if not sufficient_isolated and full_mix_available and len(selected) < min_layers:
         return ["full_mix"]
 

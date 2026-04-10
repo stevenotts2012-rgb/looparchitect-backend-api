@@ -100,6 +100,23 @@ class Settings(BaseSettings):
         validation_alias="ADVANCED_STEM_SEPARATION_V2",
     )
 
+    # Arrangement Quality Gates — extended quality gate checks (section contrast,
+    # repeat differentiation, hook payoff, melodic overcrowding, low-end mud,
+    # source confidence, arrangement audibility) plus auto-repair.
+    # Enable with ARRANGEMENT_QUALITY_GATES=true.
+    feature_arrangement_quality_gates: bool = Field(
+        default=False,
+        validation_alias="ARRANGEMENT_QUALITY_GATES",
+    )
+
+    # Source Quality Mode — classify stems as true_stems / zip_stems /
+    # ai_separated / stereo_fallback and apply per-mode arrangement constraints.
+    # Enable with SOURCE_QUALITY_MODES=true.
+    feature_source_quality_modes: bool = Field(
+        default=False,
+        validation_alias="SOURCE_QUALITY_MODES",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -145,6 +162,8 @@ class Settings(BaseSettings):
         "feature_section_choreography_v2",
         "feature_reference_guided_arrangement",
         "feature_reference_section_analysis",
+        "feature_arrangement_quality_gates",
+        "feature_source_quality_modes",
         mode="before",
     )
     @classmethod
