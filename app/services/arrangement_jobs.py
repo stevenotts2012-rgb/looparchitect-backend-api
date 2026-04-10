@@ -1241,8 +1241,7 @@ def _apply_producer_move_effect(
 
     if move_type == "bass_pause":
         # Cap at 0.25 bars (1 beat) so the bass briefly pauses without sounding broken.
-        pause_bars = float(params.get("pause_bars", 0.25) or 0.25)
-        pause_bars = min(0.25, pause_bars)
+        pause_bars = min(0.25, float(params.get("pause_bars", 0.25) or 0.25))
         pause_len = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
         head = segment[:pause_len].high_pass_filter(260) - (3 if stem_available else 2)
         return head + segment[pause_len:]
@@ -1321,8 +1320,7 @@ def _apply_producer_move_effect(
 
     if move_type == "pre_hook_drum_mute":
         # Cap at 0.25 bars (1 beat) to create tension without dead air.
-        pause_bars = float(params.get("pause_bars", 0.25) or 0.25)
-        pause_bars = min(0.25, pause_bars)
+        pause_bars = min(0.25, float(params.get("pause_bars", 0.25) or 0.25))
         mute_ms = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
         return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
 
