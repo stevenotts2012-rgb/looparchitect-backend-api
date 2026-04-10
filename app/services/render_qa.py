@@ -569,3 +569,507 @@ class RenderQAService:
                 break  # one penalty per arrangement
 
         score.hook_impact_score = max(0.0, score.hook_impact_score)
+
+
+# ---------------------------------------------------------------------------
+# Extended quality gates (Phase 2): section contrast, repeat differentiation,
+# melodic overcrowding, low-end mud, source confidence, arrangement audibility.
+# ---------------------------------------------------------------------------
+
+_SOURCE_QUALITY_CONFIDENCE_THRESHOLD: float = 0.60
+_ARRANGEMENT_AUDIBILITY_MIN_ROLES: int = 2
+_REPEAT_DIFFERENTIATION_MIN_JACCARD: float = 0.20
+
+
+@dataclass
+class ExtendedQAResult:
+    """Result from the extended quality gate checks.
+
+    Fields:
+        passed          — True when all critical gates pass.
+        gates_failed    — Names of gates that failed (empty = all clear).
+        warnings        — Non-critical quality advisory messages.
+        repair_applied  — True when the auto-repair pass mutated the plan.
+        repair_actions  — Human-readable description of each repair step taken.
+        source_confidence — 0–1 confidence in the source quality (from mode).
+    """
+
+    passed: bool = True
+    gates_failed: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    repair_applied: bool = False
+    repair_actions: List[str] = field(default_factory=list)
+    source_confidence: float = 1.0
+
+    def to_dict(self) -> dict:
+        return {
+            "passed": self.passed,
+            "gates_failed": self.gates_failed,
+            "warnings": self.warnings,
+            "repair_applied": self.repair_applied,
+            "repair_actions": self.repair_actions,
+            "source_confidence": self.source_confidence,
+        }
+
+
+class ArrangementQualityGates:
+    """Deterministic quality gate checks and auto-repair for arrangement plans.
+
+    Usage::
+
+        from app.services.render_qa import ArrangementQualityGates
+        from app.services.source_quality import SourceQualityMode
+
+        result = ArrangementQualityGates.check_and_repair(
+            plan,
+            source_quality=SourceQualityMode.AI_SEPARATED,
+        )
+        if result.repair_applied:
+            for action in result.repair_actions:
+                print("Repaired:", action)
+    """
+
+    # Penalty map for gate-based scoring
+    _GATE_THRESHOLDS = {
+        "section_contrast":         0.35,   # min Jaccard distance verse→hook
+        "melodic_overcrowding":     2,      # max melodic roles in non-hook/pre_hook
+        "low_end_mud":              2,      # max simultaneous bass-group roles
+        "source_confidence":        0.60,   # min confidence from source mode
+        "arrangement_audibility":   2,      # min total active roles in any section
+    }
+
+    # Roles in the bass/low-end group
+    _LOW_END_ROLES: frozenset[str] = frozenset({"bass"})
+    _MELODIC_ROLES: frozenset[str] = frozenset({"melody", "harmony", "pads", "vocals", "vocal"})
+    _PAYOFF_KINDS: frozenset = frozenset({SectionKind.HOOK, SectionKind.PRE_HOOK})
+
+    @classmethod
+    def check_and_repair(
+        cls,
+        plan: ProducerArrangementPlanV2,
+        source_quality: "SourceQualityMode | str | None" = None,
+    ) -> ExtendedQAResult:
+        """Run all quality gates against *plan*.
+
+        If any gate fails, apply an auto-repair pass to reduce clutter and
+        improve audible contrast.  The plan is mutated in-place when repair
+        is applied.
+
+        Args:
+            plan:           The arrangement plan to check.
+            source_quality: Source quality mode — affects confidence gate and
+                            repair aggressiveness.  Accepts a
+                            ``SourceQualityMode`` enum value or a plain string.
+
+        Returns:
+            ``ExtendedQAResult`` describing gate status and any repairs made.
+        """
+        from app.services.source_quality import get_source_quality_profile, SourceQualityMode
+
+        profile = get_source_quality_profile(source_quality)
+        result = ExtendedQAResult(source_confidence=profile.confidence_weight)
+
+        cls._gate_section_contrast(plan, result)
+        cls._gate_repeat_differentiation(plan, result)
+        cls._gate_hook_payoff(plan, result)
+        cls._gate_melodic_overcrowding(plan, result, profile)
+        cls._gate_low_end_mud(plan, result, profile)
+        cls._gate_source_confidence(result, profile)
+        cls._gate_arrangement_audibility(plan, result)
+
+        result.passed = len(result.gates_failed) == 0
+
+        if not result.passed:
+            cls._auto_repair(plan, result, profile)
+
+        logger.info(
+            "ArrangementQualityGates: passed=%s gates_failed=%s repair=%s",
+            result.passed,
+            result.gates_failed,
+            result.repair_applied,
+        )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Gate implementations
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _gate_section_contrast(
+        cls, plan: ProducerArrangementPlanV2, result: ExtendedQAResult
+    ) -> None:
+        """Verify hooks are acoustically distinct from verses."""
+        hooks = [s for s in plan.sections if s.section_type == SectionKind.HOOK]
+        verses = [s for s in plan.sections if s.section_type == SectionKind.VERSE]
+        if not hooks or not verses:
+            return
+
+        verse_roles = set().union(*(set(s.active_roles) for s in verses))
+        hook_roles = set().union(*(set(s.active_roles) for s in hooks))
+
+        union = len(verse_roles | hook_roles)
+        if union == 0:
+            return
+
+        jaccard = 1.0 - len(verse_roles & hook_roles) / union
+        threshold = cls._GATE_THRESHOLDS["section_contrast"]
+        if jaccard < threshold:
+            result.gates_failed.append("section_contrast")
+            result.warnings.append(
+                f"section_contrast: verse/hook role overlap too high "
+                f"(Jaccard distance={jaccard:.2f}, need>={threshold:.2f}) — "
+                "hook will not feel different from verse"
+            )
+
+    @classmethod
+    def _gate_repeat_differentiation(
+        cls, plan: ProducerArrangementPlanV2, result: ExtendedQAResult
+    ) -> None:
+        """Verify repeated same-type sections differ from each other."""
+        by_type: dict[str, list] = {}
+        for s in plan.sections:
+            by_type.setdefault(s.section_type.value, []).append(s)
+
+        for stype, sections in by_type.items():
+            if len(sections) < 2:
+                continue
+            for i in range(len(sections) - 1):
+                a = set(sections[i].active_roles)
+                b = set(sections[i + 1].active_roles)
+                union = len(a | b)
+                if union == 0:
+                    continue
+                jaccard = 1.0 - len(a & b) / union
+                if jaccard < _REPEAT_DIFFERENTIATION_MIN_JACCARD:
+                    gate = f"repeat_differentiation_{stype}"
+                    if gate not in result.gates_failed:
+                        result.gates_failed.append(gate)
+                    result.warnings.append(
+                        f"repeat_differentiation: {stype} repeat #{i+2} is identical to "
+                        f"#{i+1} (Jaccard={jaccard:.2f}) — no evolution between repeats"
+                    )
+
+    @classmethod
+    def _gate_hook_payoff(
+        cls, plan: ProducerArrangementPlanV2, result: ExtendedQAResult
+    ) -> None:
+        """Verify hooks have more roles than verses (payoff gate)."""
+        hooks = [s for s in plan.sections if s.section_type == SectionKind.HOOK]
+        verses = [s for s in plan.sections if s.section_type == SectionKind.VERSE]
+        if not hooks or not verses:
+            return
+
+        avg_verse_roles = sum(len(s.active_roles) for s in verses) / len(verses)
+        for hook in hooks:
+            if len(hook.active_roles) <= avg_verse_roles:
+                if "hook_payoff" not in result.gates_failed:
+                    result.gates_failed.append("hook_payoff")
+                result.warnings.append(
+                    f"hook_payoff: {hook.label} has {len(hook.active_roles)} role(s) "
+                    f"but verse avg is {avg_verse_roles:.1f} — hook must have more layers"
+                )
+
+    @classmethod
+    def _gate_melodic_overcrowding(
+        cls,
+        plan: ProducerArrangementPlanV2,
+        result: ExtendedQAResult,
+        profile: "SourceQualityProfile",  # type: ignore[name-defined]
+    ) -> None:
+        """Flag sections with more melodic roles than the source quality allows."""
+        cap = profile.max_melodic_layers
+        for s in plan.sections:
+            if s.section_type in cls._PAYOFF_KINDS:
+                continue  # payoff sections have looser cap
+            melodic = sum(1 for r in s.active_roles if r in cls._MELODIC_ROLES)
+            if melodic > cap:
+                if "melodic_overcrowding" not in result.gates_failed:
+                    result.gates_failed.append("melodic_overcrowding")
+                result.warnings.append(
+                    f"melodic_overcrowding: {s.label} has {melodic} melodic roles "
+                    f"(cap={cap} for source mode) — mix will be muddy"
+                )
+
+    @classmethod
+    def _gate_low_end_mud(
+        cls,
+        plan: ProducerArrangementPlanV2,
+        result: ExtendedQAResult,
+        profile: "SourceQualityProfile",  # type: ignore[name-defined]
+    ) -> None:
+        """Flag low-end crowding (multiple bass-family roles stacked)."""
+        if not profile.safe_low_end:
+            return  # only enforce in safe-low-end modes (ai_separated, stereo_fallback)
+
+        for s in plan.sections:
+            low_end_count = sum(1 for r in s.active_roles if r in cls._LOW_END_ROLES)
+            # Also count "other" if it co-exists with bass (AI separation artefact)
+            has_other_with_bass = (
+                "bass" in s.active_roles
+                and any(r in {"full_mix", "other"} for r in s.active_roles)
+            )
+            if low_end_count > 1 or has_other_with_bass:
+                if "low_end_mud" not in result.gates_failed:
+                    result.gates_failed.append("low_end_mud")
+                result.warnings.append(
+                    f"low_end_mud: {s.label} stacks bass-group roles "
+                    f"({[r for r in s.active_roles if r in cls._LOW_END_ROLES | {'full_mix', 'other'}]}) "
+                    "— low-end will be muddy with AI-separated source"
+                )
+
+    @classmethod
+    def _gate_source_confidence(
+        cls,
+        result: ExtendedQAResult,
+        profile: "SourceQualityProfile",  # type: ignore[name-defined]
+    ) -> None:
+        """Flag low source confidence so downstream can adjust expectations."""
+        threshold = cls._GATE_THRESHOLDS["source_confidence"]
+        if profile.confidence_weight < threshold:
+            if "source_confidence" not in result.gates_failed:
+                result.gates_failed.append("source_confidence")
+            result.warnings.append(
+                f"source_confidence: source confidence={profile.confidence_weight:.2f} "
+                f"is below threshold={threshold:.2f} — "
+                f"{profile.description}"
+            )
+
+    @classmethod
+    def _gate_arrangement_audibility(
+        cls, plan: ProducerArrangementPlanV2, result: ExtendedQAResult
+    ) -> None:
+        """Flag sections with too few roles to produce audible output."""
+        min_roles = cls._GATE_THRESHOLDS["arrangement_audibility"]
+        for s in plan.sections:
+            if s.section_type in (SectionKind.INTRO, SectionKind.OUTRO,
+                                   SectionKind.BRIDGE, SectionKind.BREAKDOWN):
+                continue  # sparse sections are expected to have 1 role
+            if len(s.active_roles) < min_roles:
+                if "arrangement_audibility" not in result.gates_failed:
+                    result.gates_failed.append("arrangement_audibility")
+                result.warnings.append(
+                    f"arrangement_audibility: {s.label} has only "
+                    f"{len(s.active_roles)} active role(s) — likely inaudible"
+                )
+
+    # ------------------------------------------------------------------
+    # Auto-repair pass
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _auto_repair(
+        cls,
+        plan: ProducerArrangementPlanV2,
+        result: ExtendedQAResult,
+        profile: "SourceQualityProfile",  # type: ignore[name-defined]
+    ) -> None:
+        """Apply conservative repairs to the plan when gates have failed.
+
+        Strategy:
+        - Reduce simultaneous layers in non-hook sections.
+        - Force hook sections to carry at least one more role than the verse.
+        - Clamp melodic roles per section to the source quality cap.
+        - Remove bass+other co-stacking when safe_low_end is required.
+        - Suppress "other"/"full_mix" in non-intro/outro sections when
+          group_ambiguous_roles is True.
+        """
+        sections = plan.sections
+        if not sections:
+            return
+
+        repair_log: list[str] = []
+
+        hooks = [s for s in sections if s.section_type == SectionKind.HOOK]
+        verses = [s for s in sections if s.section_type == SectionKind.VERSE]
+
+        # --- Repair: section_contrast / hook_payoff ---
+        if "section_contrast" in result.gates_failed or "hook_payoff" in result.gates_failed:
+            # Ensure hooks have at least 1 more role than the largest verse,
+            # but never exceed the profile's hook layer cap.
+            max_verse_roles = max((len(s.active_roles) for s in verses), default=0)
+            for hook in hooks:
+                # Use the profile cap as an upper bound so we never over-stack.
+                target = min(max_verse_roles + 1, profile.max_layers_hook)
+                target = max(target, 1)  # always keep at least 1 role
+                if len(hook.active_roles) < target and plan.available_roles:
+                    extras = [
+                        r for r in plan.available_roles
+                        if r not in hook.active_roles
+                    ]
+                    added = extras[: target - len(hook.active_roles)]
+                    if added:
+                        hook.active_roles = hook.active_roles + added
+                        repair_log.append(
+                            f"hook_boost: added roles {added} to {hook.label} "
+                            "for section contrast"
+                        )
+
+            # Trim verse roles to leave room for hook to stand out
+            verse_cap = max(1, profile.max_intro_verse_layers)
+            for verse in verses:
+                if len(verse.active_roles) > verse_cap:
+                    trimmed = verse.active_roles[:verse_cap]
+                    repair_log.append(
+                        f"verse_trim: reduced {verse.label} from "
+                        f"{verse.active_roles} → {trimmed}"
+                    )
+                    verse.active_roles = trimmed
+
+        # --- Repair: melodic_overcrowding ---
+        if "melodic_overcrowding" in result.gates_failed:
+            cap = profile.max_melodic_layers
+            for s in sections:
+                if s.section_type in cls._PAYOFF_KINDS:
+                    continue
+                melodic = [r for r in s.active_roles if r in cls._MELODIC_ROLES]
+                if len(melodic) > cap:
+                    to_remove = melodic[cap:]
+                    new_roles = [r for r in s.active_roles if r not in to_remove]
+                    repair_log.append(
+                        f"melodic_trim: removed {to_remove} from {s.label} "
+                        f"(cap={cap})"
+                    )
+                    s.active_roles = new_roles
+
+        # --- Repair: low_end_mud ---
+        if "low_end_mud" in result.gates_failed:
+            for s in sections:
+                if "bass" in s.active_roles:
+                    new_roles = [r for r in s.active_roles if r not in {"full_mix", "other"}]
+                    if len(new_roles) < len(s.active_roles):
+                        repair_log.append(
+                            f"low_end_destack: removed full_mix/other from "
+                            f"{s.label} to reduce low-end mud"
+                        )
+                        s.active_roles = new_roles
+
+        # --- Repair: group_ambiguous_roles ---
+        if profile.group_ambiguous_roles:
+            for s in sections:
+                if s.section_type in (SectionKind.INTRO, SectionKind.OUTRO):
+                    continue
+                ambiguous = [r for r in s.active_roles if r in {"other", "full_mix"}]
+                if ambiguous:
+                    new_roles = [r for r in s.active_roles if r not in {"other", "full_mix"}]
+                    if new_roles:  # only drop if at least one concrete role remains
+                        repair_log.append(
+                            f"ambiguous_group: removed {ambiguous} from {s.label} "
+                            "(ai_separated: prefer grouped concrete roles)"
+                        )
+                        s.active_roles = new_roles
+
+        # --- Repair: arrangement_audibility ---
+        if "arrangement_audibility" in result.gates_failed:
+            for s in sections:
+                if s.section_type in (SectionKind.INTRO, SectionKind.OUTRO,
+                                       SectionKind.BRIDGE, SectionKind.BREAKDOWN):
+                    continue
+                if len(s.active_roles) < 2 and plan.available_roles:
+                    extras = [r for r in plan.available_roles if r not in s.active_roles]
+                    if extras:
+                        s.active_roles = s.active_roles + [extras[0]]
+                        repair_log.append(
+                            f"audibility_boost: added {extras[0]} to {s.label}"
+                        )
+
+        if repair_log:
+            result.repair_applied = True
+            result.repair_actions.extend(repair_log)
+
+
+# ---------------------------------------------------------------------------
+# QA Retry / Safe Downgrade (Phase 5)
+# ---------------------------------------------------------------------------
+
+# Overall score below which a retry / downgrade is triggered
+_RETRY_SCORE_THRESHOLD: float = 55.0
+
+# Preset used for safe-downgrade retry
+_SAFE_FALLBACK_PRESET: str = "sparse_trap"
+
+
+@dataclass
+class QARetryResult:
+    """Result of a QA retry cycle.
+
+    If ``retry_triggered`` is False, the original plan was good enough and
+    was returned unchanged.  If True, ``retry_preset`` was used to rebuild
+    the plan and ``final_qa`` reflects the post-retry score.
+    """
+
+    retry_triggered: bool = False
+    retry_preset: Optional[str] = None
+    original_score: float = 0.0
+    final_qa: Optional[RenderQAResult] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "retry_triggered": self.retry_triggered,
+            "retry_preset": self.retry_preset,
+            "original_score": self.original_score,
+            "final_qa": self.final_qa.to_dict() if self.final_qa else None,
+        }
+
+
+def evaluate_and_retry(
+    plan: ProducerArrangementPlanV2,
+    *,
+    source_quality: "SourceQualityMode | str | None" = None,
+    safe_preset: str = _SAFE_FALLBACK_PRESET,
+) -> QARetryResult:
+    """Score the plan and optionally rebuild it with a safer preset.
+
+    If the overall QA score is below ``_RETRY_SCORE_THRESHOLD``:
+    1. Apply the extended quality gate auto-repair pass.
+    2. Re-score; if still below threshold, mark as retried with
+       ``safe_preset`` for the caller to use when re-building the plan.
+
+    This function never silently ships a muddy/poor arrangement — it always
+    surfaces the quality state so the caller can act.
+
+    Args:
+        plan:           The arrangement plan to evaluate.
+        source_quality: Source quality mode used for gate checks.
+        safe_preset:    Preset name to recommend for a safe rebuild.
+
+    Returns:
+        ``QARetryResult`` with retry state and final QA score.
+    """
+    initial_qa = RenderQAService.score_plan(plan)
+    retry_result = QARetryResult(
+        retry_triggered=False,
+        original_score=initial_qa.score.overall_score,
+        final_qa=initial_qa,
+    )
+
+    if initial_qa.score.overall_score >= _RETRY_SCORE_THRESHOLD:
+        return retry_result
+
+    # Step 1: auto-repair via extended quality gates
+    gate_result = ArrangementQualityGates.check_and_repair(plan, source_quality=source_quality)
+
+    # Re-score after repair
+    post_repair_qa = RenderQAService.score_plan(plan)
+    retry_result.final_qa = post_repair_qa
+
+    if post_repair_qa.score.overall_score >= _RETRY_SCORE_THRESHOLD:
+        # Repair was enough — still mark as retried so callers know changes happened
+        retry_result.retry_triggered = gate_result.repair_applied
+        retry_result.retry_preset = None
+        return retry_result
+
+    # Step 2: flag for full rebuild with safe preset
+    retry_result.retry_triggered = True
+    retry_result.retry_preset = safe_preset
+
+    logger.warning(
+        "evaluate_and_retry: plan quality still below threshold after repair "
+        "(%.1f < %.1f) — recommending rebuild with preset='%s'",
+        post_repair_qa.score.overall_score,
+        _RETRY_SCORE_THRESHOLD,
+        safe_preset,
+    )
+
+    return retry_result
+
