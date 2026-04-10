@@ -91,13 +91,46 @@ def test_apply_stem_primary_section_states_assigns_role_sets_by_section() -> Non
 
     updated = _apply_stem_primary_section_states(sections, stem_metadata)
 
-    assert updated[0]["active_stem_roles"] == ["melody", "pads"]
-    assert updated[1]["active_stem_roles"] == ["drums", "bass"]
-    assert updated[2]["active_stem_roles"] == ["drums", "bass", "melody"]
-    assert updated[3]["active_stem_roles"] == ["drums", "bass", "melody", "pads"]
-    assert updated[4]["active_stem_roles"] == ["drums", "bass", "melody", "pads"]
-    assert updated[5]["active_stem_roles"] == ["pads", "melody"]
-    assert updated[6]["active_stem_roles"] == ["melody", "pads"]
+    # --- Section Identity Engine v2 expected role assignments ---
+    # The v2 engine enforces profile-specific density bounds and adjacent-section
+    # contrast, so sections are genuinely distinct rather than just louder/quieter.
+    #
+    # Intro:   sparse (density_max=2, occurrence=1 → density_min=1) — just pads.
+    # Verse 1: core groove (drums + bass, density_min=2).
+    # Verse 2: escalation=1 adds melody (occurrence=2 → density=3); contrast
+    #          enforcement may reorder but all three roles are active.
+    # Hook 1:  contrast vs verse2 (which had melody) swaps melody for pads to
+    #          achieve required Jaccard distance ≥ 0.40.
+    # Hook 2:  occurrence=2 adds the role not yet present (melody reintroduced)
+    #          while contrast enforcement keeps it distinct from hook1.
+    # Bridge:  sparse, no drums/bass (forbidden) — just pads.
+    # Outro:   sparse, no drums/bass (forbidden) — melodic close.
+
+    # Intro: 1 role (sparse atmospheric opening)
+    assert updated[0]["active_stem_roles"] == ["pads"]
+    # Verse 1 + 2: always include drums and bass; verse 2 adds melody
+    assert set(updated[1]["active_stem_roles"]) == {"drums", "bass"}
+    assert set(updated[2]["active_stem_roles"]) == {"drums", "bass", "melody"}
+    # Hooks must each contain drums + bass; identity and contrast enforcement
+    # determine which third role is added — assert structural invariants only.
+    assert "drums" in updated[3]["active_stem_roles"]
+    assert "bass" in updated[3]["active_stem_roles"]
+    assert len(updated[3]["active_stem_roles"]) >= 3
+    assert "drums" in updated[4]["active_stem_roles"]
+    assert "bass" in updated[4]["active_stem_roles"]
+    assert len(updated[4]["active_stem_roles"]) >= 3
+    # Hooks must differ from each other (the identity engine enforces this)
+    assert set(updated[3]["active_stem_roles"]) != set(updated[4]["active_stem_roles"]), (
+        "Hook 1 and Hook 2 must not have identical stem sets — identity engine should evolve them"
+    )
+    # Bridge: no drums or bass (forbidden), at least 1 role
+    assert "drums" not in updated[5]["active_stem_roles"]
+    assert "bass" not in updated[5]["active_stem_roles"]
+    assert len(updated[5]["active_stem_roles"]) >= 1
+    # Outro: no drums or bass (forbidden), at least 1 role
+    assert "drums" not in updated[6]["active_stem_roles"]
+    assert "bass" not in updated[6]["active_stem_roles"]
+    assert len(updated[6]["active_stem_roles"]) >= 1
     assert all("full_mix" not in section["active_stem_roles"] for section in updated)
     assert all(section["stem_primary"] is True for section in updated)
 
@@ -131,8 +164,12 @@ def test_build_pre_render_plan_marks_stem_primary_mode() -> None:
     )
 
     assert render_plan["render_profile"]["stem_primary_mode"] is True
-    assert render_plan["sections"][0]["active_stem_roles"] == ["melody", "pads"]
-    assert render_plan["sections"][1]["active_stem_roles"] == ["drums", "bass"]
+    # Intro gets a sparse (1-role) assignment from the identity engine v2 profile
+    # (density_min=1, forbidden={drums,bass,percussion}).
+    assert "drums" not in render_plan["sections"][0]["active_stem_roles"]
+    assert "bass" not in render_plan["sections"][0]["active_stem_roles"]
+    assert len(render_plan["sections"][0]["active_stem_roles"]) >= 1
+    assert set(render_plan["sections"][1]["active_stem_roles"]) == {"drums", "bass"}
 
 
 def test_build_section_audio_from_stems_applies_headroom() -> None:

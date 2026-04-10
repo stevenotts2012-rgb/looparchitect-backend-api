@@ -62,8 +62,11 @@ class Settings(BaseSettings):
     # Section Identity Engine V2 — deterministic per-section profiles, repeated-section evolution,
     # role choreography, and quality metrics.  Controls both arrangement_planner.py and
     # arrangement_jobs.py integration.  Safe to enable independently of PRODUCER_ENGINE_V2.
+    # Enabled by default: this is the primary mechanism that makes sections sound distinct from
+    # one another (verse vs hook, hook1 vs hook2, etc.).  Disable with
+    # PRODUCER_SECTION_IDENTITY_V2=false only when rolling back to the legacy role picker.
     feature_producer_section_identity_v2: bool = Field(
-        default=False,
+        default=True,
         validation_alias="PRODUCER_SECTION_IDENTITY_V2",
     )
 
@@ -71,8 +74,11 @@ class Settings(BaseSettings):
     # support-role rotation between repeated sections, intra-section phrase variation, and the
     # five Phase-5 audible-contrast QA metrics.
     # Requires PRODUCER_SECTION_IDENTITY_V2=true to take full effect.
+    # Enabled by default alongside PRODUCER_SECTION_IDENTITY_V2 so that hook/verse repeats
+    # get intra-section phrase variation and support-role rotation.  Disable with
+    # SECTION_CHOREOGRAPHY_V2=false to revert to the non-choreography identity engine path.
     feature_section_choreography_v2: bool = Field(
-        default=False,
+        default=True,
         validation_alias="SECTION_CHOREOGRAPHY_V2",
     )
 

@@ -1769,13 +1769,25 @@ def _render_producer_arrangement(
                 arranged += AudioSegment.silent(duration=silence_gap)
                 logger.info(f"  Added pre-hook silence: {silence_gap}ms before {section_name}")
 
-            # Boost to near ceiling — do NOT exceed -2 dBFS to avoid post-mastering clip.
-            # Stems already at -6 dBFS; +4 dB = -2 dBFS, which is safe.
+            # Boost to near ceiling — do NOT exceed -1.5 dBFS to avoid post-mastering clip.
+            # hook1: standard boost (+3 dB).
+            # hook2: fuller (+4 dB) with a presence shelf to add perceived loudness/clarity.
+            # hook3: maximum (+5 dB) with presence shelf + sub-body layer for peak excitement.
+            # Each stage is intentionally 1 dB louder AND texturally different so the
+            # progression is audible even when the stem set has not changed.
             boost_db = 3.0
             if hook_stage == "hook2":
-                boost_db = 3.5
-            elif hook_stage == "hook3":
                 boost_db = 4.0
+                # Presence shelf: overlay a high-passed copy to lift perceived brightness
+                presence = section_audio.high_pass_filter(3000) + 1.5
+                section_audio = section_audio.overlay(presence, gain_during_overlay=-2)
+            elif hook_stage == "hook3":
+                boost_db = 5.0
+                # Full-spectrum enhancement: presence + sub-body layers
+                presence = section_audio.high_pass_filter(2500) + 2.0
+                body = section_audio.low_pass_filter(300) + 1.0
+                section_audio = section_audio.overlay(presence, gain_during_overlay=-2)
+                section_audio = section_audio.overlay(body, gain_during_overlay=-3)
             section_audio = section_audio + boost_db
             # Guard rail: never let this escape -1 dBFS before it hits mastering
             section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
