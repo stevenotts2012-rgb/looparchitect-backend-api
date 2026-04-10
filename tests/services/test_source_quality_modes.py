@@ -150,7 +150,18 @@ class TestSourceQualityProfileHierarchy:
         zips = get_source_quality_profile(SourceQualityMode.ZIP_STEMS)
         ai = get_source_quality_profile(SourceQualityMode.AI_SEPARATED)
         stereo = get_source_quality_profile(SourceQualityMode.STEREO_FALLBACK)
-        assert true.confidence_weight > zips.confidence_weight > ai.confidence_weight > stereo.confidence_weight
+        assert true.confidence_weight > zips.confidence_weight, (
+            f"true_stems ({true.confidence_weight}) must have higher confidence than "
+            f"zip_stems ({zips.confidence_weight})"
+        )
+        assert zips.confidence_weight > ai.confidence_weight, (
+            f"zip_stems ({zips.confidence_weight}) must have higher confidence than "
+            f"ai_separated ({ai.confidence_weight})"
+        )
+        assert ai.confidence_weight > stereo.confidence_weight, (
+            f"ai_separated ({ai.confidence_weight}) must have higher confidence than "
+            f"stereo_fallback ({stereo.confidence_weight})"
+        )
 
 
 class TestGetSourceQualityProfile:

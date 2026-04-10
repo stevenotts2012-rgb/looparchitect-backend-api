@@ -885,10 +885,13 @@ class ArrangementQualityGates:
 
         # --- Repair: section_contrast / hook_payoff ---
         if "section_contrast" in result.gates_failed or "hook_payoff" in result.gates_failed:
-            # Ensure hooks have at least 1 more role than the largest verse
+            # Ensure hooks have at least 1 more role than the largest verse,
+            # but never exceed the profile's hook layer cap.
             max_verse_roles = max((len(s.active_roles) for s in verses), default=0)
             for hook in hooks:
-                target = max(max_verse_roles + 1, profile.max_layers_hook)
+                # Use the profile cap as an upper bound so we never over-stack.
+                target = min(max_verse_roles + 1, profile.max_layers_hook)
+                target = max(target, 1)  # always keep at least 1 role
                 if len(hook.active_roles) < target and plan.available_roles:
                     extras = [
                         r for r in plan.available_roles

@@ -185,9 +185,15 @@ def _select_section_stem_roles(
     # Strip ambiguous roles (full_mix / other) in grouped mode so they don't
     # crowd out concrete stem selections.
     if sq_profile and sq_profile.group_ambiguous_roles:
-        role_source = [r for r in role_source if r not in {"full_mix", "other"}]
+        _ambiguous = {"full_mix", "other"}
+        role_source = [r for r in role_source if r not in _ambiguous]
         if not role_source:
-            role_source = isolated_roles if sufficient_isolated else available_roles
+            # Fallback: restore concrete isolated roles only (still exclude ambiguous)
+            fallback_source = isolated_roles if sufficient_isolated else available_roles
+            role_source = [r for r in fallback_source if r not in _ambiguous]
+            # Last resort: use all available roles unchanged
+            if not role_source:
+                role_source = fallback_source
 
     excluded_roles = _SECTION_ROLE_EXCLUSIONS.get(section_type, set())
     role_source = [role for role in role_source if role not in excluded_roles]
