@@ -109,6 +109,33 @@ _PREMIX_GAIN_DB = {
     "full_mix": -9.0,
 }
 
+# Per-section energy by occurrence index (0-based).  The last value is used for
+# all further occurrences.  These are normalised floats (0.0–1.0) that match the
+# energy field consumed by _render_producer_arrangement.
+# NOTE: producer_engine.py._build_sections() contains an equivalent arc table;
+# keep both in sync when adjusting these values.
+_SECTION_ENERGY_ARC: dict[str, list[float]] = {
+    "intro":     [0.20],               # always a soft entry
+    "verse":     [0.60, 0.80],         # verse 2+ is noticeably bigger
+    "pre_hook":  [0.80],               # consistent tension ramp
+    "hook":      [0.80, 1.00],         # hook 1 builds; hook 2+ at full power
+    "bridge":    [0.40],
+    "breakdown": [0.40],
+    "outro":     [0.25],
+}
+
+# Default energy for unrecognised section types.
+_DEFAULT_SECTION_ENERGY: float = 0.60
+
+
+def _section_energy_from_arc(section_type: str, occurrence: int) -> float:
+    """Return the normalised energy (0.0–1.0) for *section_type* at *occurrence* (1-based)."""
+    table = _SECTION_ENERGY_ARC.get(section_type)
+    if not table:
+        return _DEFAULT_SECTION_ENERGY
+    idx = min(occurrence - 1, len(table) - 1)
+    return table[idx]
+
 
 def _ordered_unique_roles(roles: list[str]) -> list[str]:
     seen: set[str] = set()
@@ -801,6 +828,9 @@ def _apply_stem_primary_section_states(
             section["stem_primary"] = True
             section["transition_out"] = transition_out
             section["type"] = section_type
+            # Inject occurrence-aware energy so the render DSP has a proper
+            # escalation arc regardless of where the sections originated.
+            section["energy"] = _section_energy_from_arc(section_type, occurrence)
 
             # Inject intra-section phrase variation plan (SECTION_CHOREOGRAPHY_V2).
             if use_choreography:
@@ -927,10 +957,13 @@ def _apply_stem_primary_section_states(
     # --- Legacy path (PRODUCER_SECTION_IDENTITY_V2 disabled) ---
     hook_count = 0
     verse_count = 0
+    occurrence_counter_legacy: dict[str, int] = {}
     previous_roles: list[str] = []
 
     for section in sections:
         section_type = _normalize_section_type(section.get("type") or "verse")
+        occurrence_counter_legacy[section_type] = occurrence_counter_legacy.get(section_type, 0) + 1
+        legacy_occurrence = occurrence_counter_legacy[section_type]
         active_roles: list[str] = []
         transition_out = "cut"
 
@@ -981,6 +1014,8 @@ def _apply_stem_primary_section_states(
         section["stem_primary"] = True
         section["transition_out"] = transition_out
         section["type"] = section_type
+        # Inject occurrence-aware energy for the legacy path too.
+        section["energy"] = _section_energy_from_arc(section_type, legacy_occurrence)
 
         baseline_variations: list[dict] = []
         boundary_events: list[dict] = list(section.get("boundary_events") or [])
