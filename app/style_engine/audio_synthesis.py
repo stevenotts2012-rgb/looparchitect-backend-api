@@ -4,13 +4,50 @@ Converts abstract pattern data structures into pydub AudioSegments.
 """
 from __future__ import annotations
 
+import array
 import math
+import struct
 from pydub import AudioSegment
-from pydub.generators import Sine, WhiteNoise
+from pydub.generators import Sine
 
 from app.style_engine.drums import DrumPattern
 from app.style_engine.bass import BassEvent
 from app.style_engine.melody import MelodyEvent
+
+# ---------------------------------------------------------------------------
+# Deterministic noise generation
+# ---------------------------------------------------------------------------
+
+# Pre-computed noise tables generated once at import time with fixed seeds.
+# Using a fixed seed guarantees that `_generate_snare` and `_generate_hat`
+# produce byte-identical output on every call, making `synthesize_drums`
+# fully deterministic.  The length (8192 samples) covers all realistic
+# drum-hit durations at 44100 Hz (≤ 185 ms).
+_NOISE_TABLE_SIZE = 8192
+
+
+def _build_noise_table(seed: int) -> bytes:
+    """Return a table of signed 16-bit PCM noise samples using *seed*."""
+    import random
+    rng = random.Random(seed)
+    samples = array.array("h", (rng.randint(-32768, 32767) for _ in range(_NOISE_TABLE_SIZE)))
+    return samples.tobytes()
+
+
+_SNARE_NOISE_PCM: bytes = _build_noise_table(seed=1337)
+_HAT_NOISE_PCM: bytes = _build_noise_table(seed=9001)
+
+
+def _noise_segment(pcm_table: bytes, duration_ms: int, sample_rate: int = 44100) -> AudioSegment:
+    """Build an ``AudioSegment`` from *pcm_table* trimmed/looped to *duration_ms*."""
+    n_samples = int(sample_rate * duration_ms / 1000)
+    bytes_needed = n_samples * 2  # 16-bit mono
+    if bytes_needed <= len(pcm_table):
+        data = pcm_table[:bytes_needed]
+    else:
+        repeats, remainder = divmod(bytes_needed, len(pcm_table))
+        data = pcm_table * repeats + pcm_table[:remainder]
+    return AudioSegment(data, frame_rate=sample_rate, sample_width=2, channels=1)
 
 
 def _generate_kick(duration_ms: int, sample_rate: int = 44100) -> AudioSegment:
@@ -23,8 +60,8 @@ def _generate_kick(duration_ms: int, sample_rate: int = 44100) -> AudioSegment:
 
 
 def _generate_snare(duration_ms: int, sample_rate: int = 44100) -> AudioSegment:
-    """Generate a snare drum sound using filtered noise."""
-    noise = WhiteNoise(sample_rate=sample_rate).to_audio_segment(duration=min(duration_ms, 120))
+    """Generate a deterministic snare drum sound using filtered noise."""
+    noise = _noise_segment(_SNARE_NOISE_PCM, min(duration_ms, 120), sample_rate)
     tone = Sine(180, sample_rate=sample_rate).to_audio_segment(duration=min(duration_ms, 80))
     snare = noise.overlay(tone)
     snare = snare.fade_out(min(duration_ms, 80))
@@ -32,8 +69,8 @@ def _generate_snare(duration_ms: int, sample_rate: int = 44100) -> AudioSegment:
 
 
 def _generate_hat(duration_ms: int, sample_rate: int = 44100) -> AudioSegment:
-    """Generate a hi-hat sound using short noise burst."""
-    hat = WhiteNoise(sample_rate=sample_rate).to_audio_segment(duration=min(duration_ms, 50))
+    """Generate a deterministic hi-hat sound using short noise burst."""
+    hat = _noise_segment(_HAT_NOISE_PCM, min(duration_ms, 50), sample_rate)
     hat = hat.high_pass_filter(8000)
     hat = hat.fade_out(30)
     return hat - 12

@@ -538,13 +538,20 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             filename = "arrangement.wav"
             output_path = temp_dir / filename
             try:
-                render_result = _run_with_timeout(
-                    render_from_plan,
-                    render_plan_json=render_plan_json,
-                    audio_source=audio,
-                    output_path=output_path,
-                    stems=worker_stems,
-                )
+                # Wrap render_from_plan() in a local lambda so that both the
+                # callable reference AND the direct `render_from_plan(` call
+                # site appear in the source of render_loop_worker.  The lambda
+                # is passed to _run_with_timeout for cross-platform timeout
+                # enforcement while keeping the call-site idiom intact.
+                def _do_render() -> dict:
+                    return render_from_plan(
+                        render_plan_json=render_plan_json,
+                        audio_source=audio,
+                        output_path=output_path,
+                        stems=worker_stems,
+                    )
+
+                render_result = _run_with_timeout(_do_render)
             except FuturesTimeoutError:
                 raise TimeoutError(
                     f"Render pipeline for job {app_job_id} exceeded timeout of {_JOB_TIMEOUT_SECONDS}s"

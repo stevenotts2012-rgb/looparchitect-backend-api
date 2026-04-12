@@ -225,12 +225,20 @@ class StemArrangementEngine:
                 {"type": "hook", "bars": 4},
             ]
         elif target_bars <= 32:
-            return [
-                {"type": "intro", "bars": 4},
-                {"type": "verse", "bars": 8},
-                {"type": "hook", "bars": 8},
-                {"type": "outro", "bars": 4},
-            ]
+            # Build a minimal structure that fills exactly target_bars
+            intro = 4
+            outro = 4
+            middle = target_bars - intro - outro
+            # Split middle into verse/hook pairs, filling exactly
+            verse = middle // 2
+            hook = middle - verse
+            plan = [{"type": "intro", "bars": intro}]
+            if verse > 0:
+                plan.append({"type": "verse", "bars": verse})
+            if hook > 0:
+                plan.append({"type": "hook", "bars": hook})
+            plan.append({"type": "outro", "bars": outro})
+            return plan
         else:
             # Full structure, extended
             intro_bars = 4

@@ -24,7 +24,6 @@ from app.services.stem_arrangement_engine import (
     SectionConfig,
 )
 from app.services.stem_render_executor import StemRenderExecutor
-from app.services.arrangement_engine import LOOP_VARIATION_MAX_SECONDS
 
 logger = logging.getLogger(__name__)
 

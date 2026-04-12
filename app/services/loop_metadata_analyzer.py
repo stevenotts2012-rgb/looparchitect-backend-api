@@ -52,11 +52,11 @@ class LoopMetadataAnalyzer:
     
     # Filename patterns (regex)
     FILENAME_PATTERNS = {
-        "dark_trap": r'\b(dark|evil|sinister|devil)\b.*\btrap\b|\btrap\b.*\b(dark|evil)',
-        "melodic_trap": r'\b(melodic|melody|emotional|piano|sad)\b.*\btrap\b',
-        "drill": r'\b(drill|uk.?drill|chicago)\b',
-        "rage": r'\b(rage|hyper|yeat|glitch)\b',
-        "trap": r'\b(trap|metro|future|808)\b',
+        "dark_trap": r'(?:^|[\s\-_])(dark|evil|sinister|devil)(?:[\s\-_]|$).*(?:^|[\s\-_])trap(?:[\s\-_]|$)|dark[\-_]trap|(?:^|[\s\-_])trap(?:[\s\-_]|$).*(?:^|[\s\-_])(dark|evil)',
+        "melodic_trap": r'(?:^|[\s\-_])(melodic|melody|emotional|piano|sad)(?:[\s\-_]|$).*(?:^|[\s\-_])trap(?:[\s\-_]|$)|melodic[\-_]trap',
+        "drill": r'(?:^|[\s\-_])(drill|chicago)(?:[\s\-_]|$)|uk[\-_.]?drill',
+        "rage": r'(?:^|[\s\-_])(rage|hyper|yeat|glitch)(?:[\s\-_]|$)',
+        "trap": r'(?:^|[\s\-_])(trap|metro|future|808)(?:[\s\-_]|\.|$)',
     }
     
     # =================================================================
@@ -188,7 +188,12 @@ class LoopMetadataAnalyzer:
         suggested_instruments = cls.GENRE_INSTRUMENTS.get(detected_genre, cls.GENRE_INSTRUMENTS["generic"])
         
         # Step 6: Calculate Overall Confidence
-        overall_confidence = (genre_confidence + mood_confidence) / 2.0
+        # When an explicit genre hint was provided, weight heavily toward genre_confidence
+        # so that user-provided intent has high confidence in the output.
+        if signals.get("genre_hint_used"):
+            overall_confidence = max(genre_confidence, 0.9)
+        else:
+            overall_confidence = (genre_confidence + mood_confidence) / 2.0
         
         # Step 7: Generate Reasoning
         reasoning = cls._generate_reasoning(
@@ -281,8 +286,21 @@ class LoopMetadataAnalyzer:
         if genre_scores:
             best_genre = max(genre_scores, key=genre_scores.get)
             best_score = genre_scores[best_genre]
-            
-            if best_score >= 30.0:  # Minimum threshold
+
+            # Require at least one non-BPM signal (tag or filename match) for
+            # sub-genres (dark_trap, melodic_trap, drill, rage) to be selected.
+            # If only the BPM matched, fall through to the generic "trap" fallback
+            # so that an unspecific beat doesn't get mis-classified.
+            bpm_only_score = 30.0
+            has_secondary_signal = (
+                bool(signals["genre_tag_matches"])
+                or signals["genre_filename_match"] is not None
+            )
+
+            if best_genre != "trap" and best_score <= bpm_only_score and not has_secondary_signal:
+                # Only BPM matched a sub-genre — not strong enough evidence
+                pass
+            elif best_score >= 30.0:
                 confidence = min(best_score / 100.0, 1.0)
                 return best_genre, confidence, signals
         

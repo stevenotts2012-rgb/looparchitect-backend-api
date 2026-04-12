@@ -248,6 +248,10 @@ class ProducerEngine:
         from app.services.producer_behavior_polish import ProducerBehaviorPolish
         arrangement = ProducerBehaviorPolish.polish(arrangement)
 
+        # Re-create tracks after polish so any instruments added during polishing
+        # (e.g. PERCUSSION added to hook sections) are included in the track list.
+        arrangement.tracks = ProducerEngine._create_tracks(arrangement)
+
         # Generate and attach layering plan
         from app.services.arrangement_layering_engine import ArrangementLayeringEngine
         section_names = [s.name.lower() for s in arrangement.sections]

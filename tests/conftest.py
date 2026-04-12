@@ -8,6 +8,35 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
+# ---------------------------------------------------------------------------
+# Auto-initialize the application's default SQLite schema before any test
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_app_db_tables():
+    """Ensure the app's default database tables exist for every test session.
+
+    Tests that spin up a ``TestClient(app)`` (e.g. smoke tests) use the app's
+    default ``SessionLocal`` and therefore need the tables to already exist.
+    This fixture calls ``Base.metadata.create_all`` on the default engine once
+    per session, mirroring what ``init_db()`` does in production.  It is
+    idempotent: if the tables already exist (e.g. a real PostgreSQL database),
+    nothing is changed.
+    """
+    from app.db.session import engine
+    from app.models.base import Base
+    # Import models so they are registered with Base.metadata
+    from app.models import loop as _loop  # noqa: F401
+    from app.models import arrangement as _arrangement  # noqa: F401
+    from app.models import job as _job  # noqa: F401
+
+    Base.metadata.create_all(bind=engine)
+
+    yield
+
+    # Nothing to tear down — we leave the tables in place for the whole session.
+
+
 @pytest.fixture(scope="module")
 def fresh_sqlite_integration_db(tmp_path_factory: pytest.TempPathFactory):
     """Create a fresh temp SQLite DB, initialize schema, and clean up after tests."""
