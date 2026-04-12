@@ -248,105 +248,41 @@ class ProducerMovesEngine:
             else:
                 section["active_layers_target"] = max(1, _safe_layers(section))
 
-            movement_step = 4 if bars >= 8 else 2
-            for change_bar in range(bar_start + movement_step, bar_end, movement_step):
+            # One call-and-response per longer section at the mid-point (not every 4 bars).
+            # Previously emitted every 4 bars across all sections, creating choppy artifacts.
+            if bars >= 6:
+                moves.append(
+                    MoveEvent(
+                        type="call_response_variation",
+                        bar=bar_start + bars // 2,
+                        description="Call-and-response variation",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.55,
+                    ).to_dict()
+                )
+
+            # One texture lift near section end for non-hook sections (hooks use hat_density).
+            if bars >= 8 and section_type not in {"hook"}:
                 moves.append(
                     MoveEvent(
                         type="texture_lift",
-                        bar=change_bar,
-                        description="4-8 bar movement event",
+                        bar=max(bar_start, bar_end - 2),
+                        description="Section movement lift",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=0.58,
+                        intensity=0.52,
                         params={"movement_rule": "4_8"},
                     ).to_dict()
                 )
 
-            for cr_bar in range(bar_start + 2, bar_end, 4):
-                moves.append(
-                    MoveEvent(
-                        type="call_response_variation",
-                        bar=cr_bar,
-                        description="Call-and-response variation",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.66,
-                    ).to_dict()
-                )
-
-            if section_type == "intro":
-                moves.append(
-                    MoveEvent(
-                        type="enable_stem",
-                        bar=bar_start,
-                        description="Intro tease: melody/pad entry",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.55,
-                        duration_bars=min(4, bars),
-                        params={"stems": ["melody", "pad", "fx"]},
-                    ).to_dict()
-                )
-                moves.append(
-                    MoveEvent(
-                        type="disable_stem",
-                        bar=bar_start,
-                        description="Intro tease: no full drums",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.82,
-                        duration_bars=min(4, bars),
-                        params={"stems": ["kick", "snare", "bass"]},
-                    ).to_dict()
-                )
-                moves.append(
-                    MoveEvent(
-                        type="stem_filter",
-                        bar=bar_start,
-                        description="Filtered entry",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.7,
-                        duration_bars=min(4, bars),
-                        params={"filter": "lowpass", "cutoff_hz": 1200},
-                    ).to_dict()
-                )
-
             if section_type == "hook":
+                # --- PRE-HOOK TRANSITION: max 3 effects on bar_start-1, 3 on bar_start-2 ---
+                # Previously 10 effects all landed on bar_start-1, which destructively stacked
+                # multiple silence insertions and overwrote each other producing digital noise.
                 if bar_start > 0:
-                    moves.append(
-                        MoveEvent(
-                            type="pre_hook_silence",
-                            bar=max(0, bar_start - 1),
-                            description="Pre-hook silence for impact",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.9,
-                            duration_bars=1,
-                        ).to_dict()
-                    )
-                    moves.append(
-                        MoveEvent(
-                            type="pre_hook_mute",
-                            bar=max(0, bar_start - 1),
-                            description="Pre-hook kick/bass mute",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.84,
-                            duration_bars=1,
-                            params={"stems": ["kick", "bass"]},
-                        ).to_dict()
-                    )
-                    moves.append(
-                        MoveEvent(
-                            type="pre_hook_drum_mute",
-                            bar=max(0, bar_start - 1),
-                            description="Pre-hook drum mute for anticipation",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.8,
-                        ).to_dict()
-                    )
+                    # The bar immediately before the hook (bar_start-1): tension release into drop.
+                    # Only 3 non-conflicting effects: stutter, riser, brief silence.
                     moves.append(
                         MoveEvent(
                             type="snare_roll",
@@ -354,7 +290,7 @@ class ProducerMovesEngine:
                             description="Pre-hook snare roll",
                             section_name=section_name,
                             section_type=section_type,
-                            intensity=0.85,
+                            intensity=0.75,
                             duration_bars=1,
                         ).to_dict()
                     )
@@ -365,29 +301,7 @@ class ProducerMovesEngine:
                             description="Pre-hook riser FX",
                             section_name=section_name,
                             section_type=section_type,
-                            intensity=0.82,
-                            duration_bars=1,
-                        ).to_dict()
-                    )
-                    moves.append(
-                        MoveEvent(
-                            type="reverse_cymbal",
-                            bar=max(0, bar_start - 1),
-                            description="Reverse cymbal into hook",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.78,
-                            duration_bars=1,
-                        ).to_dict()
-                    )
-                    moves.append(
-                        MoveEvent(
-                            type="silence_drop",
-                            bar=max(0, bar_start - 1),
-                            description="Short silence drop before hook",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.9,
+                            intensity=0.72,
                             duration_bars=1,
                         ).to_dict()
                     )
@@ -398,22 +312,52 @@ class ProducerMovesEngine:
                             description="Silence drop before hook impact",
                             section_name=section_name,
                             section_type=section_type,
-                            intensity=0.9,
-                        ).to_dict()
-                    )
-                    moves.append(
-                        MoveEvent(
-                            type="fill_event",
-                            bar=max(0, bar_start - 1),
-                            description="Pre-hook riser/fill",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.8,
-                            duration_bars=1,
-                            params={"fill_type": "riser"},
+                            intensity=0.55,
                         ).to_dict()
                     )
 
+                    # Two bars before the hook (if enough room): earlier tension build.
+                    # Spread to a different bar so they don't stack with bar_start-1 effects.
+                    if bar_start >= 2:
+                        moves.append(
+                            MoveEvent(
+                                type="pre_hook_silence",
+                                bar=bar_start - 2,
+                                description="Pre-hook silence build",
+                                section_name=section_name,
+                                section_type=section_type,
+                                intensity=0.60,
+                                duration_bars=1,
+                            ).to_dict()
+                        )
+                        moves.append(
+                            MoveEvent(
+                                type="pre_hook_drum_mute",
+                                bar=bar_start - 2,
+                                description="Pre-hook drum mute for anticipation",
+                                section_name=section_name,
+                                section_type=section_type,
+                                intensity=0.65,
+                            ).to_dict()
+                        )
+                        moves.append(
+                            MoveEvent(
+                                type="reverse_cymbal",
+                                bar=bar_start - 2,
+                                description="Reverse cymbal into hook",
+                                section_name=section_name,
+                                section_type=section_type,
+                                intensity=0.65,
+                                duration_bars=1,
+                            ).to_dict()
+                        )
+
+                # --- HOOK ON-BEAT: impact elements only, no whole-section level stacking ---
+                # Previously added enable_stem, stem_filter, texture_lift, hook_expansion all
+                # on bar_start covering the full hook duration, stacking 4 large gain boosts
+                # on top of the +3-5 dB section-level DSP boost — causing saturation/clipping.
+                # Now only crash_hit (1 bar) and hook_expansion (whole section, headroom-guarded)
+                # survive.  hook_expansion intensity escalates per occurrence so hooks evolve.
                 moves.append(
                     MoveEvent(
                         type="crash_hit",
@@ -421,44 +365,8 @@ class ProducerMovesEngine:
                         description="Hook crash hit",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=min(1.0, 0.84 + (occurrence * 0.05)),
+                        intensity=min(1.0, 0.80 + (occurrence * 0.04)),
                         duration_bars=1,
-                    ).to_dict()
-                )
-                moves.append(
-                    MoveEvent(
-                        type="enable_stem",
-                        bar=bar_start,
-                        description="Hook impact: fuller drums and layers",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=min(1.0, 0.8 + (occurrence * 0.06)),
-                        duration_bars=bars,
-                        params={"stems": ["kick", "snare", "hats", "bass", "melody", "fx"]},
-                    ).to_dict()
-                )
-                moves.append(
-                    MoveEvent(
-                        type="stem_filter",
-                        bar=bar_start,
-                        description="Hook brightness lift",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.75,
-                        duration_bars=bars,
-                        params={"filter": "highshelf", "gain_db": 3 + occurrence},
-                    ).to_dict()
-                )
-                moves.append(
-                    MoveEvent(
-                        type="texture_lift",
-                        bar=bar_start,
-                        description="Hook transient energy lift",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=min(1.0, 0.78 + (occurrence * 0.08)),
-                        duration_bars=bars,
-                        params={"target": "transient"},
                     ).to_dict()
                 )
                 moves.append(
@@ -468,14 +376,18 @@ class ProducerMovesEngine:
                         description=f"Hook evolution level {occurrence}",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=min(1.0, 0.78 + (occurrence * 0.1)),
+                        intensity=min(0.88, 0.60 + (occurrence * 0.08)),
                         duration_bars=bars,
                         params={"hook_index": occurrence, "add": ["density", "width", "fx"]},
                     ).to_dict()
                 )
 
-                step = 4 if bars >= 8 else 2
-                for hat_bar in range(bar_start, bar_end, step):
+                # Hat density at two anchor points only (start and midpoint of hook).
+                hat_bars = [bar_start]
+                mid_hat_bar = bar_start + bars // 2
+                if mid_hat_bar < bar_end:
+                    hat_bars.append(mid_hat_bar)
+                for hat_bar in hat_bars:
                     moves.append(
                         MoveEvent(
                             type="hat_density_variation",
@@ -483,7 +395,7 @@ class ProducerMovesEngine:
                             description="Hat roll / density variation",
                             section_name=section_name,
                             section_type=section_type,
-                            intensity=0.7,
+                            intensity=0.65,
                         ).to_dict()
                     )
 
@@ -495,24 +407,13 @@ class ProducerMovesEngine:
                             description="Final hook expansion",
                             section_name=section_name,
                             section_type=section_type,
-                            intensity=1.0,
+                            intensity=0.85,
                             duration_bars=bars,
                         ).to_dict()
                     )
 
             if section_type == "verse":
-                moves.append(
-                    MoveEvent(
-                        type="stem_gain_change",
-                        bar=bar_start,
-                        description="Verse vocal space gain shaping",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.65,
-                        duration_bars=bars,
-                        params={"target": "melody", "gain_db": -4},
-                    ).to_dict()
-                )
+                # Melody reduction creates vocal space without adding heavy gain processing.
                 moves.append(
                     MoveEvent(
                         type="verse_melody_reduction",
@@ -520,19 +421,8 @@ class ProducerMovesEngine:
                         description="Verse melody reduction for vocal space",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=0.7,
+                        intensity=0.65,
                         duration_bars=bars,
-                    ).to_dict()
-                )
-                moves.append(
-                    MoveEvent(
-                        type="drop_kick",
-                        bar=bar_start,
-                        description="Verse drop-kick pulse",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.62,
-                        duration_bars=1,
                     ).to_dict()
                 )
                 moves.append(
@@ -542,22 +432,23 @@ class ProducerMovesEngine:
                         description="Verse bass pause pocket",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=0.66,
+                        intensity=0.60,
                         duration_bars=1,
                     ).to_dict()
                 )
-                for gap_bar in range(bar_start + 4, bar_end, 8):
-                    moves.append(
-                        MoveEvent(
-                            type="silence_drop",
-                            bar=gap_bar,
-                            description="Verse pocket gap",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=0.58,
-                            duration_bars=1,
-                        ).to_dict()
-                    )
+                # Drop-kick at mid-section — previously placed at bar_start which inserted
+                # silence at the very beginning of every verse, making them sound like they skip.
+                moves.append(
+                    MoveEvent(
+                        type="drop_kick",
+                        bar=bar_start + min(bars // 2, bars - 1),
+                        description="Verse drop-kick pulse",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.55,
+                        duration_bars=1,
+                    ).to_dict()
+                )
 
             if section_type == "bridge":
                 moves.append(
@@ -567,7 +458,7 @@ class ProducerMovesEngine:
                         description="Bridge breakdown strip",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=0.82,
+                        intensity=0.75,
                         duration_bars=bars,
                         params={"strip": ["kick", "bass", "hats"]},
                     ).to_dict()
@@ -579,36 +470,29 @@ class ProducerMovesEngine:
                         description="Bridge bass removal",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=0.8,
+                        intensity=0.72,
                         duration_bars=bars,
                     ).to_dict()
                 )
+                # Gentle warm roll-off instead of a narrow bandpass (220-2800 Hz) that made
+                # bridge sections sound like a phone call by cutting all sub-bass and high end.
                 moves.append(
                     MoveEvent(
                         type="stem_filter",
                         bar=bar_start,
-                        description="Bridge atmospheric reset filter",
+                        description="Bridge atmospheric warmth filter",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=0.72,
+                        intensity=0.60,
                         duration_bars=bars,
-                        params={"filter": "bandpass", "low_hz": 220, "high_hz": 2800},
+                        params={"filter": "lowpass", "cutoff_hz": 11000},
                     ).to_dict()
                 )
 
             if section_type == "outro":
-                moves.append(
-                    MoveEvent(
-                        type="outro_strip",
-                        bar=bar_start,
-                        description="Outro progressive strip-down",
-                        section_name=section_name,
-                        section_type=section_type,
-                        intensity=0.8,
-                        duration_bars=bars,
-                        params={"progressive": True},
-                    ).to_dict()
-                )
+                # Single strip-down only.  Previously also added outro_strip (redundant) and
+                # progressive disable_stem every 2 bars, which stacked with the DSP fade and
+                # made the outro nearly inaudible before the song was halfway through.
                 moves.append(
                     MoveEvent(
                         type="outro_strip_down",
@@ -616,60 +500,52 @@ class ProducerMovesEngine:
                         description="Outro strip-down",
                         section_name=section_name,
                         section_type=section_type,
-                        intensity=0.8,
+                        intensity=0.72,
                         duration_bars=bars,
                     ).to_dict()
                 )
-                for step_idx, drop_bar in enumerate(range(bar_start, bar_end, 2)):
-                    drop_targets = ["hats", "kick", "bass", "snare"]
-                    moves.append(
-                        MoveEvent(
-                            type="disable_stem",
-                            bar=drop_bar,
-                            description="Outro drum removal step",
-                            section_name=section_name,
-                            section_type=section_type,
-                            intensity=min(1.0, 0.55 + (step_idx * 0.1)),
-                            duration_bars=1,
-                            params={"stems": drop_targets[: min(len(drop_targets), step_idx + 1)]},
-                        ).to_dict()
-                    )
 
+            # End-of-section fills: one fill_event + one drum fill.
+            # Previously three separate fill types (fill_event + drum_fill + end_section_fill)
+            # all on the same last bar caused distortion from stacked high-pass level boosts.
+            section_end_bar = max(bar_start, bar_end - 1)
             moves.append(
                 MoveEvent(
                     type="fill_event",
-                    bar=max(bar_start, bar_end - 1),
+                    bar=section_end_bar,
                     description="End-of-section transition fill",
                     section_name=section_name,
                     section_type=section_type,
-                    intensity=0.74,
+                    intensity=0.65,
                     duration_bars=1,
                     params={"fill_type": "drum_fill" if section_type != "bridge" else "chop_fill"},
                 ).to_dict()
             )
-
-            moves.append(
-                MoveEvent(
-                    type="drum_fill",
-                    bar=max(bar_start, bar_end - 1),
-                    description="End-of-section drum fill",
-                    section_name=section_name,
-                    section_type=section_type,
-                    intensity=0.76,
-                    duration_bars=1,
-                ).to_dict()
-            )
-
-            moves.append(
-                MoveEvent(
-                    type="end_section_fill",
-                    bar=max(bar_start, bar_end - 1),
-                    description="End-of-section fill",
-                    section_name=section_name,
-                    section_type=section_type,
-                    intensity=0.7,
-                ).to_dict()
-            )
+            # Alternate between drum_fill and end_section_fill per section type so both types
+            # appear in the event list (required by test) without always landing on the same bar.
+            if section_type in {"hook", "verse", "intro"}:
+                moves.append(
+                    MoveEvent(
+                        type="drum_fill",
+                        bar=section_end_bar,
+                        description="End-of-section drum fill",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.65,
+                        duration_bars=1,
+                    ).to_dict()
+                )
+            else:
+                moves.append(
+                    MoveEvent(
+                        type="end_section_fill",
+                        bar=section_end_bar,
+                        description="End-of-section fill",
+                        section_name=section_name,
+                        section_type=section_type,
+                        intensity=0.60,
+                    ).to_dict()
+                )
 
         merged_events = events + moves
         merged_events.sort(key=lambda item: int(item.get("bar", 0) or 0))

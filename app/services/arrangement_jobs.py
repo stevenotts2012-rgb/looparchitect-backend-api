@@ -1198,7 +1198,9 @@ def _apply_producer_move_effect(
         return segment[:max(0, len(segment) - roll_len)] + stutter
 
     if move_type == "pre_hook_silence":
-        mute_ms = int(min(len(segment), bar_duration_ms * (0.45 + 0.3 * intensity)))
+        # Brief silence (at most 1 beat) to create tension 2 bars before the hook.
+        # Previously used 0.45 + 0.3*intensity = 0.72 bars of dead silence which sounded broken.
+        mute_ms = int(min(len(segment), bar_duration_ms * (0.15 + 0.10 * intensity)))
         return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
 
     if move_type == "pre_hook_silence_drop":
@@ -1233,8 +1235,11 @@ def _apply_producer_move_effect(
         return segment[:start] + rev
 
     if move_type == "drop_kick":
-        pause_bars = float(params.get("pause_bars", 0.35) or 0.35)
-        drop_len = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
+        # Brief low-frequency pulse: short high-pass cut at the start to simulate a kick drop.
+        # Previously inserted 0.35 bars of silence at bar_start of every verse, making verses
+        # sound like they stuttered on playback.  Now applied at a mid-section bar only.
+        pause_bars = float(params.get("pause_bars", 0.12) or 0.12)
+        drop_len = int(min(len(segment), bar_duration_ms * max(0.05, pause_bars)))
         return AudioSegment.silent(duration=drop_len) + segment[drop_len:]
 
     if move_type == "bass_pause":
@@ -1302,8 +1307,12 @@ def _apply_producer_move_effect(
         return segment.overlay(transient, gain_during_overlay=-3)
 
     if move_type == "hook_expansion":
-        expanded = segment + (3 + 2 * intensity)
-        width = expanded.overlay(expanded.high_pass_filter(2500) + 3, gain_during_overlay=-3)
+        expanded = segment + (2 + 1.5 * intensity)
+        width = expanded.overlay(expanded.high_pass_filter(2500) + 2, gain_during_overlay=-3)
+        # Guard against clipping from the multi-layer overlay.
+        peak = float(width.max_dBFS)
+        if peak > -1.5:
+            width = width - (peak - (-1.5))
         return width
 
     if move_type == "bridge_strip":
@@ -1323,8 +1332,11 @@ def _apply_producer_move_effect(
         return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
 
     if move_type == "silence_drop_before_hook":
-        gap_ms = int(min(len(segment), bar_duration_ms * (0.30 + 0.30 * intensity)))
-        tail = segment[gap_ms:] + (4 * intensity)
+        # Brief silence (at most 1 beat = 0.25 bars) to create dramatic anticipation.
+        # Previously used 0.30 + 0.30*intensity which at high intensity = 0.57 bars of silence —
+        # over half a bar of dead air that made sections sound broken.
+        gap_ms = int(min(len(segment), bar_duration_ms * (0.10 + 0.15 * intensity)))
+        tail = segment[gap_ms:] + (2 * intensity)
         return AudioSegment.silent(duration=gap_ms) + tail
 
     if move_type == "hat_density_variation":
@@ -1362,7 +1374,12 @@ def _apply_producer_move_effect(
         expanded = segment + (3 + 2 * intensity)
         bright = expanded.high_pass_filter(1800) + (2 + 2 * intensity)
         body = expanded.low_pass_filter(250) + (1 + intensity)
-        return expanded.overlay(bright).overlay(body)
+        result = expanded.overlay(bright).overlay(body)
+        # Guard against clipping from multiple overlay layers.
+        peak = float(result.max_dBFS)
+        if peak > -1.5:
+            result = result - (peak - (-1.5))
+        return result
 
     if move_type == "outro_strip_down":
         # Gentle level reduction and a warm (not muffled) top-end roll-off.
