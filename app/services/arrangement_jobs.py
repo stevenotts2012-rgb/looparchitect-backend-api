@@ -112,6 +112,8 @@ _PREMIX_GAIN_DB = {
 # Per-section energy by occurrence index (0-based).  The last value is used for
 # all further occurrences.  These are normalised floats (0.0–1.0) that match the
 # energy field consumed by _render_producer_arrangement.
+# NOTE: producer_engine.py._build_sections() contains an equivalent arc table;
+# keep both in sync when adjusting these values.
 _SECTION_ENERGY_ARC: dict[str, list[float]] = {
     "intro":     [0.20],               # always a soft entry
     "verse":     [0.60, 0.80],         # verse 2+ is noticeably bigger
@@ -122,12 +124,15 @@ _SECTION_ENERGY_ARC: dict[str, list[float]] = {
     "outro":     [0.25],
 }
 
+# Default energy for unrecognised section types.
+_DEFAULT_SECTION_ENERGY: float = 0.60
+
 
 def _section_energy_from_arc(section_type: str, occurrence: int) -> float:
     """Return the normalised energy (0.0–1.0) for *section_type* at *occurrence* (1-based)."""
     table = _SECTION_ENERGY_ARC.get(section_type)
     if not table:
-        return 0.60
+        return _DEFAULT_SECTION_ENERGY
     idx = min(occurrence - 1, len(table) - 1)
     return table[idx]
 
