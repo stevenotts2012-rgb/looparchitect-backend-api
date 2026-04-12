@@ -316,9 +316,9 @@ Return ONLY the JSON object, nothing else."""
         different seeds with very high probability.
         """
         import hashlib
-        key = f"{user_input}|{sorted(loop_metadata.items())}"
+        key = f"{user_input}|{str(sorted((k, str(v)) for k, v in loop_metadata.items()))}"
         digest = hashlib.sha256(key.encode()).hexdigest()
-        return int(digest[:15], 16) or 1  # Ensure positive non-zero
+        return int(digest[:15], 16)
 
     def _apply_attribute_modifiers(
         self,
