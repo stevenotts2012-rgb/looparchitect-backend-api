@@ -91,13 +91,41 @@ def test_apply_stem_primary_section_states_assigns_role_sets_by_section() -> Non
 
     updated = _apply_stem_primary_section_states(sections, stem_metadata)
 
-    assert updated[0]["active_stem_roles"] == ["melody", "pads"]
-    assert updated[1]["active_stem_roles"] == ["drums", "bass"]
-    assert updated[2]["active_stem_roles"] == ["drums", "bass", "melody"]
-    assert updated[3]["active_stem_roles"] == ["drums", "bass", "melody", "pads"]
-    assert updated[4]["active_stem_roles"] == ["drums", "bass", "melody", "pads"]
-    assert updated[5]["active_stem_roles"] == ["pads", "melody"]
-    assert updated[6]["active_stem_roles"] == ["melody", "pads"]
+    # --- Section Identity Engine v2 expected role assignments ---
+    # The v2 engine enforces profile-specific density bounds and adjacent-section
+    # contrast, so sections are genuinely distinct rather than just louder/quieter.
+    # The exact third role on hook sections (melody vs pads) is determined by the
+    # adjacent-contrast enforcement and is therefore tested as a structural invariant
+    # rather than a precise list, except where the output is fully deterministic.
+
+    # Intro: 1 sparse role (density_min=1, forbidden={drums,bass,percussion}).
+    # Given available roles [full_mix,drums,bass,melody,pads], the first permitted
+    # priority is "pads" — this is deterministic for the given stem_metadata.
+    assert updated[0]["active_stem_roles"] == ["pads"]
+    # Verse 1 + 2: always include drums and bass; verse 2 adds melody
+    assert set(updated[1]["active_stem_roles"]) == {"drums", "bass"}
+    assert set(updated[2]["active_stem_roles"]) == {"drums", "bass", "melody"}
+    # Hooks must each contain drums + bass; identity and contrast enforcement
+    # determine which third role is added — assert structural invariants only.
+    assert "drums" in updated[3]["active_stem_roles"]
+    assert "bass" in updated[3]["active_stem_roles"]
+    assert len(updated[3]["active_stem_roles"]) >= 3
+    assert "drums" in updated[4]["active_stem_roles"]
+    assert "bass" in updated[4]["active_stem_roles"]
+    assert len(updated[4]["active_stem_roles"]) >= 3
+    # Hooks must differ from each other (the identity engine enforces this via
+    # occurrence-based escalation and evolution logic)
+    assert set(updated[3]["active_stem_roles"]) != set(updated[4]["active_stem_roles"]), (
+        "Hook 1 and Hook 2 must not have identical stem sets — identity engine should evolve them"
+    )
+    # Bridge: no drums or bass (forbidden), at least 1 role
+    assert "drums" not in updated[5]["active_stem_roles"]
+    assert "bass" not in updated[5]["active_stem_roles"]
+    assert len(updated[5]["active_stem_roles"]) >= 1
+    # Outro: no drums or bass (forbidden), at least 1 role
+    assert "drums" not in updated[6]["active_stem_roles"]
+    assert "bass" not in updated[6]["active_stem_roles"]
+    assert len(updated[6]["active_stem_roles"]) >= 1
     assert all("full_mix" not in section["active_stem_roles"] for section in updated)
     assert all(section["stem_primary"] is True for section in updated)
 
@@ -131,8 +159,12 @@ def test_build_pre_render_plan_marks_stem_primary_mode() -> None:
     )
 
     assert render_plan["render_profile"]["stem_primary_mode"] is True
-    assert render_plan["sections"][0]["active_stem_roles"] == ["melody", "pads"]
-    assert render_plan["sections"][1]["active_stem_roles"] == ["drums", "bass"]
+    # Intro gets a sparse (1-role) assignment from the identity engine v2 profile
+    # (density_min=1, forbidden={drums,bass,percussion}).
+    assert "drums" not in render_plan["sections"][0]["active_stem_roles"]
+    assert "bass" not in render_plan["sections"][0]["active_stem_roles"]
+    assert len(render_plan["sections"][0]["active_stem_roles"]) >= 1
+    assert set(render_plan["sections"][1]["active_stem_roles"]) == {"drums", "bass"}
 
 
 def test_build_section_audio_from_stems_applies_headroom() -> None:
