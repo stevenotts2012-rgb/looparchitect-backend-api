@@ -213,7 +213,7 @@ _KEYWORD_TABLE: list[tuple[str, str, float]] = [
 ]
 
 # Base confidence awarded per keyword match (token match)
-_TOKEN_CONFIDENCE   = 0.88
+_TOKEN_CONFIDENCE   = 0.92
 # Confidence for substring (partial) match
 _SUBSTR_CONFIDENCE  = 0.78
 # When multiple keywords match the same role, bonus per extra match (capped)

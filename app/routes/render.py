@@ -124,8 +124,8 @@ def _resolve_audio_file_path(file_url: str) -> Optional[Path]:
         Path object for local files, None for remote URLs (http/https)
     """
     if file_url.startswith("http"):
-# Remote URL handled by real renderer via presign
-        pass
+        # Remote URL — the renderer fetches it directly; no local path needed.
+        return None
 
     if file_url.startswith("/uploads/"):
         file_path = file_url.replace("/uploads/", "")

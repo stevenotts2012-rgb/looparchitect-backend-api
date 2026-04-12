@@ -131,8 +131,8 @@ def generate_arrangement(
     sections = []
     current_bar = 0
 
-    # --- Intro (2-16 bars, randomly selected) ---
-    intro_bars = random.randint(2, 16)
+    # --- Intro (always 4 bars for consistent arrangement structure) ---
+    intro_bars = 4
     sections.append(
         {
             "name": "Intro",

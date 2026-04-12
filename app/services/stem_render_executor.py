@@ -12,8 +12,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from pydub import AudioSegment
-from pydub.utils import make_mono
-
 from app.services.stem_arrangement_engine import (
     StemArrangementEngine,
     StemRole,

@@ -26,7 +26,7 @@ class StyleIntent(BaseModel):
         description="LLM confidence score for parsing quality",
     )
     raw_input: str = Field(
-        ...,
+        default="",
         description="Original user input for audit trail",
     )
 

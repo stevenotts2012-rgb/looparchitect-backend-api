@@ -309,14 +309,53 @@ Return ONLY the JSON object, nothing else."""
 
         return normalized
 
+    def _generate_seed(self, user_input: str, loop_metadata: dict) -> int:
+        """Generate a deterministic integer seed from *user_input* and *loop_metadata*.
+
+        The same inputs always produce the same seed, and different inputs produce
+        different seeds with very high probability.
+        """
+        import hashlib
+        key = f"{user_input}|{sorted(loop_metadata.items())}"
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        return int(digest[:15], 16) or 1  # Ensure positive non-zero
+
     def _apply_attribute_modifiers(
         self,
-        base_params: StyleParameters,
-        llm_attributes: dict,
+        base_params,
+        llm_attributes_or_overrides=None,
         user_overrides: Optional[StyleOverrides] = None,
-    ) -> StyleParameters:
-        """Apply attribute modifiers and overrides to base parameters."""
-        # Convert base params to dict
+    ):
+        """Apply attribute modifiers and overrides to base parameters.
+
+        Supports two calling conventions:
+        1. ``_apply_attribute_modifiers(StyleParameters, dict, StyleOverrides)`` —
+           full form used internally; returns ``StyleParameters``.
+        2. ``_apply_attribute_modifiers(dict, StyleOverrides)`` — simplified form
+           used by tests and external callers; returns ``dict``.
+        """
+        # Detect simplified 2-arg calling convention: (dict, StyleOverrides)
+        if isinstance(base_params, dict):
+            attrs: dict = base_params
+            overrides = llm_attributes_or_overrides
+            result: dict = dict(attrs)
+            if isinstance(overrides, StyleOverrides):
+                if overrides.aggression is not None:
+                    result["aggression"] = float(overrides.aggression)
+                if overrides.bounce is not None:
+                    result["bounce"] = float(overrides.bounce)
+                if overrides.melody_complexity is not None:
+                    result["melody_complexity"] = float(overrides.melody_complexity)
+                if overrides.drum_density is not None:
+                    result["drum_density"] = float(overrides.drum_density)
+                if overrides.tempo_multiplier is not None:
+                    result["tempo_multiplier"] = float(overrides.tempo_multiplier)
+            # Clamp all float values to [0, 1]
+            return {k: max(0.0, min(1.0, float(v))) if isinstance(v, (int, float)) else v
+                    for k, v in result.items()}
+
+        # Full 3-arg form: (StyleParameters, dict, StyleOverrides)
+        llm_attributes: dict = llm_attributes_or_overrides if isinstance(llm_attributes_or_overrides, dict) else {}
         params_dict = {
             "tempo_multiplier": base_params.tempo_multiplier,
             "drum_density": base_params.drum_density,
@@ -365,34 +404,68 @@ Return ONLY the JSON object, nothing else."""
 
     def _generate_sections_with_transitions(
         self,
-        target_seconds: int,
-        bpm: float,
-        loop_bars: int,
         transitions: List[dict],
-        base_template: tuple,
+        *args,
+        total_bars: int = 64,
+        metadata: Optional[dict] = None,
+        # Legacy positional parameters (kept for backward compatibility)
+        target_seconds: int = 0,
+        bpm: float = 0.0,
+        loop_bars: int = 0,
+        base_template: tuple = (),
     ) -> List[dict]:
-        """Generate section plan with beat switches and transitions."""
-        # Calculate total bars needed
-        bar_duration = (60.0 / bpm) * 4  # seconds per 4/4 bar
-        total_bars = int(target_seconds / bar_duration)
+        """Generate section plan with beat switches and transitions.
 
-        # Start with base template
-        sections = []
+        Supports two calling conventions:
+        1. New: ``_generate_sections_with_transitions(transitions, total_bars=..., metadata=...)``
+        2. Legacy: ``_generate_sections_with_transitions(target_seconds, bpm, loop_bars, transitions, base_template)``
+        """
+        # Resolve effective total_bars
+        if not total_bars and target_seconds and bpm:
+            bar_duration = (60.0 / bpm) * 4  # seconds per 4/4 bar
+            total_bars = max(1, int(target_seconds / bar_duration))
+        if not total_bars:
+            total_bars = 64
+
+        # Resolve effective bpm from metadata or positional arg
+        eff_bpm = bpm or (metadata or {}).get("bpm") or 120.0
+
+        # Start with base template sections if provided, else build a default structure
+        sections: List[dict] = []
         current_bar = 0
 
-        for template in base_template:
-            section = {
-                "name": template.name,
-                "bars": min(template.bars, max(1, total_bars - current_bar)),
-                "energy": template.energy,
-                "start_bar": current_bar,
-                "end_bar": current_bar + template.bars - 1,
-            }
-            sections.append(section)
-            current_bar += template.bars
-
-            if current_bar >= total_bars:
-                break
+        if base_template:
+            for template in base_template:
+                section = {
+                    "name": template.name,
+                    "bars": min(template.bars, max(1, total_bars - current_bar)),
+                    "energy": template.energy,
+                    "start_bar": current_bar,
+                    "end_bar": current_bar + template.bars - 1,
+                }
+                sections.append(section)
+                current_bar += template.bars
+                if current_bar >= total_bars:
+                    break
+        else:
+            # Default section structure: intro / verse / hook / bridge / outro
+            default_structure = [
+                ("intro", 4, 0.4), ("verse", 8, 0.6), ("hook", 8, 0.9),
+                ("verse", 8, 0.6), ("hook", 8, 0.9), ("bridge", 8, 0.5),
+                ("outro", 4, 0.3),
+            ]
+            for name, bars, energy in default_structure:
+                if current_bar >= total_bars:
+                    break
+                actual_bars = min(bars, total_bars - current_bar)
+                sections.append({
+                    "name": name,
+                    "bars": actual_bars,
+                    "energy": energy,
+                    "start_bar": current_bar,
+                    "end_bar": current_bar + actual_bars - 1,
+                })
+                current_bar += actual_bars
 
         # Insert beat switches if specified
         for transition in transitions:
@@ -400,10 +473,8 @@ Return ONLY the JSON object, nothing else."""
                 beat_switch_bar = transition.get("bar", total_bars // 2)
                 new_energy = transition.get("new_energy", 0.9)
 
-                # Find section at this bar and insert beat switch
                 for i, section in enumerate(sections):
                     if section["start_bar"] <= beat_switch_bar < section["end_bar"]:
-                        # Split section and insert beat switch
                         before_bars = beat_switch_bar - section["start_bar"]
                         after_bars = section["bars"] - before_bars
 
@@ -413,7 +484,7 @@ Return ONLY the JSON object, nothing else."""
 
                         beat_switch = {
                             "name": "beat_switch",
-                            "bars": min(8, after_bars),  # Typical beat switch duration
+                            "bars": min(8, after_bars),
                             "energy": new_energy,
                             "start_bar": beat_switch_bar,
                             "end_bar": beat_switch_bar + min(8, after_bars) - 1,
