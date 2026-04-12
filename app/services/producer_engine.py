@@ -296,6 +296,19 @@ class ProducerEngine:
             "Outro": SectionType.OUTRO,
         }
 
+        # Occurrence-aware base energy per section type (0.0–1.0).
+        # Index 0 = first occurrence, last value used for all further repeats.
+        _energy_arc: dict[SectionType, list[float]] = {
+            SectionType.INTRO:     [0.20],
+            SectionType.VERSE:     [0.60, 0.80],   # verse 2+ feels bigger
+            SectionType.HOOK:      [0.80, 1.00],   # hook 1 builds; hook 2+ at full
+            SectionType.CHORUS:    [0.80, 1.00],
+            SectionType.BRIDGE:    [0.40],
+            SectionType.BREAKDOWN: [0.40],
+            SectionType.OUTRO:     [0.25],
+        }
+        occurrence_counter: dict[SectionType, int] = {}
+
         for name, bars in sections_template:
             if current_bar >= total_bars:
                 break
@@ -308,12 +321,16 @@ class ProducerEngine:
                 break
 
             section_type = type_map.get(name, SectionType.VERSE)
+            occurrence_counter[section_type] = occurrence_counter.get(section_type, 0) + 1
+            occ = occurrence_counter[section_type]
+            arc = _energy_arc.get(section_type, [0.60])
+            energy = arc[min(occ - 1, len(arc) - 1)]
             section = Section(
                 name=name,
                 section_type=section_type,
                 bar_start=current_bar,
                 bars=bars,
-                energy_level=0.5,  # Will be updated by energy curve
+                energy_level=energy,
             )
             sections.append(section)
             current_bar += bars

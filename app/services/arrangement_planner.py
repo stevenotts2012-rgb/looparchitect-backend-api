@@ -68,7 +68,9 @@ def _normalize_roles(detected_roles: list[str], allow_full_mix: bool = True) -> 
 
 def _default_structure(source_type: str) -> list[str]:
     if source_type == "loop":
-        return ["intro", "verse", "hook", "verse", "hook", "outro"]
+        # Include pre_hook to build tension before each hook, giving the
+        # arrangement a clear energy ramp instead of a flat verse→hook jump.
+        return ["intro", "verse", "pre_hook", "hook", "verse", "pre_hook", "hook", "outro"]
     return ["intro", "verse", "pre_hook", "hook", "verse", "hook", "bridge", "hook", "outro"]
 
 
@@ -113,8 +115,17 @@ def _fit_bars_to_target(structure: list[str], target_total_bars: Optional[int]) 
     return bars
 
 
-def _section_energy(section_type: str) -> int:
-    return {
+def _section_energy(section_type: str, occurrence: int = 1) -> int:
+    """Return the energy level (1–5) for a section type at the given occurrence.
+
+    Energy escalates with each repeat so the arrangement has a natural arc:
+    - Verses start moderate and grow louder on the second pass.
+    - Hooks start slightly restrained on their first appearance so the final
+      hook feels like a true climax.  The hook_stage DSP in the render engine
+      adds additional texture per stage independent of this value.
+    - All other section types are fixed.
+    """
+    base: dict[str, int] = {
         "intro": 1,
         "verse": 3,
         "pre_hook": 4,
@@ -122,7 +133,15 @@ def _section_energy(section_type: str) -> int:
         "bridge": 2,
         "breakdown": 2,
         "outro": 1,
-    }.get(section_type, 3)
+    }
+    energy = base.get(section_type, 3)
+    if section_type == "verse" and occurrence >= 2:
+        # Second verse and beyond feel slightly bigger — builds narrative tension.
+        energy = min(5, energy + 1)
+    elif section_type == "hook" and occurrence == 1:
+        # First hook is slightly restrained so hook 2/3 feel like escalations.
+        energy = 4
+    return energy
 
 
 def _section_density(section_type: str, energy: int) -> str:
@@ -300,7 +319,7 @@ def build_fallback_arrangement_plan(
         occurrence_counter[section_type] = occurrence_counter.get(section_type, 0) + 1
         occurrence = occurrence_counter[section_type]
 
-        energy = _section_energy(section_type)
+        energy = _section_energy(section_type, occurrence=occurrence)
         density = _section_density(section_type, energy)
         roles = _roles_for_section(
             section_type,
