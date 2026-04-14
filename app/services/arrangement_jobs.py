@@ -1194,19 +1194,21 @@ def _build_varied_section_audio(
 
     # Apply section-type shaping (gain/EQ only — no rotation, no slicing)
     if section_type == "intro":
-        # Very subtle air-cut on the first bar only so the intro eases in
-        first_bar_end = min(len(section_audio), bar_duration_ms)
-        first_bar = section_audio[:first_bar_end].low_pass_filter(9000)
-        section_audio = first_bar + section_audio[first_bar_end:]
+        # Filter the whole intro heavily so it sounds muffled/filtered-in,
+        # giving the clear impression of "no drums yet" even on a stereo source.
+        section_audio = section_audio.low_pass_filter(2200) - 4
+        section_audio = section_audio.fade_in(min(len(section_audio), bar_duration_ms * 2))
 
     elif section_type in {"hook", "drop", "chorus"}:
-        # Hooks are handled at the section level (+boost in _render_producer_arrangement).
-        # No per-section processing needed here.
-        pass
+        # Add a subtle presence boost so the hook sounds brighter and more
+        # alive than the verse even before the section-level gain stage runs.
+        presence = section_audio.high_pass_filter(2200)
+        section_audio = section_audio.overlay(presence + 1, gain_during_overlay=-3)
 
     elif section_type in {"breakdown", "bridge", "break"}:
-        # Thin the top end slightly for an airy/stripped feel; keep full body
-        section_audio = section_audio.low_pass_filter(6500)
+        # Band-pass the breakdown: remove sub-bass AND top-end sparkle so it
+        # sounds atmospheric/stripped without just being a muffled copy of verse.
+        section_audio = section_audio.high_pass_filter(360).low_pass_filter(4500) - 3
 
     elif section_type == "outro":
         # Gentle progressive taper: -0.6 dB/bar, capped at -4 dB so outro stays audible,
@@ -1672,7 +1674,16 @@ def _render_producer_arrangement(
     
     bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
     arranged = AudioSegment.silent(duration=0)
-    
+
+    # Build a case-insensitive lookup for loop_variations.  Sub-variant keys
+    # are generated with uppercase suffixes (e.g. "hook_A", "verse_B") but
+    # section_loop_variant is always lowercased when read from the section dict,
+    # so we normalise once here to avoid the mismatch that would otherwise cause
+    # every sub-variant section to fall through to the stereo fallback.
+    _loop_vars_ci: dict[str, AudioSegment] = {
+        k.lower(): v for k, v in (loop_variations or {}).items()
+    }
+
     timeline_events = []
     timeline_sections = []
     producer_debug_report: list[dict] = []
@@ -1871,8 +1882,8 @@ def _render_producer_arrangement(
                             _end_dropout_bars,
                         )
 
-        elif use_loop_variations and section_loop_variant in (loop_variations or {}):
-            variation_source = (loop_variations or {})[section_loop_variant]
+        elif use_loop_variations and section_loop_variant in _loop_vars_ci:
+            variation_source = _loop_vars_ci[section_loop_variant]
             section_audio = _repeat_to_duration(variation_source, section_ms)
             
             # Apply per-instance randomization to prevent repetitive sound
