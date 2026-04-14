@@ -923,21 +923,21 @@ _CHOREOGRAPHY_TEMPLATES: dict[str, list[SectionChoreography]] = {
         ),
     ],
     "pre_hook": [
-        # Occurrence 1: rhythmic edge, bass drives, drums suppressed
+        # Occurrence 1: rhythmic edge, bass drives; melody stays as harmonic support
         SectionChoreography(
             leader_roles=("bass", "percussion"),
-            support_roles=("arp",),
-            suppressed_roles=("pads", "melody"),
+            support_roles=("melody", "arp"),
+            suppressed_roles=("pads",),
             contrast_roles=("fx",),
-            rotation_note="Pre-hook 1 — tension through bass/perc lead",
+            rotation_note="Pre-hook 1 — tension through bass/perc lead, melody supports",
         ),
-        # Occurrence 2: tension-through-absence — full rhythmic suppression
+        # Occurrence 2: melody promoted to co-lead; pads still absent for edge
         SectionChoreography(
-            leader_roles=("bass", "fx"),
-            support_roles=("arp",),
-            suppressed_roles=("drums", "percussion", "pads", "melody"),
-            contrast_roles=(),
-            rotation_note="Pre-hook 2 — tension through absence (drums suppressed)",
+            leader_roles=("melody", "bass"),
+            support_roles=("drums", "arp"),
+            suppressed_roles=("pads",),
+            contrast_roles=("fx",),
+            rotation_note="Pre-hook 2 — melody co-leads, harmonic tension maintained",
         ),
     ],
     "hook": [
@@ -1275,7 +1275,10 @@ def get_phrase_variation_plan(
 
     stype = str(section_type).strip().lower()
     active_set = set(active_roles)
-    split_bar = section_bars // 2  # Standard mid-section split
+    # Cap split_bar at 4 so melody/harmony never disappears for more than 4 bars.
+    # For sections ≤ 8 bars this has no effect (section_bars // 2 ≤ 4 already);
+    # for sections > 8 bars (e.g. 16-bar verse) it prevents 8-bar no-melody zones.
+    split_bar = min(section_bars // 2, 4)
 
     if stype == "verse":
         # First phrase: rhythm backbone only (drums + bass).
@@ -1371,18 +1374,22 @@ def get_phrase_variation_plan(
                     and r in {"melody", "vocal", "synth", "arp", "pads", "fx"}
                 ]
             full_set = list(active_roles) + bonus_explosion[:1]
-            if rhythmic and set(rhythmic) != set(full_set):
+            # Add one melodic role to the "drop" first phrase so it retains
+            # harmonic content — pure rhythmic drop with no melody sounds broken.
+            melodic_in_active = [r for r in active_roles if r in {"melody", "vocal", "synth", "arp"}]
+            first_phrase = list(rhythmic) + melodic_in_active[:1]
+            if first_phrase and set(first_phrase) != set(full_set):
                 return PhraseVariationPlan(
                     section_type=stype,
                     total_bars=section_bars,
                     split_bar=split_bar,
-                    first_phrase_roles=rhythmic,
+                    first_phrase_roles=first_phrase,
                     second_phrase_roles=full_set,
                     lead_entry_delay_bars=0,
                     end_dropout_bars=0,
                     description=(
                         f"Hook 2 phrase split bar {split_bar}: "
-                        f"rhythm drop ({', '.join(rhythmic)}) "
+                        f"lean first half ({', '.join(first_phrase)}) "
                         f"→ full re-explosion ({', '.join(full_set)}) at bar {split_bar}"
                     ),
                 )
@@ -1394,7 +1401,9 @@ def get_phrase_variation_plan(
         return None
 
     elif stype == "pre_hook":
-        # Full roles first half; end-section dropout of rhythmic roles for tension.
+        # Full roles first half; single-bar dropout of rhythmic roles at section end
+        # for a brief tension beat.  Previously used min(2, section_bars // 2) which
+        # could remove drums for up to half the section.
         end_drop = [r for r in ["drums", "percussion"] if r in active_set]
         return PhraseVariationPlan(
             section_type=stype,
@@ -1403,11 +1412,11 @@ def get_phrase_variation_plan(
             first_phrase_roles=list(active_roles),
             second_phrase_roles=list(active_roles),
             lead_entry_delay_bars=0,
-            end_dropout_bars=min(2, section_bars // 2),
+            end_dropout_bars=1,
             end_dropout_roles=end_drop[:1],
             description=(
                 f"Pre-hook {occurrence}: tension via dropout of "
-                f"{', '.join(end_drop[:1]) or 'none'} in last bars"
+                f"{', '.join(end_drop[:1]) or 'none'} in last bar"
             ),
         )
 
@@ -1432,6 +1441,8 @@ def get_phrase_variation_plan(
 
     elif stype == "outro":
         # Progressive strip: full roles first half, one role removed in second half.
+        # end_dropout_bars capped at section_bars // 3 (at most ~2 bars) to avoid
+        # stripping melody for half the outro, which previously sounded like a cut-off.
         second = active_roles[:max(1, len(active_roles) - 1)]
         return PhraseVariationPlan(
             section_type=stype,
@@ -1440,7 +1451,7 @@ def get_phrase_variation_plan(
             first_phrase_roles=list(active_roles),
             second_phrase_roles=second,
             lead_entry_delay_bars=0,
-            end_dropout_bars=max(2, section_bars // 2),
+            end_dropout_bars=min(2, section_bars // 3),
             end_dropout_roles=list(active_roles[-1:]),
             description=f"Outro {occurrence}: progressive strip in second half",
         )
