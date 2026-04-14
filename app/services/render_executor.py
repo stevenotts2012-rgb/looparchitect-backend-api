@@ -370,21 +370,23 @@ def _build_render_observability(
     fallback_reasons: list[str] = []
     phrase_split_count = int(render_spec.get("phrase_split_count") or 0)
     render_signatures: list[str] = []
+    phrase_signatures: list[tuple] = []
 
     for idx, ts in enumerate(timeline_sections):
         actual_roles = list(ts.get("runtime_active_stems") or ts.get("active_stem_roles") or [])
         planned_roles = list(ts.get("active_stem_roles") or [])
         phrase_used = bool(ts.get("phrase_plan_used"))
 
-        # Fallback detection: section marked with stem_fallback_all flag
+        # Fallback detection: section marked with _stem_fallback_all flag.
+        # This flag is now propagated from the render loop into timeline_sections.
         sec_fallback = bool(ts.get("_stem_fallback_all"))
         fallback_used = sec_fallback
-        fallback_reason = ""
+        fallback_reason = ts.get("_stem_fallback_reason") or ""
         if sec_fallback:
             fallback_triggered_count += 1
-            fallback_reason = "missing_required_stem_role"
-            if fallback_reason not in fallback_reasons:
-                fallback_reasons.append(fallback_reason)
+            effective_reason = fallback_reason or "missing_required_stem_role"
+            if effective_reason not in fallback_reasons:
+                fallback_reasons.append(effective_reason)
 
         # Detect stereo fallback path at section level
         if not actual_roles and render_path_used == "stereo_fallback":
@@ -401,6 +403,13 @@ def _build_render_observability(
         sig_material = "|".join(sorted(actual_roles)) + f"|{ts.get('type', '')}|{render_path_used}"
         sig = hashlib.md5(sig_material.encode()).hexdigest()[:12]
         render_signatures.append(sig)
+
+        # Phrase signature: unique tuple of (first_phrase_stems, second_phrase_stems).
+        # Only collect when a phrase split was actually executed.
+        if phrase_used:
+            first_p = tuple(sorted(ts.get("runtime_first_phrase_stems") or []))
+            second_p = tuple(sorted(ts.get("runtime_second_phrase_stems") or []))
+            phrase_signatures.append((first_p, second_p))
 
         actual_stem_map.append({
             "section_index": idx,
@@ -428,6 +437,10 @@ def _build_render_observability(
         fallback_triggered_count = len(timeline_sections)
 
     unique_render_signature_count = len(set(render_signatures))
+    # phrase_split_count from the timeline reflects actual distinct-stem phrase
+    # executions (not just the presence of a phrase_plan dict).
+    phrase_split_count_actual = sum(1 for ts in timeline_sections if ts.get("phrase_plan_used"))
+    unique_phrase_signature_count = len(set(phrase_signatures))
 
     # Mastering fields (never faked — sourced directly from MasteringResult)
     mastering_applied = bool(getattr(mastering_result, "applied", False))
@@ -446,7 +459,8 @@ def _build_render_observability(
         "section_execution_report": section_execution_report,
         "render_signatures": render_signatures,
         "unique_render_signature_count": unique_render_signature_count,
-        "phrase_split_count": phrase_split_count,
+        "phrase_split_count": phrase_split_count_actual,
+        "unique_phrase_signature_count": unique_phrase_signature_count,
         "mastering_applied": mastering_applied,
         "mastering_profile": mastering_profile,
         "mastering_peak_dbfs_before": mastering_peak_before,

@@ -1281,14 +1281,28 @@ def get_phrase_variation_plan(
         # First phrase: rhythm backbone only (drums + bass).
         # Second phrase: full role set (adds melody/lead at bar split_bar).
         rhythmic = [r for r in active_roles if r in {"drums", "bass", "percussion"}]
-        melodic = [r for r in active_roles if r in {"melody", "vocal", "synth", "arp"}]
-        support = [r for r in active_roles if r not in set(rhythmic) and r not in set(melodic)]
+        melodic_in_active = [r for r in active_roles if r in {"melody", "vocal", "synth", "arp"}]
+        support = [r for r in active_roles if r not in set(rhythmic) and r not in set(melodic_in_active)]
 
-        if rhythmic and melodic:
+        # For repeated verses whose active_roles were capped to reserve headroom for hooks,
+        # the section may only contain rhythmic stems.  Pull melodic roles from available_roles
+        # into the second phrase so the verse still has its "melody enters mid-section" arc.
+        bonus_melodic: list[str] = []
+        if occurrence >= 2 and available_roles:
+            bonus_melodic = [
+                r for r in available_roles
+                if r in {"melody", "vocal", "synth", "arp"}
+                and r not in active_set
+            ]
+
+        all_melodic = melodic_in_active + bonus_melodic
+
+        if rhythmic and all_melodic:
             first_phrase = list(rhythmic) + list(support)
-            second_phrase = list(active_roles)
+            second_phrase = list(active_roles) + bonus_melodic
             # End dropout: remove atmospheric roles in last bar
             end_drop = [r for r in ["pads", "synth", "arp"] if r in active_set]
+            bonus_note = (f" (bonus melodic from available: {bonus_melodic})" if bonus_melodic else "")
             return PhraseVariationPlan(
                 section_type=stype,
                 total_bars=section_bars,
@@ -1300,36 +1314,84 @@ def get_phrase_variation_plan(
                 end_dropout_roles=end_drop[:1],
                 description=(
                     f"Verse {occurrence} phrase split bar {split_bar}: "
-                    f"rhythm-only first half → full second half"
+                    f"rhythm-only first half → full second half{bonus_note}"
                 ),
             )
 
     elif stype == "hook":
-        # First phrase: core groove (drums + bass + melody).
-        # Second phrase: full roles + one available contrast role if possible.
-        core = [r for r in active_roles if r in {"drums", "bass", "melody", "vocal"}]
-        extra_in_active = [r for r in active_roles if r not in set(core)]
-        extra_available = [
-            r for r in (available_roles or [])
-            if r not in active_set and r not in {"full_mix"}
-        ]
-        if core:
-            second = list(active_roles)
-            if extra_available and len(second) < 5:
-                second = second + [extra_available[0]]
-            return PhraseVariationPlan(
-                section_type=stype,
-                total_bars=section_bars,
-                split_bar=split_bar,
-                first_phrase_roles=core + extra_in_active,
-                second_phrase_roles=second,
-                lead_entry_delay_bars=0,
-                end_dropout_bars=0,
-                description=(
-                    f"Hook {occurrence} phrase split bar {split_bar}: "
-                    f"core first half → expanded second half"
-                ),
-            )
+        # Hook 1: Only create a phrase plan when there are genuinely more stems
+        # available in the second half than the first (core → core+extra).
+        # When all available stems are already in active_roles the two halves
+        # would be identical, so return None — let the hook hit full immediately
+        # for maximum wall-of-sound impact.  This contrasts with verse 2, which
+        # always has an internal build (rhythm-only → full).
+        if occurrence == 1:
+            core = [r for r in active_roles if r in {"drums", "bass", "melody", "vocal"}]
+            extra_in_active = [r for r in active_roles if r not in set(core)]
+            extra_available = [
+                r for r in (available_roles or [])
+                if r not in active_set and r not in {"full_mix"}
+            ]
+            if core:
+                second = list(active_roles)
+                if extra_available and len(second) < 5:
+                    second = second + [extra_available[0]]
+                # Only return a plan when first and second halves are meaningfully different.
+                if set(core + extra_in_active) == set(second):
+                    return None  # No extra contrast available; hit full immediately.
+                return PhraseVariationPlan(
+                    section_type=stype,
+                    total_bars=section_bars,
+                    split_bar=split_bar,
+                    first_phrase_roles=core + extra_in_active,
+                    second_phrase_roles=second,
+                    lead_entry_delay_bars=0,
+                    end_dropout_bars=0,
+                    description=(
+                        f"Hook 1 phrase split bar {split_bar}: "
+                        f"core first half → expanded second half"
+                    ),
+                )
+            return None
+
+        # Hook 2: "anticipation drop → re-explosion" phrase structure.
+        # First half strips to rhythmic core (drums+bass), creating a brief
+        # "drop" feeling before melody and full texture crash back at split_bar.
+        # This makes hook 2 feel distinct from hook 1's straight-blast feel,
+        # while the hook_evolution DSP layer adds the extra energy/presence.
+        if occurrence == 2:
+            rhythmic = [r for r in active_roles if r in {"drums", "bass", "percussion"}]
+            # For the "explosion" half, also pull any available melodic roles not
+            # yet in active_roles (happens when verse post-pass capped stems).
+            bonus_explosion: list[str] = []
+            if available_roles:
+                bonus_explosion = [
+                    r for r in available_roles
+                    if r not in active_set and r not in {"full_mix"}
+                    and r in {"melody", "vocal", "synth", "arp", "pads", "fx"}
+                ]
+            full_set = list(active_roles) + bonus_explosion[:1]
+            if rhythmic and set(rhythmic) != set(full_set):
+                return PhraseVariationPlan(
+                    section_type=stype,
+                    total_bars=section_bars,
+                    split_bar=split_bar,
+                    first_phrase_roles=rhythmic,
+                    second_phrase_roles=full_set,
+                    lead_entry_delay_bars=0,
+                    end_dropout_bars=0,
+                    description=(
+                        f"Hook 2 phrase split bar {split_bar}: "
+                        f"rhythm drop ({', '.join(rhythmic)}) "
+                        f"→ full re-explosion ({', '.join(full_set)}) at bar {split_bar}"
+                    ),
+                )
+            return None
+
+        # Hook 3+: Return None — let hook_evolution DSP deliver the climax.
+        # Adding a phrase split here would thin the opening bars and undermine
+        # the "maximum impact" feel expected from the final hook.
+        return None
 
     elif stype == "pre_hook":
         # Full roles first half; end-section dropout of rhythmic roles for tension.

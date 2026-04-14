@@ -952,6 +952,72 @@ def _apply_stem_primary_section_states(
             prev_same_type_roles[section_type] = active_roles
             prev_adjacent_roles = active_roles
 
+        # ---- Post-pass: reserve stem headroom for hook escalation ----
+        # When verse occurrence >= 2 ends up with the same active stem set as a
+        # hook in the same arrangement, the hook has no room to escalate further.
+        # Strip the lowest-priority role from the verse so the hook can be
+        # perceived as genuinely bigger.  The verse phrase plan is regenerated so
+        # the stripped role still enters in the second half of the verse, giving
+        # the verse its own internal build arc (rhythm-only → full).
+        if use_choreography:
+            hook_role_sets: set[frozenset] = set()
+            for sec in sections:
+                if _normalize_section_type(sec.get("type") or "verse") in {"hook", "chorus", "drop"}:
+                    hook_role_sets.add(frozenset(sec.get("active_stem_roles") or []))
+
+            verse_occurrence_map: dict[int, int] = {}
+            running_verse_count = 0
+            for idx, sec in enumerate(sections):
+                if _normalize_section_type(sec.get("type") or "verse") == "verse":
+                    running_verse_count += 1
+                    verse_occurrence_map[idx] = running_verse_count
+
+            for idx, sec in enumerate(sections):
+                sec_type = _normalize_section_type(sec.get("type") or "verse")
+                if sec_type != "verse":
+                    continue
+                verse_occ = verse_occurrence_map.get(idx, 1)
+                if verse_occ < 2:
+                    continue
+                verse_roles = list(sec.get("active_stem_roles") or [])
+                if not hook_role_sets or frozenset(verse_roles) not in hook_role_sets:
+                    continue
+                if len(verse_roles) <= 1:
+                    continue
+                # Strip the last (lowest-priority) role to free headroom for hooks.
+                stripped = verse_roles[:-1]
+                sec["instruments"] = stripped
+                sec["active_stem_roles"] = stripped
+                logger.info(
+                    "POST_PASS verse_occ=%d idx=%d: stripped %s from active_roles "
+                    "to reserve hook headroom (was %s, now %s, available=%s)",
+                    verse_occ, idx, verse_roles[-1], verse_roles, stripped, available_roles,
+                )
+                # Re-generate phrase plan with stripped roles but with full
+                # available_roles so the second phrase can still include the
+                # stripped melodic stem (e.g. melody enters in bars 5-8).
+                verse_bars = int(sec.get("bars", 1) or 1)
+                new_phrase_plan = get_phrase_variation_plan(
+                    section_type="verse",
+                    active_roles=stripped,
+                    section_bars=verse_bars,
+                    occurrence=verse_occ,
+                    available_roles=available_roles,
+                )
+                if new_phrase_plan is not None:
+                    sec["phrase_plan"] = {
+                        "split_bar": new_phrase_plan.split_bar,
+                        "first_phrase_roles": new_phrase_plan.first_phrase_roles,
+                        "second_phrase_roles": new_phrase_plan.second_phrase_roles,
+                        "lead_entry_delay_bars": new_phrase_plan.lead_entry_delay_bars,
+                        "end_dropout_bars": new_phrase_plan.end_dropout_bars,
+                        "end_dropout_roles": new_phrase_plan.end_dropout_roles,
+                        "description": new_phrase_plan.description,
+                    }
+                else:
+                    # Remove any stale phrase plan that assumed the old roles.
+                    sec.pop("phrase_plan", None)
+
         return sections
 
     # --- Legacy path (PRODUCER_SECTION_IDENTITY_V2 disabled) ---
@@ -1634,6 +1700,12 @@ def _render_producer_arrangement(
         # ====================================================================
         
         section_loop_variant = str(section.get("loop_variant") or "").strip().lower()
+        # Phrase-split tracking — populated when a distinct first/second stem
+        # split is actually executed.  Initialised here so the timeline_sections
+        # entry below is always well-defined regardless of render path.
+        _phrase_first_roles: list[str] = []
+        _phrase_second_roles: list[str] = []
+        _phrase_split_executed = False
 
         if use_stems:
             # STEM MODE: Mix only the stems specified in section instruments list
@@ -1654,6 +1726,7 @@ def _render_producer_arrangement(
                 )
                 enabled_stems = stems
                 section["_stem_fallback_all"] = True
+                section["_stem_fallback_reason"] = "no_matching_stems_for_instruments"
 
             logger.info(
                 "STEM_SECTION_RENDER section='%s' type=%s requested=%s active=%s full_mix_active=%s",
@@ -1665,10 +1738,14 @@ def _render_producer_arrangement(
             )
 
             # ----------------------------------------------------------------
-            # PHRASE SPLIT: if a phrase_plan exists, build each half from its
-            # own stem set.  This creates real audible intra-section movement.
+            # PHRASE SPLIT: if a phrase_plan exists with distinct first/second
+            # stem sets, build each half from its own stem set.  This creates
+            # real audible intra-section movement.
             # ----------------------------------------------------------------
             phrase_plan = section.get("phrase_plan") if isinstance(section.get("phrase_plan"), dict) else None
+            _phrase_first_roles: list[str] = []
+            _phrase_second_roles: list[str] = []
+            _phrase_split_executed = False
             if phrase_plan and section_bars > 4:
                 split_bar = int(phrase_plan.get("split_bar", section_bars // 2) or (section_bars // 2))
                 split_bar = max(1, min(section_bars - 1, split_bar))
@@ -1687,28 +1764,48 @@ def _render_producer_arrangement(
                 if not second_stems:
                     second_stems = enabled_stems
 
-                first_audio = _build_section_audio_from_stems(
-                    stems=first_stems,
-                    section_bars=split_bar,
-                    bar_duration_ms=bar_duration_ms,
-                    section_idx=section_idx,
-                )[:split_ms]
+                # Only execute the split when the two stem sets actually differ.
+                # When first == second the phrase plan adds no audible contrast —
+                # building separate AudioSegments would be wasted work and would
+                # inflate phrase_split_count falsely.
+                if set(first_stems.keys()) != set(second_stems.keys()):
+                    first_audio = _build_section_audio_from_stems(
+                        stems=first_stems,
+                        section_bars=split_bar,
+                        bar_duration_ms=bar_duration_ms,
+                        section_idx=section_idx,
+                    )[:split_ms]
 
-                second_audio = _build_section_audio_from_stems(
-                    stems=second_stems,
-                    section_bars=remaining_bars,
-                    bar_duration_ms=bar_duration_ms,
-                    section_idx=section_idx + _PHRASE_SPLIT_SECTION_IDX_OFFSET,
-                )[:remaining_bars * bar_duration_ms]
+                    second_audio = _build_section_audio_from_stems(
+                        stems=second_stems,
+                        section_bars=remaining_bars,
+                        bar_duration_ms=bar_duration_ms,
+                        section_idx=section_idx + _PHRASE_SPLIT_SECTION_IDX_OFFSET,
+                    )[:remaining_bars * bar_duration_ms]
 
-                section_audio = (first_audio + second_audio)[:section_ms]
-                # Track both phrase role sets for diagnostics.
-                active_role_snapshot = list(dict.fromkeys(list(first_roles) + list(second_roles)))
-                logger.info(
-                    "PHRASE_SPLIT section='%s' split_bar=%d first=%s second=%s desc='%s'",
-                    section_name, split_bar, first_roles, second_roles,
-                    phrase_plan.get("description", ""),
-                )
+                    section_audio = (first_audio + second_audio)[:section_ms]
+                    # Track both phrase role sets for diagnostics.
+                    active_role_snapshot = list(dict.fromkeys(list(first_roles) + list(second_roles)))
+                    _phrase_first_roles = list(first_stems.keys())
+                    _phrase_second_roles = list(second_stems.keys())
+                    _phrase_split_executed = True
+                    logger.info(
+                        "PHRASE_SPLIT section='%s' split_bar=%d first=%s second=%s desc='%s'",
+                        section_name, split_bar, first_roles, second_roles,
+                        phrase_plan.get("description", ""),
+                    )
+                else:
+                    logger.debug(
+                        "PHRASE_SPLIT_SKIPPED section='%s' first_stems==second_stems=%s",
+                        section_name, list(first_stems.keys()),
+                    )
+                    section_audio = _build_section_audio_from_stems(
+                        stems=enabled_stems,
+                        section_bars=section_bars,
+                        bar_duration_ms=bar_duration_ms,
+                        section_idx=section_idx,
+                    )[:section_ms]
+                    active_role_snapshot = list(enabled_stems.keys())
             else:
                 section_audio = _build_section_audio_from_stems(
                     stems=enabled_stems,
@@ -2073,9 +2170,19 @@ def _render_producer_arrangement(
             "start_seconds": round(start_seconds, 3),
             "end_seconds": round(end_seconds, 3),
             # Render-spec fields for Phase 6 debug visibility.
-            "phrase_plan_used": bool(section.get("phrase_plan") and section_bars > 4),
+            # phrase_plan_used is only True when the split was actually executed
+            # with distinct stem sets (first ≠ second).  Sections that have a
+            # phrase_plan dict but identical first/second stems are not counted.
+            "phrase_plan_used": _phrase_split_executed,
             "phrase_plan": section.get("phrase_plan"),
             "choreography": section.get("choreography"),
+            # Runtime phrase stems (only populated when phrase split executed).
+            "runtime_first_phrase_stems": _phrase_first_roles or None,
+            "runtime_second_phrase_stems": _phrase_second_roles or None,
+            # Fallback tracking: True when no instruments matched available stems
+            # and the renderer fell back to mixing all available stems.
+            "_stem_fallback_all": bool(section.get("_stem_fallback_all")),
+            "_stem_fallback_reason": section.get("_stem_fallback_reason") or None,
         })
 
         difference_reasons: list[str] = []
