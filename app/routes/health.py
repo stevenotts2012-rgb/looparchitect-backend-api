@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models.job import RenderJob
-from app.queue import get_redis_conn
+from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_redis_conn, get_queue as _get_queue
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -148,8 +148,6 @@ async def health_worker():
     last_heartbeat = None
 
     try:
-        from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_redis_conn, get_queue as _get_queue
-
         queue_name = DEFAULT_RENDER_QUEUE_NAME
         redis_conn = get_redis_conn()
 
@@ -195,6 +193,8 @@ async def health_worker():
         logger.exception("Worker health check failed")
         return {
             "ok": False,
+            "worker_count": 0,
+            "workers": [],
             "worker_mode": worker_mode,
             "queue_name": queue_name,
             "queue_depth": queue_depth,
