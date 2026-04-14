@@ -1275,8 +1275,9 @@ def get_phrase_variation_plan(
 
     stype = str(section_type).strip().lower()
     active_set = set(active_roles)
-    # Cap split_bar at 4 for verse and hook so melody/harmony never disappears for
-    # more than 4 bars — longer sections would otherwise have extended dead zones.
+    # Cap split_bar at 4 so melody/harmony never disappears for more than 4 bars.
+    # For sections ≤ 8 bars this has no effect (section_bars // 2 ≤ 4 already);
+    # for sections > 8 bars (e.g. 16-bar verse) it prevents 8-bar no-melody zones.
     split_bar = min(section_bars // 2, 4)
 
     if stype == "verse":
@@ -1377,8 +1378,6 @@ def get_phrase_variation_plan(
             # harmonic content — pure rhythmic drop with no melody sounds broken.
             melodic_in_active = [r for r in active_roles if r in {"melody", "vocal", "synth", "arp"}]
             first_phrase = list(rhythmic) + melodic_in_active[:1]
-            if not first_phrase:
-                first_phrase = list(rhythmic)
             if first_phrase and set(first_phrase) != set(full_set):
                 return PhraseVariationPlan(
                     section_type=stype,
