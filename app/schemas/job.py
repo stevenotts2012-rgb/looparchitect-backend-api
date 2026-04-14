@@ -1,6 +1,6 @@
 """Pydantic schemas for render jobs."""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
@@ -59,6 +59,16 @@ class RenderJobStatusResponse(BaseModel):
     # Error details when failed
     error_message: Optional[str] = None
     retry_count: int = Field(0, ge=0)
+
+    # Phase 3 render observability — populated after job completes.
+    # Contains render_path_used, worker_mode, job_terminal_state, failure_stage,
+    # fallback_triggered_count, fallback_reasons, section_execution_report,
+    # render_signatures, unique_render_signature_count, phrase_split_count,
+    # source_quality_mode_used, mastering_applied, feature_flags_snapshot.
+    # Optional and additive — absent for jobs completed before this feature.
+    render_metadata: Optional[Dict[str, Any]] = Field(
+        None, description="Phase 3 render observability metadata"
+    )
 
     @field_validator("status", mode="before")
     @classmethod

@@ -44,6 +44,13 @@ class RenderJob(Base):
     # TTL for completed jobs (optional future cleanup)
     expires_at = Column(DateTime, nullable=True)
 
+    # Phase 3 render observability — JSON blob with execution metadata:
+    # render_path_used, worker_mode, job_terminal_state, failure_stage,
+    # fallback_triggered_count, fallback_reasons, planned/actual stem maps,
+    # section_execution_report, render_signatures, phrase_split_count,
+    # source_quality_mode_used, mastering_applied, feature_flags_snapshot.
+    render_metadata_json = Column(Text, nullable=True)
+
     def __init__(self, **kwargs):
         if "retry_count" not in kwargs or kwargs.get("retry_count") is None:
             kwargs["retry_count"] = 0
