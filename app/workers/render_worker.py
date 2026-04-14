@@ -255,9 +255,9 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     app_job_id = job_id
     arrangement_id = None
     # Phase 3: track where failure occurred for job_terminal_state resolution.
-    _failure_stage: str | None = None
-    _worker_mode = get_worker_mode()
-    _feature_flags = resolve_feature_flags_snapshot()
+    failure_stage: str | None = None
+    worker_mode = get_worker_mode()
+    feature_flags = resolve_feature_flags_snapshot()
     
     try:
         arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
@@ -402,14 +402,14 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         error_message=None,
                     )
                     render_metadata = assemble_render_metadata(
-                        worker_mode=_worker_mode,
+                        worker_mode=worker_mode,
                         job_terminal_state=terminal_state,
                         failure_stage=None,
                         render_path_used=render_path,
                         source_quality_mode_used=source_quality,
                         observability=obs,
                         mastering_info=mastering_info,
-                        feature_flags_snapshot=_feature_flags,
+                        feature_flags_snapshot=feature_flags,
                     )
                 except Exception as obs_exc:
                     logger.warning(
@@ -417,7 +417,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         app_job_id, obs_exc,
                     )
                     render_metadata = {
-                        "worker_mode": _worker_mode,
+                        "worker_mode": worker_mode,
                         "job_terminal_state": "success_truthful",
                         "failure_stage": None,
                         "render_path_used": "unknown",
@@ -458,22 +458,22 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 return
 
             if arrangement_row and arrangement_row.status == "failed":
-                _failure_stage = "execution"
+                failure_stage = "execution"
                 err_msg = arrangement_row.error_message or "Arrangement job failed"
                 terminal_state = determine_job_terminal_state(
                     success=False,
                     fallback_triggered_count=0,
-                    failure_stage=_failure_stage,
+                    failure_stage=failure_stage,
                     error_message=err_msg,
                 )
                 render_metadata = assemble_render_metadata(
-                    worker_mode=_worker_mode,
+                    worker_mode=worker_mode,
                     job_terminal_state=terminal_state,
-                    failure_stage=_failure_stage,
+                    failure_stage=failure_stage,
                     render_path_used="unknown",
                     source_quality_mode_used="unknown",
                     observability={},
-                    feature_flags_snapshot=_feature_flags,
+                    feature_flags_snapshot=feature_flags,
                 )
                 update_job_status(
                     db,
@@ -510,11 +510,11 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 arrangement_row.progress_message = "Worker failed"
                 db.commit()
 
-            _failure_stage = "finalization"
+            failure_stage = "finalization"
             terminal_state = determine_job_terminal_state(
                 success=False,
                 fallback_triggered_count=0,
-                failure_stage=_failure_stage,
+                failure_stage=failure_stage,
                 error_message="Arrangement worker did not produce terminal status",
             )
             update_job_status(
@@ -523,13 +523,13 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 "failed",
                 error_message="Arrangement worker did not produce terminal status",
                 render_metadata=assemble_render_metadata(
-                    worker_mode=_worker_mode,
+                    worker_mode=worker_mode,
                     job_terminal_state=terminal_state,
-                    failure_stage=_failure_stage,
+                    failure_stage=failure_stage,
                     render_path_used="unknown",
                     source_quality_mode_used="unknown",
                     observability={},
-                    feature_flags_snapshot=_feature_flags,
+                    feature_flags_snapshot=feature_flags,
                 ),
             )
             logger.error(
@@ -682,9 +682,9 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
 
             update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
-            _failure_stage = "storage"
+            failure_stage = "storage"
             s3_key, content_type = _upload_render_output(app_job_id, filename, output_path)
-            _failure_stage = None
+            failure_stage = None
             output_files = [
                 OutputFile(
                     name="Render Plan Arrangement",
@@ -701,14 +701,14 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 error_message=None,
             )
             _direct_render_metadata = assemble_render_metadata(
-                worker_mode=_worker_mode,
+                worker_mode=worker_mode,
                 job_terminal_state=_direct_terminal_state,
                 failure_stage=None,
                 render_path_used=render_obs_from_executor.get("render_path_used", "unknown"),
                 source_quality_mode_used=render_obs_from_executor.get("source_quality_mode_used", "unknown"),
                 observability=render_obs_from_executor,
                 mastering_info=(postprocess or {}).get("mastering"),
-                feature_flags_snapshot=_feature_flags,
+                feature_flags_snapshot=feature_flags,
             )
 
             # Mark as succeeded
@@ -729,7 +729,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 _direct_terminal_state,
                 _direct_render_metadata.get("render_path_used"),
                 _direct_render_metadata.get("fallback_triggered_count", 0),
-                _worker_mode,
+                worker_mode,
             )
     
     except Exception as e:
@@ -749,7 +749,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 _terminal_state = determine_job_terminal_state(
                     success=False,
                     fallback_triggered_count=0,
-                    failure_stage=_failure_stage,
+                    failure_stage=failure_stage,
                     error_message=_err_str,
                 )
                 update_job_status(
@@ -758,21 +758,21 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     "failed",
                     error_message=_err_str[:500],
                     render_metadata=assemble_render_metadata(
-                        worker_mode=_worker_mode,
+                        worker_mode=worker_mode,
                         job_terminal_state=_terminal_state,
-                        failure_stage=_failure_stage,
+                        failure_stage=failure_stage,
                         render_path_used="unknown",
                         source_quality_mode_used="unknown",
                         observability={},
-                        feature_flags_snapshot=_feature_flags,
+                        feature_flags_snapshot=feature_flags,
                     ),
                 )
                 logger.error(
                     "JOB_FAILURE_METADATA job_id=%s job_terminal_state=%s failure_stage=%s worker_mode=%s",
                     app_job_id,
                     _terminal_state,
-                    _failure_stage,
-                    _worker_mode,
+                    failure_stage,
+                    worker_mode,
                 )
         except Exception as db_err:
             logger.error(f"Failed to update job status: {db_err}")

@@ -325,7 +325,7 @@ def _derive_source_quality_mode(
 
     # Stems present without separation metadata → uploaded as true stems
     stem_keys = list(stems.keys()) if stems else []
-    if stem_keys and sep_method == "":
+    if stem_keys and not sep_method:
         return "true_stems"
 
     return "unknown"

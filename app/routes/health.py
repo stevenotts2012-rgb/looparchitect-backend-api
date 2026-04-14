@@ -169,7 +169,7 @@ async def health_worker():
             if state == "busy":
                 _active_count += 1
             _hb = w.last_heartbeat.isoformat() if w.last_heartbeat else None
-            if last_heartbeat is None or _hb and _hb > last_heartbeat:
+            if _hb is not None and (last_heartbeat is None or _hb > last_heartbeat):
                 last_heartbeat = _hb
             worker_status.append({
                 "name": w.name,
