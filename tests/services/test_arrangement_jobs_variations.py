@@ -102,9 +102,18 @@ def test_apply_stem_primary_section_states_assigns_role_sets_by_section() -> Non
     # Given available roles [full_mix,drums,bass,melody,pads], the first permitted
     # priority is "pads" — this is deterministic for the given stem_metadata.
     assert updated[0]["active_stem_roles"] == ["pads"]
-    # Verse 1 + 2: always include drums and bass; verse 2 adds melody
+    # Verse 1: always drums + bass (density_min=2, occurrence=1 → no escalation yet)
     assert set(updated[1]["active_stem_roles"]) == {"drums", "bass"}
-    assert set(updated[2]["active_stem_roles"]) == {"drums", "bass", "melody"}
+    # Verse 2: the post-pass strips one stem to reserve headroom for the hook when
+    # verse 2 and hook 1 would otherwise share the same stem map.  The resulting
+    # verse 2 set must have at least 2 stems and must differ from hook 1.
+    assert len(updated[2]["active_stem_roles"]) >= 2, (
+        f"Verse 2 must keep at least 2 stems after post-pass, got: {updated[2]['active_stem_roles']}"
+    )
+    assert set(updated[2]["active_stem_roles"]) != set(updated[3]["active_stem_roles"]), (
+        "Verse 2 and Hook 1 must not share the same stem map — "
+        "post-pass should have stripped one stem from verse 2"
+    )
     # Hooks must each contain drums + bass; identity and contrast enforcement
     # determine which third role is added — assert structural invariants only.
     assert "drums" in updated[3]["active_stem_roles"]
@@ -725,4 +734,383 @@ def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(ca
     # Must have emitted a warning so the fallback is visible in prod logs
     assert any("last resort" in record.getMessage().lower() for record in caplog.records), (
         f"Expected a last-resort warning; got messages: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# New tests: small-stem-set identity, hook headroom post-pass, phrase plan
+# accuracy, and render observability metrics.
+# ---------------------------------------------------------------------------
+
+
+def test_verse2_stripped_to_reserve_hook_headroom() -> None:
+    """With 3 stems, verse 2 must be stripped to preserve hook headroom.
+
+    The post-pass in _apply_stem_primary_section_states should detect that
+    verse 2's escalated stem set equals hook 1's stem set and strip one role
+    from verse 2 so the hook can still sound audibly bigger.
+    """
+    sections = [
+        {"name": "Verse 1", "type": "verse", "bars": 8},
+        {"name": "Verse 2", "type": "verse", "bars": 8},
+        {"name": "Hook 1", "type": "hook", "bars": 8},
+    ]
+    stem_metadata = {
+        "enabled": True,
+        "succeeded": True,
+        "roles_detected": ["drums", "bass", "melody"],
+    }
+    updated = _apply_stem_primary_section_states(sections, stem_metadata)
+
+    verse1_roles = set(updated[0]["active_stem_roles"])
+    verse2_roles = set(updated[1]["active_stem_roles"])
+    hook1_roles = set(updated[2]["active_stem_roles"])
+
+    # Verse 2 must not be identical to hook 1 (post-pass must strip one role).
+    assert verse2_roles != hook1_roles, (
+        f"Verse 2 {verse2_roles} must differ from Hook 1 {hook1_roles} — "
+        "post-pass should strip verse 2 to reserve hook headroom"
+    )
+    # Verse 2 still has at least 2 stems.
+    assert len(verse2_roles) >= 2, f"Verse 2 must keep >= 2 stems, got: {verse2_roles}"
+    # Verse 2 evolved from verse 1 (not identical).
+    assert verse2_roles != verse1_roles or updated[1].get("phrase_plan") is not None, (
+        "Verse 2 must either differ in stems from verse 1, or have a phrase plan for evolution"
+    )
+
+
+def test_verse2_phrase_plan_pulls_bonus_melody_after_strip() -> None:
+    """After stripping, verse 2 phrase plan must still include melody in second phrase.
+
+    Even when verse 2's active_roles doesn't include melody (stripped by post-pass),
+    the phrase plan should pull melody from available_roles into the second phrase
+    so the verse still has an audible internal build (rhythm → full).
+    """
+    sections = [
+        {"name": "Verse 1", "type": "verse", "bars": 8},
+        {"name": "Verse 2", "type": "verse", "bars": 8},
+        {"name": "Hook 1", "type": "hook", "bars": 8},
+    ]
+    stem_metadata = {
+        "enabled": True,
+        "succeeded": True,
+        "roles_detected": ["drums", "bass", "melody"],
+    }
+    updated = _apply_stem_primary_section_states(sections, stem_metadata)
+    verse2 = updated[1]
+
+    # If verse 2 was stripped, it should have a phrase plan that introduces the
+    # stripped role in the second phrase.
+    verse2_roles = set(verse2["active_stem_roles"])
+    hook1_roles = set(updated[2]["active_stem_roles"])
+    was_stripped = verse2_roles != hook1_roles and len(verse2_roles) < len(hook1_roles)
+
+    if was_stripped:
+        phrase_plan = verse2.get("phrase_plan")
+        assert phrase_plan is not None, (
+            "Stripped verse 2 must have a phrase plan so the stripped role "
+            "can still enter in the second phrase"
+        )
+        second_phrase = set(phrase_plan.get("second_phrase_roles") or [])
+        # The second phrase should contain the stripped melodic role.
+        assert len(second_phrase) > len(set(phrase_plan.get("first_phrase_roles") or [])), (
+            f"Verse 2 phrase plan second half {second_phrase} should be bigger than "
+            f"first half {phrase_plan.get('first_phrase_roles')}"
+        )
+
+
+def test_hook1_hits_full_immediately_with_three_stems() -> None:
+    """Hook 1 phrase plan must return None (full immediately) when no extra stems exist.
+
+    With exactly 3 stems (drums/bass/melody), hook 1 has no extras to expand
+    into in the second phrase.  The engine must return None so the hook hits
+    all stems from bar 1 — contrasting with verse 2's internal build.
+    """
+    from app.services.section_identity_engine import get_phrase_variation_plan
+
+    plan = get_phrase_variation_plan(
+        "hook",
+        ["drums", "bass", "melody"],
+        section_bars=8,
+        occurrence=1,
+        available_roles=["drums", "bass", "melody"],
+    )
+    assert plan is None, (
+        "Hook 1 with 3 stems and no extras must return None — "
+        f"should hit full immediately, not split. Got: {plan}"
+    )
+
+
+def test_hook2_phrase_plan_creates_drop_then_explode() -> None:
+    """Hook 2 phrase plan must create 'drop then explosion' with 3 stems.
+
+    First phrase = rhythmic only (drums+bass), second phrase = full (all stems).
+    This creates an audible distinction between hook 1 (full immediately) and
+    hook 2 (stripped first half, explosion second half).
+    """
+    from app.services.section_identity_engine import get_phrase_variation_plan
+
+    plan = get_phrase_variation_plan(
+        "hook",
+        ["drums", "bass", "melody"],
+        section_bars=8,
+        occurrence=2,
+        available_roles=["drums", "bass", "melody"],
+    )
+    assert plan is not None, (
+        "Hook 2 with drums/bass/melody must have a phrase plan "
+        "(drop-then-explode distinguishes it from hook 1)"
+    )
+    first = set(plan.first_phrase_roles)
+    second = set(plan.second_phrase_roles)
+    assert first != second, (
+        f"Hook 2 phrase halves must differ: first={plan.first_phrase_roles}, "
+        f"second={plan.second_phrase_roles}"
+    )
+    # First half is rhythmic only (no melody)
+    assert "melody" not in first, (
+        f"Hook 2 first phrase must not contain melody (it's the 'drop'): {first}"
+    )
+    # Second half explodes to include all active stems
+    assert "melody" in second, (
+        f"Hook 2 second phrase must include melody (the 're-explosion'): {second}"
+    )
+
+
+def test_hook3_phrase_plan_returns_none_for_climax() -> None:
+    """Hook 3 must return None — rely on hook_evolution DSP for maximum impact."""
+    from app.services.section_identity_engine import get_phrase_variation_plan
+
+    plan = get_phrase_variation_plan(
+        "hook",
+        ["drums", "bass", "melody"],
+        section_bars=8,
+        occurrence=3,
+        available_roles=["drums", "bass", "melody"],
+    )
+    assert plan is None, (
+        f"Hook 3 should return None (let hook_evolution handle the climax), got: {plan}"
+    )
+
+
+def test_phrase_plan_used_flag_requires_distinct_stem_sets() -> None:
+    """phrase_plan_used in timeline_sections must only be True when first ≠ second stems.
+
+    The render pipeline should NOT mark phrase_plan_used=True when the phrase
+    plan has identical first and second role sets, as no audible contrast is
+    created in that case.
+    """
+    from pydub.generators import Sine
+    import json
+
+    # Build a minimal producer arrangement with an 8-bar hook and verse.
+    producer_arrangement = {
+        "total_bars": 24,
+        "key": "C",
+        "tracks": [],
+        "sections": [
+            {
+                "name": "Verse 1",
+                "section_type": "verse",
+                "bar_start": 0,
+                "bars": 8,
+                "energy": 0.60,
+                "instruments": ["drums", "bass"],
+            },
+            {
+                "name": "Verse 2",
+                "section_type": "verse",
+                "bar_start": 8,
+                "bars": 8,
+                "energy": 0.65,
+                "instruments": ["drums", "bass"],
+                # Deliberately inject a phrase_plan where first == second
+                # to verify the renderer doesn't count it as a real split.
+                "phrase_plan": {
+                    "split_bar": 4,
+                    "first_phrase_roles": ["drums", "bass"],
+                    "second_phrase_roles": ["drums", "bass"],
+                    "lead_entry_delay_bars": 0,
+                    "end_dropout_bars": 0,
+                    "end_dropout_roles": [],
+                    "description": "intentionally identical halves",
+                },
+            },
+            {
+                "name": "Hook",
+                "section_type": "hook",
+                "bar_start": 16,
+                "bars": 8,
+                "energy": 0.90,
+                "instruments": ["drums", "bass", "melody"],
+            },
+        ],
+    }
+
+    bpm = 120.0
+    bar_ms = int((60.0 / bpm) * 4.0 * 1000)
+    duration_ms = bar_ms * 24
+
+    stems = {
+        "drums": Sine(80).to_audio_segment(duration=duration_ms).set_frame_rate(44100),
+        "bass": Sine(120).to_audio_segment(duration=duration_ms).set_frame_rate(44100),
+        "melody": Sine(440).to_audio_segment(duration=duration_ms).set_frame_rate(44100),
+    }
+
+    _audio, timeline_json = _render_producer_arrangement(
+        loop_audio=Sine(440).to_audio_segment(duration=duration_ms).set_frame_rate(44100),
+        producer_arrangement=producer_arrangement,
+        bpm=bpm,
+        stems=stems,
+    )
+
+    timeline = json.loads(timeline_json)
+    sections = timeline["sections"]
+
+    # Find verse 2 (index 1)
+    verse2 = next((s for s in sections if "verse 2" in s.get("name", "").lower()), sections[1])
+    # Its phrase plan had first == second, so phrase_plan_used must be False.
+    assert verse2.get("phrase_plan_used") is False, (
+        "phrase_plan_used must be False when first_phrase_roles == second_phrase_roles, "
+        f"got: {verse2.get('phrase_plan_used')}"
+    )
+
+
+def test_render_observability_reports_unique_phrase_signature_count() -> None:
+    """render_observability must include unique_phrase_signature_count."""
+    from pydub.generators import Sine
+    from app.services.render_executor import _build_render_observability
+
+    # Simulate a timeline where two sections have distinct phrase splits.
+    timeline_sections = [
+        {
+            "type": "verse",
+            "name": "Verse 1",
+            "active_stem_roles": ["drums", "bass"],
+            "runtime_active_stems": ["drums", "bass"],
+            "phrase_plan_used": False,
+            "runtime_first_phrase_stems": None,
+            "runtime_second_phrase_stems": None,
+            "_stem_fallback_all": False,
+            "_stem_fallback_reason": None,
+        },
+        {
+            "type": "verse",
+            "name": "Verse 2",
+            "active_stem_roles": ["drums", "bass"],
+            "runtime_active_stems": ["drums", "bass", "melody"],
+            "phrase_plan_used": True,
+            "runtime_first_phrase_stems": ["drums", "bass"],
+            "runtime_second_phrase_stems": ["drums", "bass", "melody"],
+            "_stem_fallback_all": False,
+            "_stem_fallback_reason": None,
+        },
+        {
+            "type": "hook",
+            "name": "Hook 1",
+            "active_stem_roles": ["drums", "bass", "melody"],
+            "runtime_active_stems": ["drums", "bass", "melody"],
+            "phrase_plan_used": False,
+            "runtime_first_phrase_stems": None,
+            "runtime_second_phrase_stems": None,
+            "_stem_fallback_all": False,
+            "_stem_fallback_reason": None,
+        },
+        {
+            "type": "hook",
+            "name": "Hook 2",
+            "active_stem_roles": ["drums", "bass", "melody"],
+            "runtime_active_stems": ["drums", "bass", "melody"],
+            "phrase_plan_used": True,
+            "runtime_first_phrase_stems": ["drums", "bass"],
+            "runtime_second_phrase_stems": ["drums", "bass", "melody"],
+            "_stem_fallback_all": False,
+            "_stem_fallback_reason": None,
+        },
+    ]
+
+    # Minimal mastering result stub
+    class _MR:
+        applied = False
+        profile = "unknown"
+        peak_dbfs_before = None
+        peak_dbfs_after = None
+
+    # Build timeline json containing the sections
+    import json
+    timeline_json = json.dumps({"sections": timeline_sections, "render_spec_summary": {}})
+
+    obs = _build_render_observability(
+        timeline_json=timeline_json,
+        render_path_used="stem_render_executor",
+        source_quality_mode_used="ai_separated",
+        mastering_result=_MR(),
+        render_plan_sections=[],
+    )
+
+    assert "unique_phrase_signature_count" in obs, (
+        "render_observability must include unique_phrase_signature_count"
+    )
+    # Verse 2 and Hook 2 have the same (first, second) tuple → 1 unique signature.
+    assert obs["unique_phrase_signature_count"] == 1, (
+        f"Expected 1 unique phrase signature (verse2 and hook2 share same split), "
+        f"got: {obs['unique_phrase_signature_count']}"
+    )
+    # phrase_split_count should count only the two sections with phrase_plan_used=True.
+    assert obs["phrase_split_count"] == 2, (
+        f"phrase_split_count should be 2 (verse2 and hook2), got: {obs['phrase_split_count']}"
+    )
+
+
+def test_small_stem_set_produces_distinct_render_signatures() -> None:
+    """With 3 stems (drums/bass/melody), major sections must have distinct stem maps.
+
+    This is the core acceptance test for the flat-arrangement fix:
+    - verse 1 ≠ verse 2 ≠ hook 1 (all have distinct role plans or phrase structures)
+    - The unique_render_signature_count from the observability layer must be > 1
+    """
+    sections = [
+        {"name": "Intro", "type": "intro", "bars": 4},
+        {"name": "Verse 1", "type": "verse", "bars": 8},
+        {"name": "Verse 2", "type": "verse", "bars": 8},
+        {"name": "Pre-Hook", "type": "pre_hook", "bars": 4},
+        {"name": "Hook 1", "type": "hook", "bars": 8},
+        {"name": "Hook 2", "type": "hook", "bars": 8},
+        {"name": "Bridge", "type": "bridge", "bars": 4},
+        {"name": "Hook 3", "type": "hook", "bars": 8},
+        {"name": "Outro", "type": "outro", "bars": 4},
+    ]
+    stem_metadata = {
+        "enabled": True,
+        "succeeded": True,
+        "roles_detected": ["drums", "bass", "melody"],
+    }
+    updated = _apply_stem_primary_section_states(sections, stem_metadata)
+
+    by_name = {s["name"]: frozenset(s["active_stem_roles"]) for s in updated}
+
+    # Core identity invariants with 3 stems:
+    # 1. Intro must be sparse (no drums/bass)
+    assert "drums" not in by_name["Intro"] and "bass" not in by_name["Intro"], (
+        f"Intro must not have drums or bass: {by_name['Intro']}"
+    )
+    # 2. Verse 1 is rhythm-only
+    assert len(by_name["Verse 1"]) <= 2, (
+        f"Verse 1 should stay sparse (rhythm only): {by_name['Verse 1']}"
+    )
+    # 3. Verse 2 must differ from Hook 1 (post-pass ensures headroom)
+    assert by_name["Verse 2"] != by_name["Hook 1"], (
+        f"Verse 2 {by_name['Verse 2']} must differ from Hook 1 {by_name['Hook 1']} — "
+        "post-pass should strip verse 2 to preserve hook headroom"
+    )
+    # 4. Bridge/breakdown must be sparse (no drums/bass)
+    assert "drums" not in by_name["Bridge"] and "bass" not in by_name["Bridge"], (
+        f"Bridge must not have drums or bass: {by_name['Bridge']}"
+    )
+    # 5. Intro and Bridge may share the same sparse stems — that is acceptable.
+    #    What matters is that at least 3 distinct stem maps exist across all sections.
+    distinct_maps = len(set(by_name.values()))
+    assert distinct_maps >= 3, (
+        f"Expected at least 3 distinct stem maps, got {distinct_maps}: "
+        + str({k: sorted(v) for k, v in by_name.items()})
     )
