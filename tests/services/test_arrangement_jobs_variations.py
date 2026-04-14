@@ -743,7 +743,7 @@ def test_empty_instruments_triggers_last_resort_fallback_not_silent_expansion(ca
 # ---------------------------------------------------------------------------
 
 
-def test_verse2_does_not_exhaust_all_stems_when_hooks_follow() -> None:
+def test_verse2_stripped_to_reserve_hook_headroom() -> None:
     """With 3 stems, verse 2 must be stripped to preserve hook headroom.
 
     The post-pass in _apply_stem_primary_section_states should detect that

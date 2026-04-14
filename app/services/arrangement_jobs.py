@@ -1703,8 +1703,8 @@ def _render_producer_arrangement(
         # Phrase-split tracking — populated when a distinct first/second stem
         # split is actually executed.  Initialised here so the timeline_sections
         # entry below is always well-defined regardless of render path.
-        _phrase_first_roles: list[str] = []
-        _phrase_second_roles: list[str] = []
+        _phrase_first_roles = []
+        _phrase_second_roles = []
         _phrase_split_executed = False
 
         if use_stems:
