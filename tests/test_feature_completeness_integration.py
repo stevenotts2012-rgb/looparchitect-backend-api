@@ -63,6 +63,9 @@ def test_api_create_loop_arrange_render_job_completes_and_plan_has_events():
 
     # Mock Redis enqueue path so test remains deterministic without external Redis.
     with patch(
+        "app.routes.arrangements.is_redis_available",
+        return_value=True,
+    ), patch(
         "app.routes.arrangements.create_render_job",
         return_value=(SimpleNamespace(id="test-job-1"), False),
     ):
