@@ -39,6 +39,13 @@ from app.services.storage import storage
 from app.schemas.job import OutputFile
 from app.services.arrangement_jobs import _parse_stem_metadata_from_loop
 from app.services.audit_logging import log_feature_event
+from app.services.render_observability import (
+    assemble_render_metadata,
+    determine_job_terminal_state,
+    extract_observability_from_arrangement,
+    get_worker_mode,
+    resolve_feature_flags_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +254,10 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     db = SessionLocal()
     app_job_id = job_id
     arrangement_id = None
+    # Phase 3: track where failure occurred for job_terminal_state resolution.
+    _failure_stage: str | None = None
+    _worker_mode = get_worker_mode()
+    _feature_flags = resolve_feature_flags_snapshot()
     
     try:
         arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
@@ -361,19 +372,78 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
 
             if arrangement_row and arrangement_row.status == "done":
+                # Phase 3: extract observability from the completed arrangement and write to job.
+                try:
+                    obs = extract_observability_from_arrangement(arrangement_row)
+                    mastering_info = None
+                    arr_rp = None
+                    try:
+                        arr_rp = json.loads(arrangement_row.render_plan_json or "{}") if arrangement_row.render_plan_json else {}
+                        mastering_info = (arr_rp.get("render_profile") or {}).get("postprocess", {}).get("mastering")
+                    except Exception:
+                        pass
+                    render_path = "stem_render_executor" if obs.get("actual_stem_map_by_section") and any(
+                        s.get("roles") for s in obs.get("actual_stem_map_by_section", [])
+                    ) else "stereo_fallback"
+                    source_quality = "unknown"
+                    if arr_rp:
+                        stem_sep = (arr_rp.get("render_profile") or {}).get("stem_separation") or {}
+                        sep_method = str(stem_sep.get("method") or stem_sep.get("backend") or "").strip().lower()
+                        if render_path == "stereo_fallback":
+                            source_quality = "stereo_fallback"
+                        elif sep_method in {"demucs", "spleeter", "builtin", "ai"}:
+                            source_quality = "ai_separated"
+                        elif render_path == "stem_render_executor":
+                            source_quality = "true_stems"
+                    terminal_state = determine_job_terminal_state(
+                        success=True,
+                        fallback_triggered_count=obs.get("fallback_triggered_count", 0),
+                        failure_stage=None,
+                        error_message=None,
+                    )
+                    render_metadata = assemble_render_metadata(
+                        worker_mode=_worker_mode,
+                        job_terminal_state=terminal_state,
+                        failure_stage=None,
+                        render_path_used=render_path,
+                        source_quality_mode_used=source_quality,
+                        observability=obs,
+                        mastering_info=mastering_info,
+                        feature_flags_snapshot=_feature_flags,
+                    )
+                except Exception as obs_exc:
+                    logger.warning(
+                        "Phase 3 observability extraction failed for job %s: %s",
+                        app_job_id, obs_exc,
+                    )
+                    render_metadata = {
+                        "worker_mode": _worker_mode,
+                        "job_terminal_state": "success_truthful",
+                        "failure_stage": None,
+                        "render_path_used": "unknown",
+                        "source_quality_mode_used": "unknown",
+                        "fallback_triggered_count": 0,
+                        "fallback_reasons": [],
+                    }
+
                 update_job_status(
                     db,
                     app_job_id,
                     "succeeded",
                     progress=100.0,
                     progress_message="Arrangement job completed",
+                    render_metadata=render_metadata,
                 )
                 logger.info(
-                    "Worker success: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s",
+                    "Worker success: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s "
+                    "job_terminal_state=%s render_path=%s fallbacks=%d",
                     app_job_id,
                     arrangement_id,
                     loop_id,
                     arrangement_row.status,
+                    render_metadata.get("job_terminal_state"),
+                    render_metadata.get("render_path_used"),
+                    render_metadata.get("fallback_triggered_count", 0),
                 )
                 log_feature_event(
                     logger,
@@ -381,23 +451,46 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     app_job_id=app_job_id,
                     arrangement_id=arrangement_id,
                     loop_id=loop_id,
+                    job_terminal_state=render_metadata.get("job_terminal_state"),
+                    render_path_used=render_metadata.get("render_path_used"),
+                    fallback_triggered_count=render_metadata.get("fallback_triggered_count", 0),
                 )
                 return
 
             if arrangement_row and arrangement_row.status == "failed":
+                _failure_stage = "execution"
+                err_msg = arrangement_row.error_message or "Arrangement job failed"
+                terminal_state = determine_job_terminal_state(
+                    success=False,
+                    fallback_triggered_count=0,
+                    failure_stage=_failure_stage,
+                    error_message=err_msg,
+                )
+                render_metadata = assemble_render_metadata(
+                    worker_mode=_worker_mode,
+                    job_terminal_state=terminal_state,
+                    failure_stage=_failure_stage,
+                    render_path_used="unknown",
+                    source_quality_mode_used="unknown",
+                    observability={},
+                    feature_flags_snapshot=_feature_flags,
+                )
                 update_job_status(
                     db,
                     app_job_id,
                     "failed",
-                    error_message=arrangement_row.error_message or "Arrangement job failed",
+                    error_message=err_msg,
+                    render_metadata=render_metadata,
                 )
                 logger.error(
-                    "Worker failure: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s error=%s",
+                    "Worker failure: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s "
+                    "error=%s job_terminal_state=%s",
                     app_job_id,
                     arrangement_id,
                     loop_id,
                     arrangement_row.status,
                     arrangement_row.error_message,
+                    terminal_state,
                 )
                 log_feature_event(
                     logger,
@@ -407,6 +500,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     loop_id=loop_id,
                     reason="arrangement_failed",
                     error=arrangement_row.error_message,
+                    job_terminal_state=terminal_state,
                 )
                 return
 
@@ -416,11 +510,27 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 arrangement_row.progress_message = "Worker failed"
                 db.commit()
 
+            _failure_stage = "finalization"
+            terminal_state = determine_job_terminal_state(
+                success=False,
+                fallback_triggered_count=0,
+                failure_stage=_failure_stage,
+                error_message="Arrangement worker did not produce terminal status",
+            )
             update_job_status(
                 db,
                 app_job_id,
                 "failed",
                 error_message="Arrangement worker did not produce terminal status",
+                render_metadata=assemble_render_metadata(
+                    worker_mode=_worker_mode,
+                    job_terminal_state=terminal_state,
+                    failure_stage=_failure_stage,
+                    render_path_used="unknown",
+                    source_quality_mode_used="unknown",
+                    observability={},
+                    feature_flags_snapshot=_feature_flags,
+                ),
             )
             logger.error(
                 "Worker failure: app_job_id=%s arrangement_id=%s loop_id=%s reason=no terminal arrangement status",
@@ -559,6 +669,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
             timeline_json = render_result["timeline_json"]
             postprocess = render_result.get("postprocess") or {}
+            render_obs_from_executor = render_result.get("render_observability") or {}
             if postprocess and arrangement and arrangement.render_plan_json:
                 try:
                     current_plan = json.loads(arrangement.render_plan_json)
@@ -571,7 +682,9 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
 
             update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
+            _failure_stage = "storage"
             s3_key, content_type = _upload_render_output(app_job_id, filename, output_path)
+            _failure_stage = None
             output_files = [
                 OutputFile(
                     name="Render Plan Arrangement",
@@ -579,7 +692,25 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     content_type=content_type,
                 )
             ]
-            
+
+            # Phase 3: assemble and persist render_metadata on success.
+            _direct_terminal_state = determine_job_terminal_state(
+                success=True,
+                fallback_triggered_count=render_obs_from_executor.get("fallback_triggered_count", 0),
+                failure_stage=None,
+                error_message=None,
+            )
+            _direct_render_metadata = assemble_render_metadata(
+                worker_mode=_worker_mode,
+                job_terminal_state=_direct_terminal_state,
+                failure_stage=None,
+                render_path_used=render_obs_from_executor.get("render_path_used", "unknown"),
+                source_quality_mode_used=render_obs_from_executor.get("source_quality_mode_used", "unknown"),
+                observability=render_obs_from_executor,
+                mastering_info=(postprocess or {}).get("mastering"),
+                feature_flags_snapshot=_feature_flags,
+            )
+
             # Mark as succeeded
             update_job_status(
                 db,
@@ -587,12 +718,18 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 "succeeded",
                 progress=100.0,
                 output_files=output_files,
+                render_metadata=_direct_render_metadata,
             )
             logger.info(
-                "JOB_SUCCESS app_job_id=%s arrangement_id=%s loop_id=%s",
+                "JOB_SUCCESS app_job_id=%s arrangement_id=%s loop_id=%s "
+                "job_terminal_state=%s render_path=%s fallbacks=%d worker_mode=%s",
                 app_job_id,
                 arrangement_id,
                 loop_id,
+                _direct_terminal_state,
+                _direct_render_metadata.get("render_path_used"),
+                _direct_render_metadata.get("fallback_triggered_count", 0),
+                _worker_mode,
             )
     
     except Exception as e:
@@ -608,11 +745,34 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
             if job:
                 job.retry_count = (job.retry_count or 0) + 1
+                _err_str = str(e)
+                _terminal_state = determine_job_terminal_state(
+                    success=False,
+                    fallback_triggered_count=0,
+                    failure_stage=_failure_stage,
+                    error_message=_err_str,
+                )
                 update_job_status(
                     db,
                     app_job_id,
                     "failed",
-                    error_message=f"{str(e)[:500]}",
+                    error_message=_err_str[:500],
+                    render_metadata=assemble_render_metadata(
+                        worker_mode=_worker_mode,
+                        job_terminal_state=_terminal_state,
+                        failure_stage=_failure_stage,
+                        render_path_used="unknown",
+                        source_quality_mode_used="unknown",
+                        observability={},
+                        feature_flags_snapshot=_feature_flags,
+                    ),
+                )
+                logger.error(
+                    "JOB_FAILURE_METADATA job_id=%s job_terminal_state=%s failure_stage=%s worker_mode=%s",
+                    app_job_id,
+                    _terminal_state,
+                    _failure_stage,
+                    _worker_mode,
                 )
         except Exception as db_err:
             logger.error(f"Failed to update job status: {db_err}")

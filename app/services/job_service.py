@@ -5,7 +5,6 @@ import json
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-
 from sqlalchemy.orm import Session
 
 from app.models.job import RenderJob
@@ -154,6 +153,7 @@ def update_job_status(
     progress_message: str = None,
     error_message: str = None,
     output_files: List[OutputFile] = None,
+    render_metadata: Optional[Dict] = None,
 ) -> RenderJob:
     """Update job status inline (called by worker)."""
     job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
@@ -176,6 +176,12 @@ def update_job_status(
         if output_files:
             output_list = [f.model_dump() for f in output_files]
             job.output_files_json = json.dumps(output_list)
+
+    if render_metadata is not None:
+        try:
+            job.render_metadata_json = json.dumps(render_metadata)
+        except Exception as _e:
+            logger.warning("Failed to serialize render_metadata for job %s: %s", job_id, _e)
     
     db.commit()
     db.refresh(job)
@@ -215,7 +221,14 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
                     )
         except Exception as e:
             logger.error(f"Failed to parse outputs for job {job_id}: {e}")
-    
+
+    render_metadata = None
+    if getattr(job, "render_metadata_json", None):
+        try:
+            render_metadata = json.loads(job.render_metadata_json)
+        except Exception as _e:
+            logger.warning("Failed to parse render_metadata_json for job %s: %s", job_id, _e)
+
     return RenderJobStatusResponse(
         job_id=job.id,
         loop_id=job.loop_id,
@@ -229,6 +242,7 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
         output_files=output_files,
         error_message=job.error_message,
         retry_count=job.retry_count,
+        render_metadata=render_metadata,
     )
 
 

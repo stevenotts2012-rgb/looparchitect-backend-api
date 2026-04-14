@@ -212,7 +212,12 @@ def render_from_plan(
         stems: Optional dict of stem audio files for real layer-based rendering
     
     Returns:
-        Dict with timeline_json, summary, and postprocess info
+        Dict with timeline_json, summary, postprocess, and render_observability.
+        render_observability contains Phase 3 fields:
+          render_path_used, source_quality_mode_used, fallback_triggered_count,
+          fallback_reasons, section_execution_report, render_signatures,
+          unique_render_signature_count, phrase_split_count, mastering_applied,
+          mastering_profile, planned_stem_map_by_section, actual_stem_map_by_section.
     """
     if isinstance(render_plan_json, str):
         try:
@@ -221,6 +226,14 @@ def render_from_plan(
             raise ValueError(f"Invalid render_plan_json: {e}") from e
     else:
         render_plan = render_plan_json
+
+    # Determine render path before execution so it's always set even on failure.
+    render_path_used = "stem_render_executor" if stems else "stereo_fallback"
+
+    # Derive source quality mode from render plan metadata.
+    render_profile = render_plan.get("render_profile") or {}
+    stem_sep = render_profile.get("stem_separation") or {}
+    source_quality_mode_used = _derive_source_quality_mode(render_plan, stems, stem_sep)
 
     producer_payload, summary = _build_producer_arrangement_from_render_plan(
         render_plan=render_plan,
@@ -256,9 +269,30 @@ def render_from_plan(
     output_path = Path(output_path)
     output_audio.export(str(output_path), format="wav")
 
+    # Build Phase 3 observability from timeline and mastering results.
+    render_observability = _build_render_observability(
+        timeline_json=timeline_json,
+        render_path_used=render_path_used,
+        source_quality_mode_used=source_quality_mode_used,
+        mastering_result=mastering_result,
+        render_plan_sections=render_plan.get("sections") or [],
+    )
+
+    logger.info(
+        "RENDER_OBSERVABILITY render_path=%s source_quality=%s fallbacks=%d "
+        "unique_signatures=%d phrase_splits=%d mastering_applied=%s",
+        render_observability.get("render_path_used"),
+        render_observability.get("source_quality_mode_used"),
+        render_observability.get("fallback_triggered_count", 0),
+        render_observability.get("unique_render_signature_count", 0),
+        render_observability.get("phrase_split_count", 0),
+        render_observability.get("mastering_applied"),
+    )
+
     return {
         "timeline_json": timeline_json,
         "summary": summary,
+        "render_observability": render_observability,
         "postprocess": {
             "mastering": {
                 "applied": mastering_result.applied,
@@ -267,4 +301,157 @@ def render_from_plan(
                 "peak_dbfs_after": mastering_result.peak_dbfs_after,
             }
         },
+    }
+
+
+def _derive_source_quality_mode(
+    render_plan: dict,
+    stems: dict | None,
+    stem_sep: dict,
+) -> str:
+    """Determine the source quality mode that was actually used during render."""
+    if not stems:
+        return "stereo_fallback"
+
+    # Check for ZIP stem source
+    loop_variations = render_plan.get("loop_variations") or {}
+    if loop_variations.get("stems_used"):
+        return "zip_stems"
+
+    # Check stem separation metadata for AI-separated vs true stems
+    sep_method = str(stem_sep.get("method") or stem_sep.get("backend") or "").strip().lower()
+    if sep_method in {"demucs", "spleeter", "builtin", "ai_separated", "ai"}:
+        return "ai_separated"
+
+    # Stems present without separation metadata → uploaded as true stems
+    stem_keys = list(stems.keys()) if stems else []
+    if stem_keys and sep_method == "":
+        return "true_stems"
+
+    return "unknown"
+
+
+def _build_render_observability(
+    timeline_json: str,
+    render_path_used: str,
+    source_quality_mode_used: str,
+    mastering_result: Any,
+    render_plan_sections: list,
+) -> dict:
+    """Build the Phase 3 observability payload from timeline and execution data.
+
+    All values reflect REAL execution — planned stem maps come from the render
+    plan, actual stem maps come from what ``_render_producer_arrangement``
+    recorded in ``runtime_active_stems``.
+    """
+    import hashlib
+
+    try:
+        timeline = json.loads(timeline_json) if isinstance(timeline_json, str) else timeline_json or {}
+    except Exception:
+        timeline = {}
+
+    timeline_sections: list = timeline.get("sections") or []
+    render_spec = timeline.get("render_spec_summary") or {}
+
+    # --- planned stem map (from render plan sections) ---
+    planned_stem_map: list[dict] = []
+    for idx, sec in enumerate(render_plan_sections):
+        planned_stem_map.append({
+            "section_index": idx,
+            "section_type": str(sec.get("type") or sec.get("section_type") or "unknown"),
+            "roles": list(sec.get("instruments") or sec.get("active_stem_roles") or []),
+        })
+
+    # --- actual stem map + section execution report from timeline ---
+    actual_stem_map: list[dict] = []
+    section_execution_report: list[dict] = []
+    fallback_triggered_count = 0
+    fallback_reasons: list[str] = []
+    phrase_split_count = int(render_spec.get("phrase_split_count") or 0)
+    render_signatures: list[str] = []
+
+    for idx, ts in enumerate(timeline_sections):
+        actual_roles = list(ts.get("runtime_active_stems") or ts.get("active_stem_roles") or [])
+        planned_roles = list(ts.get("active_stem_roles") or [])
+        phrase_used = bool(ts.get("phrase_plan_used"))
+
+        # Fallback detection: section marked with stem_fallback_all flag
+        sec_fallback = bool(ts.get("_stem_fallback_all"))
+        fallback_used = sec_fallback
+        fallback_reason = ""
+        if sec_fallback:
+            fallback_triggered_count += 1
+            fallback_reason = "missing_required_stem_role"
+            if fallback_reason not in fallback_reasons:
+                fallback_reasons.append(fallback_reason)
+
+        # Detect stereo fallback path at section level
+        if not actual_roles and render_path_used == "stereo_fallback":
+            fallback_used = True
+            if "full_mix_only_available" not in fallback_reasons:
+                fallback_reasons.append("full_mix_only_available")
+
+        # Dropped roles (planned but not actually rendered)
+        dropped_roles = [r for r in planned_roles if r not in actual_roles]
+        if dropped_roles and "missing_required_stem_role" not in fallback_reasons:
+            fallback_reasons.append("missing_required_stem_role")
+
+        # Deterministic render signature for this section
+        sig_material = "|".join(sorted(actual_roles)) + f"|{ts.get('type', '')}|{render_path_used}"
+        sig = hashlib.md5(sig_material.encode()).hexdigest()[:12]
+        render_signatures.append(sig)
+
+        actual_stem_map.append({
+            "section_index": idx,
+            "section_type": str(ts.get("type") or "unknown"),
+            "roles": actual_roles,
+            "fallback": fallback_used,
+        })
+
+        section_execution_report.append({
+            "section_index": idx,
+            "section_type": str(ts.get("type") or "unknown"),
+            "planned_roles": planned_roles,
+            "actual_roles": actual_roles,
+            "dropped_roles": dropped_roles,
+            "fallback_used": fallback_used,
+            "fallback_reason": fallback_reason or None,
+            "phrase_split_used": phrase_used,
+            "render_signature": sig,
+            "applied_events": list(ts.get("applied_events") or []),
+        })
+
+    # If the whole render was stereo fallback, note that globally
+    if render_path_used == "stereo_fallback" and "full_mix_only_available" not in fallback_reasons:
+        fallback_reasons.append("full_mix_only_available")
+        fallback_triggered_count = len(timeline_sections)
+
+    unique_render_signature_count = len(set(render_signatures))
+
+    # Mastering fields (never faked — sourced directly from MasteringResult)
+    mastering_applied = bool(getattr(mastering_result, "applied", False))
+    mastering_profile = str(getattr(mastering_result, "profile", "unknown"))
+    mastering_peak_before = getattr(mastering_result, "peak_dbfs_before", None)
+    mastering_peak_after = getattr(mastering_result, "peak_dbfs_after", None)
+
+    return {
+        "render_path_used": render_path_used,
+        "source_quality_mode_used": source_quality_mode_used,
+        "fallback_triggered_count": fallback_triggered_count,
+        "fallback_sections_count": fallback_triggered_count,
+        "fallback_reasons": fallback_reasons,
+        "planned_stem_map_by_section": planned_stem_map,
+        "actual_stem_map_by_section": actual_stem_map,
+        "section_execution_report": section_execution_report,
+        "render_signatures": render_signatures,
+        "unique_render_signature_count": unique_render_signature_count,
+        "phrase_split_count": phrase_split_count,
+        "mastering_applied": mastering_applied,
+        "mastering_profile": mastering_profile,
+        "mastering_peak_dbfs_before": mastering_peak_before,
+        "mastering_peak_dbfs_after": mastering_peak_after,
+        "distinct_stem_set_count": int(render_spec.get("distinct_stem_set_count") or unique_render_signature_count),
+        "hook_stages_rendered": list(render_spec.get("hook_stages") or []),
+        "transition_event_count": int(render_spec.get("transition_event_count") or 0),
     }

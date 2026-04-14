@@ -134,29 +134,73 @@ async def health_worker():
     This endpoint checks *dedicated* worker processes — not embedded threads.
     For embedded worker thread status see ``GET /health/worker`` (root path,
     no ``/api/v1`` prefix).
+
+    Phase 3: also returns worker_mode, queue_depth, active_jobs, failed_jobs,
+    and last_heartbeat from real diagnostics.  No data is fabricated.
     """
+    from app.services.render_observability import get_worker_mode
+
+    worker_mode = get_worker_mode()
+    queue_name = None
+    queue_depth = None
+    active_jobs = None
+    failed_jobs = None
+    last_heartbeat = None
+
     try:
+        from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_redis_conn, get_queue as _get_queue
+
+        queue_name = DEFAULT_RENDER_QUEUE_NAME
         redis_conn = get_redis_conn()
+
+        try:
+            rq_queue = _get_queue(redis_conn, name=queue_name)
+            queue_depth = int(rq_queue.count)
+            failed_jobs = int(len(rq_queue.failed_job_registry))
+        except Exception:
+            pass
+
         from rq import Worker
         workers = Worker.all(connection=redis_conn)
         worker_status = []
+        _active_count = 0
         for w in workers:
+            state = w.get_state()
+            if state == "busy":
+                _active_count += 1
+            _hb = w.last_heartbeat.isoformat() if w.last_heartbeat else None
+            if last_heartbeat is None or _hb and _hb > last_heartbeat:
+                last_heartbeat = _hb
             worker_status.append({
                 "name": w.name,
-                "state": w.get_state(),
+                "state": state,
                 "queues": [q.name for q in w.queues],
                 "pid": w.pid,
-                "last_heartbeat": w.last_heartbeat.isoformat() if w.last_heartbeat else None,
+                "last_heartbeat": _hb,
             })
+        active_jobs = _active_count
+
         return {
             "ok": bool(workers),
             "worker_count": len(workers),
+            "worker_mode": worker_mode,
+            "queue_name": queue_name,
+            "queue_depth": queue_depth,
+            "active_jobs": active_jobs,
+            "failed_jobs": failed_jobs,
+            "last_heartbeat": last_heartbeat,
             "workers": worker_status,
         }
     except Exception as e:
         logger.exception("Worker health check failed")
         return {
             "ok": False,
+            "worker_mode": worker_mode,
+            "queue_name": queue_name,
+            "queue_depth": queue_depth,
+            "active_jobs": active_jobs,
+            "failed_jobs": failed_jobs,
+            "last_heartbeat": last_heartbeat,
             "error": str(e),
         }
 
