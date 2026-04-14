@@ -1114,3 +1114,85 @@ def test_small_stem_set_produces_distinct_render_signatures() -> None:
         f"Expected at least 3 distinct stem maps, got {distinct_maps}: "
         + str({k: sorted(v) for k, v in by_name.items()})
     )
+
+
+def test_pre_hook_end_dropout_applied_to_rendered_audio() -> None:
+    """end_dropout_bars / end_dropout_roles from the phrase plan must be applied.
+
+    A pre_hook section with a phrase_plan specifying drums dropout in the last bar
+    should produce audio whose tail differs from a version without any dropout.
+    This test catches regressions where the dropout spec is stored but ignored.
+    """
+    from pydub.generators import Sine
+
+    bpm = 120.0
+    bar_ms = int((60.0 / bpm) * 4.0 * 1000)
+    total_bars = 8
+    duration_ms = bar_ms * total_bars
+    # Sine generator frame rate / audio parameters — kept as constants so the
+    # tail byte-offset calculation below uses the same values.
+    _FRAME_RATE = 44100
+    _SAMPLE_WIDTH = 2   # 16-bit
+    _CHANNELS = 1       # mono (Sine generator default)
+
+    # Give drums a distinct frequency so we can detect its presence by energy.
+    stems = {
+        "drums": Sine(80).to_audio_segment(duration=duration_ms).set_frame_rate(_FRAME_RATE),
+        "bass": Sine(200).to_audio_segment(duration=duration_ms).set_frame_rate(_FRAME_RATE),
+    }
+
+    def _render_pre_hook(phrase_plan: dict | None) -> bytes:
+        section: dict = {
+            "name": "Pre-Hook",
+            "section_type": "pre_hook",
+            "bar_start": 0,
+            "bars": total_bars,
+            "energy": 0.75,
+            "instruments": ["drums", "bass"],
+        }
+        if phrase_plan is not None:
+            section["phrase_plan"] = phrase_plan
+
+        producer_arrangement = {
+            "total_bars": total_bars,
+            "key": "C",
+            "tracks": [],
+            "sections": [section],
+        }
+        audio, _ = _render_producer_arrangement(
+            loop_audio=Sine(440).to_audio_segment(duration=duration_ms).set_frame_rate(_FRAME_RATE),
+            producer_arrangement=producer_arrangement,
+            bpm=bpm,
+            stems=stems,
+        )
+        return bytes(audio.raw_data)
+
+    # Render without dropout (baseline: all stems throughout)
+    audio_no_dropout = _render_pre_hook(phrase_plan=None)
+
+    # Render with a 1-bar drums dropout at the end
+    audio_with_dropout = _render_pre_hook(
+        phrase_plan={
+            "split_bar": total_bars // 2,
+            "first_phrase_roles": ["drums", "bass"],
+            "second_phrase_roles": ["drums", "bass"],
+            "lead_entry_delay_bars": 0,
+            "end_dropout_bars": 1,
+            "end_dropout_roles": ["drums"],
+            "description": "pre_hook drums dropout in last bar",
+        }
+    )
+
+    # The last bar of the dropout render must differ from the baseline
+    # because drums are muted there.
+    frames_per_bar = int(bar_ms * _FRAME_RATE / 1000)
+    bytes_per_frame = _CHANNELS * _SAMPLE_WIDTH
+    tail_start_byte = (total_bars - 1) * frames_per_bar * bytes_per_frame
+    tail_no_dropout = audio_no_dropout[tail_start_byte:]
+    tail_with_dropout = audio_with_dropout[tail_start_byte:]
+
+    assert tail_no_dropout != tail_with_dropout, (
+        "The last bar of the pre_hook rendered with end_dropout_roles=['drums'] "
+        "must differ from the version without dropout. "
+        "The end_dropout feature is not being applied to the audio."
+    )

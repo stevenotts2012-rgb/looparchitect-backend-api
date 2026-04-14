@@ -1815,6 +1815,62 @@ def _render_producer_arrangement(
                 )[:section_ms]
                 active_role_snapshot = list(enabled_stems.keys())
 
+            # ----------------------------------------------------------------
+            # END-OF-SECTION DROPOUT
+            # Apply the end_dropout_bars / end_dropout_roles spec from the
+            # phrase plan regardless of whether a phrase split was executed.
+            # This is how pre_hook creates "tension through absence" (drums
+            # muted in the last 1-2 bars before the hook) and how verso sections
+            # get a subtle build arc (atmospheric stem removed in last bar).
+            # The dropout is a post-build step: the full section audio is built
+            # first, then the tail segment is rebuilt without the dropout roles.
+            # ----------------------------------------------------------------
+            if phrase_plan:
+                _end_dropout_bars = int(phrase_plan.get("end_dropout_bars") or 0)
+                _end_dropout_roles = set(phrase_plan.get("end_dropout_roles") or [])
+                _dropout_has_effect = bool(
+                    _end_dropout_bars > 0
+                    and _end_dropout_roles
+                    and section_bars > _end_dropout_bars
+                    and any(r in enabled_stems for r in _end_dropout_roles)
+                )
+                if _dropout_has_effect:
+                    _dropout_start_bar = section_bars - _end_dropout_bars
+                    _dropout_start_ms = _dropout_start_bar * bar_duration_ms
+                    _dropout_end_ms = len(section_audio)
+                    _actual_dropout_bars = max(
+                        1,
+                        (_dropout_end_ms - _dropout_start_ms + bar_duration_ms - 1)
+                        // bar_duration_ms,
+                    )
+                    _remaining_stems = {
+                        k: v for k, v in enabled_stems.items()
+                        if k not in _end_dropout_roles
+                    }
+                    # _remaining_stems may be empty if every active stem was
+                    # listed as a dropout role (e.g. a single-stem section where
+                    # that one stem is the dropout target).  In that case we skip
+                    # the dropout rather than produce deliberate silence — the
+                    # section-type DSP (bridge_strip, outro_strip, etc.) already
+                    # handles extreme sparsity for those edge cases.
+                    if _remaining_stems:
+                        _dropout_segment = _build_section_audio_from_stems(
+                            stems=_remaining_stems,
+                            section_bars=_actual_dropout_bars,
+                            bar_duration_ms=bar_duration_ms,
+                            section_idx=section_idx,
+                        )[: _dropout_end_ms - _dropout_start_ms]
+                        section_audio = (
+                            section_audio[:_dropout_start_ms] + _dropout_segment
+                        )[:section_ms]
+                        logger.info(
+                            "END_DROPOUT section='%s' type=%s: muted %s in last %d bar(s)",
+                            section_name,
+                            section_type,
+                            sorted(_end_dropout_roles),
+                            _end_dropout_bars,
+                        )
+
         elif use_loop_variations and section_loop_variant in (loop_variations or {}):
             variation_source = (loop_variations or {})[section_loop_variant]
             section_audio = _repeat_to_duration(variation_source, section_ms)
