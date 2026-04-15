@@ -17,8 +17,6 @@ from pathlib import Path
 from typing import Dict
 import boto3
 from botocore.exceptions import ClientError
-import librosa
-import numpy as np
 import httpx
 
 from app.config import settings
@@ -213,6 +211,8 @@ class LoopAnalyzer:
         Returns:
             Dictionary with bpm, key, duration, bars
         """
+        import librosa  # noqa: PLC0415 — lazy import; librosa is heavy and optional
+        import numpy as np  # noqa: PLC0415
         try:
             # Load audio file with librosa
             y, sr = librosa.load(file_path, sr=self.sample_rate, mono=True)
@@ -242,7 +242,7 @@ class LoopAnalyzer:
             raise Exception(f"Audio analysis failed: {e}")
             raise Exception(f"Audio analysis failed: {e}")
 
-    def _detect_bpm(self, y: np.ndarray, sr: int) -> float:
+    def _detect_bpm(self, y, sr: int) -> float:
         """
         Detect BPM/tempo using librosa beat tracking.
 
@@ -255,6 +255,8 @@ class LoopAnalyzer:
         Returns:
             BPM as float (validated range: 60-200)
         """
+        import librosa  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
         try:
             # Use librosa beat tracking with onset envelope
             onset_env = librosa.onset.onset_strength(y=y, sr=sr)
@@ -282,7 +284,7 @@ class LoopAnalyzer:
             logger.warning(f"BPM detection failed: {e}, using default 120 BPM")
             return 120.0
 
-    def _detect_key(self, y: np.ndarray, sr: int) -> str:
+    def _detect_key(self, y, sr: int) -> str:
         """
         Detect musical key using chromagram analysis.
 
@@ -295,6 +297,8 @@ class LoopAnalyzer:
         Returns:
             Musical key as string (e.g., 'C', 'Dm', 'F#')
         """
+        import librosa  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
         try:
             # Compute chromagram with CQT for better accuracy
             chroma = librosa.feature.chroma_cqt(y=y, sr=sr, n_chroma=12)
