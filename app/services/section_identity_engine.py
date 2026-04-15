@@ -931,13 +931,13 @@ _CHOREOGRAPHY_TEMPLATES: dict[str, list[SectionChoreography]] = {
             contrast_roles=("fx",),
             rotation_note="Pre-hook 1 — tension through bass/perc lead, melody supports",
         ),
-        # Occurrence 2: melody promoted to co-lead; pads still absent for edge
+        # Occurrence 2: melody promoted to co-lead; drums suppressed for tension-through-absence
         SectionChoreography(
             leader_roles=("melody", "bass"),
-            support_roles=("drums", "arp"),
-            suppressed_roles=("pads",),
-            contrast_roles=("fx",),
-            rotation_note="Pre-hook 2 — melody co-leads, harmonic tension maintained",
+            support_roles=("arp", "fx"),
+            suppressed_roles=("drums", "percussion"),
+            contrast_roles=("synth",),
+            rotation_note="Pre-hook 2 — melody co-leads, drums absent for tension-through-absence",
         ),
     ],
     "hook": [
@@ -1374,11 +1374,12 @@ def get_phrase_variation_plan(
                     and r in {"melody", "vocal", "synth", "arp", "pads", "fx"}
                 ]
             full_set = list(active_roles) + bonus_explosion[:1]
-            # Add one melodic role to the "drop" first phrase so it retains
-            # harmonic content — pure rhythmic drop with no melody sounds broken.
+            # Hook 2 "anticipation drop": first phrase is purely rhythmic (no melody),
+            # so melody crashes back at split_bar for the "re-explosion" effect.
+            # This creates an audible distinction from hook 1's straight full-blast.
             melodic_in_active = [r for r in active_roles if r in {"melody", "vocal", "synth", "arp"}]
-            first_phrase = list(rhythmic) + melodic_in_active[:1]
-            if first_phrase and set(first_phrase) != set(full_set):
+            first_phrase = list(rhythmic)
+            if first_phrase and melodic_in_active and set(first_phrase) != set(full_set):
                 return PhraseVariationPlan(
                     section_type=stype,
                     total_bars=section_bars,
