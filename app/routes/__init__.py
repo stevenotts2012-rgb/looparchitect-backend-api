@@ -23,6 +23,7 @@ ROUTE_CONFIG = {
     "arrangements": {"prefix": "/api/v1/arrangements", "tags": ["arrangements"]},
     "reference": {"prefix": "/api/v1/reference", "tags": ["reference"]},
     "styles": {"prefix": "/api/v1", "tags": ["styles"]},
+    "track_quality": {"prefix": "/api/v1/track", "tags": ["track_quality"]},
 }
 
 

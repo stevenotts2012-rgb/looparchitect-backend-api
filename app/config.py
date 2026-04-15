@@ -160,6 +160,16 @@ class Settings(BaseSettings):
         validation_alias="ARRANGEMENT_TRUTH_OBSERVABILITY_V2",
     )
 
+    # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
+    # Measures sample rate, bit depth, clipping, mono compatibility, integrated
+    # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
+    # width, 4-band tonal profile, and generates actionable mixing suggestions.
+    # Enable with TRACK_QUALITY_ANALYSIS=true.
+    feature_track_quality_analysis: bool = Field(
+        default=False,
+        validation_alias="TRACK_QUALITY_ANALYSIS",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -211,6 +221,7 @@ class Settings(BaseSettings):
         "feature_arrangement_memory_v2",
         "feature_arrangement_transitions_v2",
         "feature_arrangement_truth_observability_v2",
+        "feature_track_quality_analysis",
         mode="before",
     )
     @classmethod
