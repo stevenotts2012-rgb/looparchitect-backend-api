@@ -314,14 +314,26 @@ def _stabilize_section_loudness(
     down_limit = -2.5
 
     if current_type in {"hook", "drop", "chorus"}:
-        # Only constrain the known problematic ramp into hook sections.
         if prev_type in {"pre_hook", "buildup", "build_up", "build"}:
+            # Natural energy ramp: give the hook room to hit hard after the
+            # buildup has already raised the energy level.
             up_limit = 4.0
             down_limit = -4.0
+        elif prev_type in {"bridge", "breakdown", "break", "intro", "outro"}:
+            # Hook following a sparse/quiet section: allow a moderately large
+            # upward jump so the hook lands with impact, but cap it to prevent
+            # an unconstrained blast after near-silence.
+            up_limit = 5.0
+            down_limit = -3.0
         else:
-            return current
+            # Hook from verse or another hook: a moderate upward step is fine.
+            up_limit = 4.0
+            down_limit = -3.0
+        # NOTE: previously this branch returned early for non-pre_hook
+        # predecessors, which allowed completely unconstrained loudness jumps
+        # of +5–10 dB.  The limits above are now applied to all hook entries.
 
-    if current_type in {"intro", "outro", "breakdown", "bridge", "break"}:
+    elif current_type in {"intro", "outro", "breakdown", "bridge", "break"}:
         up_limit = 1.5
         down_limit = -4.0
 
@@ -449,7 +461,7 @@ def debug_render_report(arrangement_id: int) -> list[dict]:
                     section_audio = section_audio + 4.0
                     section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
                 elif section_type in {"breakdown", "bridge"}:
-                    section_audio = section_audio - 6
+                    section_audio = section_audio - 2
                 elif section_type == "outro":
                     section_audio = section_audio - 4
                 else:
@@ -1432,9 +1444,12 @@ def _apply_producer_move_effect(
         return width
 
     if move_type == "bridge_strip":
-        # Reduce level; remove subsonic rumble only.  Do NOT apply a low-pass
-        # filter that kills the body of the sound — that creates a phone-call effect.
-        stripped = segment.high_pass_filter(60) - (3 + 1 * intensity)
+        # Reduce level and remove subsonic rumble.  Keep the attenuation gentle
+        # (1 dB base + intensity modifier) because the bridge section DSP already
+        # applies a -2 dB cut and a second bridge_strip event may be injected by
+        # ProducerMovesEngine — stacking two aggressive cuts made bridges nearly
+        # inaudible and produced a jarring loud-to-quiet-to-loud cycle.
+        stripped = segment.high_pass_filter(60) - (1 + 1 * intensity)
         return stripped
 
     if move_type == "outro_strip":
@@ -1993,12 +2008,6 @@ def _render_producer_arrangement(
             hook_evolution = section.get("hook_evolution") if isinstance(section.get("hook_evolution"), dict) else {}
             hook_stage = str(hook_evolution.get("stage") or "hook1").strip().lower()
 
-            # Add brief pre-hook gap for impact (unless first section)
-            if bar_start > 0 and section_idx > 0:
-                silence_gap = int(bar_duration_ms * 0.25)  # Quarter-bar gap
-                arranged += AudioSegment.silent(duration=silence_gap)
-                logger.info(f"  Added pre-hook silence: {silence_gap}ms before {section_name}")
-
             # Boost to near ceiling — do NOT exceed -1.5 dBFS to avoid post-mastering clip.
             # hook1: standard boost (+3 dB).
             # hook2: fuller (+4 dB) with a presence shelf to add perceived loudness/clarity.
@@ -2037,10 +2046,12 @@ def _render_producer_arrangement(
             
         elif section_type in {"breakdown", "bridge"}:
             # BREAKDOWN/BRIDGE: Stripped, atmospheric — moderate level reduction with
-            # gentle high-shelf cut to thin the energy.  Keep enough body so it still
-            # sounds musical; avoid stacking multiple large cuts that make it inaudible.
+            # gentle high-shelf cut to thin the energy.  The bridge_strip variation
+            # (injected by both _apply_stem_primary_section_states and
+            # ProducerMovesEngine) provides additional attenuation, so the DSP cut
+            # here is kept to -2 dB to avoid double-stacking into near-inaudible range.
             logger.info(f"Processing BREAKDOWN section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
-            section_audio = section_audio - 4          # -4 dB: noticeably quieter but still present
+            section_audio = section_audio - 2          # -2 dB: noticeable but still present
             section_audio = section_audio.low_pass_filter(10000)  # Gentle air reduction only
             section_audio = section_audio.high_pass_filter(60)    # Remove sub rumble
             logger.info(f"  BREAKDOWN post_dsp_peak={float(section_audio.max_dBFS):.1f} dBFS")
