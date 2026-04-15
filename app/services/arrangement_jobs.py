@@ -47,6 +47,15 @@ _PHRASE_SPLIT_SECTION_IDX_OFFSET = 100
 # while eliminating click/pop artefacts that listeners perceive as "audio dropping".
 _SECTION_CROSSFADE_MS = 30
 
+# Heavy attenuation (dB) used in place of complete silence for pre-hook / mute effects.
+# Keeps a faint ghost of audio present rather than dead air, which listeners perceive
+# as broken playback at longer durations.
+_HEAVY_ATTENUATION_DB = 14
+
+# Maximum gap (ms) inserted before a "drop" impact so the silence is a "breath"
+# rather than dead air.  80 ms ≈ 1/25 bar at 120 BPM — barely perceptible.
+_DROP_GAP_MS = 80
+
 _ISOLATED_STEM_ROLES = {
     "drums",
     "percussion",
@@ -290,9 +299,10 @@ def _apply_headroom_ceiling(audio: AudioSegment, target_peak_dbfs: float = -6.0)
 
 
 def _crossfade_append(base: AudioSegment, tail: AudioSegment, crossfade_ms: int = _SECTION_CROSSFADE_MS) -> AudioSegment:
-    """Append *tail* to *base* with a short crossfade to eliminate click/pop artefacts.
+    """Return a new AudioSegment combining *base* and *tail* with a short crossfade.
 
-    Falls back to hard concatenation when either segment is too short for the
+    The crossfade eliminates click/pop artefacts at hard audio joins.
+    Falls back to simple concatenation when either segment is too short for the
     requested crossfade or when crossfade_ms <= 0.
     """
     if crossfade_ms <= 0 or len(base) < crossfade_ms * 2 or len(tail) < crossfade_ms * 2:
@@ -1348,7 +1358,7 @@ def _apply_producer_move_effect(
         # without sounding like a broken playback.  Silence is replaced with an
         # attenuated tail so listeners hear a "breath" rather than dead air.
         dip_ms = int(min(len(segment), bar_duration_ms * (0.04 + 0.04 * intensity)))
-        dip_audio = segment[:dip_ms] - 14  # Heavily attenuated, not total silence
+        dip_audio = segment[:dip_ms] - _HEAVY_ATTENUATION_DB  # Heavily attenuated, not total silence
         return dip_audio + segment[dip_ms:]
 
     if move_type == "pre_hook_silence_drop":
@@ -1440,7 +1450,7 @@ def _apply_producer_move_effect(
     if move_type == "pre_hook_mute":
         # Attenuate rather than mute; use a very short window to avoid dead air.
         mute_ms = int(min(len(segment), bar_duration_ms * (0.05 + 0.05 * intensity)))
-        dip = segment[:mute_ms] - 14  # Heavy attenuation, not complete silence
+        dip = segment[:mute_ms] - _HEAVY_ATTENUATION_DB  # Heavy attenuation, not complete silence
         return dip + segment[mute_ms:]
 
     if move_type == "fill_event":
@@ -1490,7 +1500,7 @@ def _apply_producer_move_effect(
         # Attenuate rather than mute; cap at 0.08 bars to avoid dead air.
         pause_bars = min(0.08, float(params.get("pause_bars", 0.08) or 0.08))
         mute_ms = int(min(len(segment), bar_duration_ms * max(0.04, pause_bars)))
-        dip = segment[:mute_ms] - 12
+        dip = segment[:mute_ms] - _HEAVY_ATTENUATION_DB
         return dip + segment[mute_ms:]
 
     if move_type == "silence_drop_before_hook":
@@ -2158,7 +2168,7 @@ def _render_producer_arrangement(
                     variation_segment = variation_segment + 4
                 elif var_type in {"bass_drop", "drop", "bass_glide"}:
                     # Drops: very brief dip then impact; keep gap short to avoid dead air
-                    drop_gap = min(80, len(variation_segment) // 8)
+                    drop_gap = min(_DROP_GAP_MS, len(variation_segment) // 8)
                     variation_segment = AudioSegment.silent(duration=drop_gap) + variation_segment[drop_gap:] + 4
                 elif var_type == "reverse":
                     # Reverse effect
