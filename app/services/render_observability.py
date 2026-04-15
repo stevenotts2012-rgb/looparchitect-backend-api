@@ -110,6 +110,10 @@ def resolve_feature_flags_snapshot() -> dict[str, Any]:
         "feature_section_choreography_v2",
         "feature_source_quality_modes",
         "feature_arrangement_quality_gates",
+        "feature_arrangement_plan_v2",
+        "feature_arrangement_memory_v2",
+        "feature_arrangement_transitions_v2",
+        "feature_arrangement_truth_observability_v2",
         "feature_stem_separation",
         "feature_advanced_stem_separation_v2",
         "feature_mastering_stage",
@@ -250,6 +254,39 @@ def extract_observability_from_arrangement(arrangement_row: Any) -> dict[str, An
 
 
 # ---------------------------------------------------------------------------
+# Section occurrence info extractor (V2 observability)
+# ---------------------------------------------------------------------------
+
+def extract_section_occurrence_info(
+    arrangement_plan_v2_dict: dict | None,
+) -> dict:
+    """Summarise section occurrence info from an ArrangementPlanV2 dict.
+
+    Returns a dict with:
+    - ``occurrence_counts``: {section_type: count}
+    - ``repeated_sections``: list of section types that appear more than once
+    - ``total_sections``: total section count in the plan
+    - ``unique_section_types``: sorted list of distinct section types
+    """
+    if not arrangement_plan_v2_dict:
+        return {}
+
+    sections = arrangement_plan_v2_dict.get("sections", [])
+    occurrence_counts: dict[str, int] = {}
+    for sec in sections:
+        stype = sec.get("section_type", "unknown")
+        occurrence_counts[stype] = occurrence_counts.get(stype, 0) + 1
+
+    repeated = sorted(k for k, v in occurrence_counts.items() if v > 1)
+    return {
+        "occurrence_counts": occurrence_counts,
+        "repeated_sections": repeated,
+        "total_sections": len(sections),
+        "unique_section_types": sorted(occurrence_counts.keys()),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Full metadata assembly
 # ---------------------------------------------------------------------------
 
@@ -304,5 +341,15 @@ def assemble_render_metadata(
 
     if feature_flags_snapshot is not None:
         metadata["feature_flags_snapshot"] = feature_flags_snapshot
+
+    # V2 observability fields (populated when ARRANGEMENT_TRUTH_OBSERVABILITY_V2=true).
+    if observability.get("arrangement_plan_v2"):
+        metadata["arrangement_plan_v2"] = observability["arrangement_plan_v2"]
+    if observability.get("plan_vs_actual_comparison"):
+        metadata["plan_vs_actual_comparison"] = observability["plan_vs_actual_comparison"]
+    if observability.get("section_occurrence_info"):
+        metadata["section_occurrence_info"] = observability["section_occurrence_info"]
+    if observability.get("source_quality_mode"):
+        metadata["source_quality_mode"] = observability["source_quality_mode"]
 
     return metadata

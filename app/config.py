@@ -123,6 +123,43 @@ class Settings(BaseSettings):
         validation_alias="SOURCE_QUALITY_MODES",
     )
 
+    # Arrangement Plan V2 — structured SectionPlan + ArrangementPlanV2 with
+    # StemRole model, named VariationStrategy choices, and full decision log.
+    # Gates the V2 plan builder in arrangement_plan_v2.py.
+    # Enable with ARRANGEMENT_PLAN_V2=true.
+    feature_arrangement_plan_v2: bool = Field(
+        default=False,
+        validation_alias="ARRANGEMENT_PLAN_V2",
+    )
+
+    # Arrangement Memory V2 — stateful planning memory that tracks used stems,
+    # role combinations, energy history, section occurrence counts, and repeat
+    # variation history to prevent flat/identical section output.
+    # Requires ARRANGEMENT_PLAN_V2=true to take full effect.
+    # Enable with ARRANGEMENT_MEMORY_V2=true.
+    feature_arrangement_memory_v2: bool = Field(
+        default=False,
+        validation_alias="ARRANGEMENT_MEMORY_V2",
+    )
+
+    # Arrangement Transitions V2 — ensures every section boundary has an
+    # explicit transition plan (riser, drum_fill, reverse_fx, silence_gap,
+    # subtractive_entry, re_entry_accent). Requires ARRANGEMENT_PLAN_V2=true.
+    # Enable with ARRANGEMENT_TRANSITIONS_V2=true.
+    feature_arrangement_transitions_v2: bool = Field(
+        default=False,
+        validation_alias="ARRANGEMENT_TRANSITIONS_V2",
+    )
+
+    # Arrangement Truth Observability V2 — exposes planned vs. actual stem maps,
+    # render signatures per section, source quality mode, and section occurrence
+    # info so audits can prove the plan survived to render output.
+    # Enable with ARRANGEMENT_TRUTH_OBSERVABILITY_V2=true.
+    feature_arrangement_truth_observability_v2: bool = Field(
+        default=False,
+        validation_alias="ARRANGEMENT_TRUTH_OBSERVABILITY_V2",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -170,6 +207,10 @@ class Settings(BaseSettings):
         "feature_reference_section_analysis",
         "feature_arrangement_quality_gates",
         "feature_source_quality_modes",
+        "feature_arrangement_plan_v2",
+        "feature_arrangement_memory_v2",
+        "feature_arrangement_transitions_v2",
+        "feature_arrangement_truth_observability_v2",
         mode="before",
     )
     @classmethod
