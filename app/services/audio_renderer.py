@@ -101,18 +101,24 @@ class AudioRenderer:
                     bpm=self.bpm,
                 )
                 
-                # Mix transition audio at end of section
+                # Mix transition audio at end of section; keep gain neutral to avoid spikes.
                 transition_position = len(section_audio) - int(2 * self.ms_per_bar)
                 transition_position = max(0, transition_position)
-                section_audio =  section_audio.overlay(transition_audio.apply_gain(2), position=transition_position)
+                section_audio = section_audio.overlay(transition_audio, position=transition_position)
                 
                 logger.debug(f"Added transition from {section.name} to {next_section.name}")
             
             rendered_segments.append(section_audio)
         
-        # Concatenate all sections
+        # Concatenate all sections with short crossfades to prevent boundary pops.
         if len(rendered_segments) > 1:
-            full_audio = sum(rendered_segments)
+            full_audio = rendered_segments[0]
+            for seg in rendered_segments[1:]:
+                xfade = min(30, len(full_audio) // 4, len(seg) // 4)
+                if xfade > 0:
+                    full_audio = full_audio.append(seg, crossfade=xfade)
+                else:
+                    full_audio = full_audio + seg
         else:
             full_audio = rendered_segments[0]
         
