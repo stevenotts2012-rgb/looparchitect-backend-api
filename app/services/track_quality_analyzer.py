@@ -392,7 +392,7 @@ def _compute_true_peak(y_left, y_right) -> float:
 
 
 def _compute_tonal_profile(y_left, y_right, sr: int) -> TonalProfile:
-    """Analyse spectral energy balance across four broad frequency bands.
+    """Analyze spectral energy balance across four broad frequency bands.
 
     Uses a real FFT on up to 30 seconds of the mono mix.  Each band's energy
     fraction is compared to the reference range in ``_TONAL_REFERENCE_RANGES``.
@@ -614,7 +614,7 @@ def _add_tonal_suggestions(
 
 
 class TrackQualityAnalyzer:
-    """Analyses an uploaded audio file for technical quality metrics.
+    """Analyzes an uploaded audio file for technical quality metrics.
 
     Usage::
 

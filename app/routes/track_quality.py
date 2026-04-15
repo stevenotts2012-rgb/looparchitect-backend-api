@@ -90,7 +90,7 @@ def _validate_upload(file: UploadFile, file_bytes: bytes) -> None:
     "/analyze-quality",
     response_model=TrackQualityAnalysisResponse,
     status_code=status.HTTP_200_OK,
-    summary="Analyse the technical quality of an audio track",
+    summary="Analyze the technical quality of an audio track",
     description=(
         "Upload an audio track to receive a detailed technical quality report.\n\n"
         "**Metrics returned:**\n"
@@ -110,11 +110,11 @@ async def analyze_track_quality(
     file: UploadFile = File(
         ...,
         description=(
-            "Audio file to analyse (WAV, MP3, FLAC, OGG, M4A, AAC; max 100 MB)."
+            "Audio file to analyze (WAV, MP3, FLAC, OGG, M4A, AAC; max 100 MB)."
         ),
     ),
 ) -> TrackQualityAnalysisResponse:
-    """Analyse an uploaded audio file and return technical quality metrics.
+    """Analyze an uploaded audio file and return technical quality metrics.
 
     Feature-gated: requires ``TRACK_QUALITY_ANALYSIS=true``.
     """
