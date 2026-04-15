@@ -1179,7 +1179,8 @@ def _build_varied_section_audio(
 
     Applies section-type DSP:
     - Intro: Very gentle air-cut on the first bar only to ease in softly
-    - Verse: Clean repeat; no per-bar processing needed
+    - Verse: Slight LPF roll-off (-2 dB) for a warmer, less bright character
+    - Pre-hook: HPF removes sub rumble + presence boost creates tension
     - Hook/Drop: Clean repeat; the section-level +boost in _render_producer_arrangement
                  handles loudness — no per-bar overlay needed here
     - Breakdown/Bridge: Gentle warmth filter (cut extreme highs only) to thin energy
@@ -1198,6 +1199,18 @@ def _build_varied_section_audio(
         # giving the clear impression of "no drums yet" even on a stereo source.
         section_audio = section_audio.low_pass_filter(2200) - 4
         section_audio = section_audio.fade_in(min(len(section_audio), bar_duration_ms * 2))
+
+    elif section_type == "verse":
+        # Give verse a warmer, slightly rolled-off feel vs the hook's brightness
+        # so even on a single stereo source the two sections feel distinct.
+        section_audio = section_audio.low_pass_filter(8000) - 2
+
+    elif section_type in {"pre_hook", "buildup", "build_up", "build"}:
+        # Pre-hook: tighten up the low end (HPF removes some sub rumble) and add a
+        # subtle presence boost to create the "tension before the drop" feel.
+        section_audio = section_audio.high_pass_filter(140)
+        presence = section_audio.high_pass_filter(3200)
+        section_audio = section_audio.overlay(presence - 1, gain_during_overlay=-3)
 
     elif section_type in {"hook", "drop", "chorus"}:
         # Add a subtle presence boost so the hook sounds brighter and more
@@ -1902,11 +1915,12 @@ def _render_producer_arrangement(
                 section_audio = section_audio + eq_shift
             
             # Apply subtle stereo width variation for non-intro sections
-            if section_type not in {"intro", "outro"}:
+            if section_type not in {"intro", "outro"} and section_audio.channels == 2:
                 if instance_seed % 4 == 0:
                     # Slightly wider
-                    left = section_audio.split_to_mono()[0] + 1
-                    right = section_audio.split_to_mono()[1] + 1
+                    mono_channels = section_audio.split_to_mono()
+                    left = mono_channels[0] + 1
+                    right = mono_channels[1] + 1
                     section_audio = AudioSegment.from_mono_audiosegments(left, right)
                 elif instance_seed % 4 == 2:
                     # Slightly narrower (more mono)

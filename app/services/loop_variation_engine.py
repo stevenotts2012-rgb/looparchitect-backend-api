@@ -12,7 +12,7 @@ from pydub import AudioSegment
 logger = logging.getLogger(__name__)
 
 
-_VARIANT_NAMES = ("intro", "verse", "hook", "bridge", "outro")
+_VARIANT_NAMES = ("intro", "verse", "pre_hook", "hook", "bridge", "outro")
 
 
 def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
@@ -155,10 +155,10 @@ def generate_sub_variants(
         # Start with base variant
         sub_audio = base_variant
         
-        # Strategy 1: Unique 3-band EQ curve
-        low_gain = -4 + (random.random() * 8)    # -4dB to +4dB
-        mid_gain = -4 + (random.random() * 8)
-        high_gain = -4 + (random.random() * 8)
+        # Strategy 1: Unique 3-band EQ curve — wider range for more audible distinction
+        low_gain = -8 + (random.random() * 16)    # -8dB to +8dB
+        mid_gain = -8 + (random.random() * 16)
+        high_gain = -8 + (random.random() * 16)
         
         # Apply EQ bands
         if len(sub_audio) > 0:
@@ -250,9 +250,26 @@ def generate_loop_variations(
         gains={"drums": -6, "melody": -7, "bass": -1},
     )
     if verse.rms == 0:
-        verse = (loop_audio - 5).low_pass_filter(5000)
+        # No-stems fallback: noticeably stripped — heavier LPF and quieter so
+        # it contrasts clearly with the hook's brightness.
+        verse = (loop_audio - 6).low_pass_filter(4000)
     verse = _apply_transient_softening(verse)
     verse = _apply_silence_gaps(verse, bar_duration_ms=bar_duration_ms)
+
+    # Pre-hook: tension-building — bass-forward, slightly gated, no sparkle.
+    # Without stems, use HPF to remove sub-bass rumble and slight mid-forward
+    # character so it feels tighter / more expectant than the verse.
+    pre_hook = _mix_selected_stems(
+        stems,
+        active_stems=("bass", "drums", "percussion"),
+        target_ms=target_ms,
+        gains={"bass": 2, "drums": -1, "percussion": 0},
+    )
+    if pre_hook.rms == 0:
+        # No-stems fallback: remove deep sub and cap highs so it sounds edgier
+        # and more driving than the verse without being as full as the hook.
+        pre_hook = loop_audio.high_pass_filter(130).low_pass_filter(5500) - 2
+    pre_hook = _apply_silence_gaps(pre_hook, bar_duration_ms=bar_duration_ms, gap_ms=60)
 
     # Hook: full stems + louder drums + hi-hat density variation
     hook = _mix_selected_stems(
@@ -262,7 +279,11 @@ def generate_loop_variations(
         gains={"drums": 4, "bass": 1, "melody": 2, "vocal": 1},
     )
     if hook.rms == 0:
+        # No-stems fallback: brighter and louder — clear contrast from verse.
         hook = loop_audio + 4
+        # Add a high-frequency presence layer so the hook is audibly brighter.
+        presence = hook.high_pass_filter(2000)
+        hook = hook.overlay(presence + 1, gain_during_overlay=-3)
     hook = _apply_hat_density_variation(hook, bar_duration_ms=bar_duration_ms)
 
     # Bridge: remove bass + filtered melody + ambient sparse feel
@@ -293,32 +314,36 @@ def generate_loop_variations(
     base_variants = {
         "intro": intro,
         "verse": verse,
+        "pre_hook": pre_hook,
         "hook": hook,
         "bridge": bridge,
         "outro": outro,
     }
-    
-    # Generate sub-variants for repeatable section types
-    # Hook typically repeats 2-3 times, verse 2 times
+
+    # Generate sub-variants for repeatable section types.
+    # Hook typically repeats 2-3 times, verse 2 times, pre_hook 2 times.
     hook_sub_variants = generate_sub_variants(hook, "hook", count=3, bpm=bpm)
     verse_sub_variants = generate_sub_variants(verse, "verse", count=2, bpm=bpm)
-    
+    pre_hook_sub_variants = generate_sub_variants(pre_hook, "pre_hook", count=2, bpm=bpm)
+
     # Optional: Generate bridge sub-variants if bridge might repeat
     bridge_sub_variants = generate_sub_variants(bridge, "bridge", count=2, bpm=bpm)
-    
+
     # Combine base + sub-variants
     variants = {
         **base_variants,
-        **hook_sub_variants,   # Adds hook_A, hook_B, hook_C
-        **verse_sub_variants,  # Adds verse_A, verse_B
-        **bridge_sub_variants, # Adds bridge_A, bridge_B
+        **hook_sub_variants,       # Adds hook_A, hook_B, hook_C
+        **verse_sub_variants,      # Adds verse_A, verse_B
+        **pre_hook_sub_variants,   # Adds pre_hook_A, pre_hook_B
+        **bridge_sub_variants,     # Adds bridge_A, bridge_B
     }
-    
+
     # Update manifest to include sub-variant names
     all_variant_names = (
-        list(_VARIANT_NAMES) +  # intro, verse, hook, bridge, outro
+        list(_VARIANT_NAMES) +  # intro, verse, pre_hook, hook, bridge, outro
         list(hook_sub_variants.keys()) +
         list(verse_sub_variants.keys()) +
+        list(pre_hook_sub_variants.keys()) +
         list(bridge_sub_variants.keys())
     )
 
@@ -334,7 +359,7 @@ def generate_loop_variations(
     logger.info(
         "LoopVariationEngine generated %d variants (including %d sub-variants): %s (stems_used=%s)",
         len(variants),
-        len(hook_sub_variants) + len(verse_sub_variants) + len(bridge_sub_variants),
+        len(hook_sub_variants) + len(verse_sub_variants) + len(pre_hook_sub_variants) + len(bridge_sub_variants),
         all_variant_names,
         manifest["stems_used"],
     )
@@ -362,12 +387,14 @@ def assign_section_variants(sections: list[dict], manifest: dict | None) -> list
     sub_variants_enabled = manifest.get("sub_variants_enabled", False)
 
     def _base_variant_for_section(section_type: str) -> str:
-        """Determine base variant type (hook, verse, etc.)"""
+        """Determine base variant type (hook, verse, pre_hook, etc.)"""
         section_type = (section_type or "verse").strip().lower()
         if section_type in {"intro"}:
             return "intro"
         if section_type in {"hook", "chorus", "drop"}:
             return "hook"
+        if section_type in {"pre_hook", "buildup", "build_up", "build"}:
+            return "pre_hook"
         if section_type in {"bridge", "breakdown", "break"}:
             return "bridge"
         if section_type in {"outro"}:
