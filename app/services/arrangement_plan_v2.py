@@ -37,6 +37,7 @@ from app.services.arrangement_memory import ArrangementMemory, VARIATION_STRATEG
 from app.services.section_identity_engine import (
     select_roles_for_section,
     get_transition_events,
+    MIN_REPEAT_DISTINCTION_THRESHOLD,
     SECTION_IDENTITY_ENGINE_VERSION,
 )
 from app.services.source_quality import (
@@ -92,7 +93,6 @@ TRANSITION_TYPES = frozenset({
     "fx_hit",
     "mute_drop",
     "bass_drop",
-    "drum_fill",
     "vocal_chop",
     "arp_lift",
     "percussion_fill",
@@ -565,8 +565,6 @@ def validate_and_repair_plan(
             )
 
     # --- Repeated sections too similar ---
-    from app.services.section_identity_engine import MIN_REPEAT_DISTINCTION_THRESHOLD
-
     section_occurrences: dict[str, list[SectionPlan]] = {}
     for s in plan.sections:
         section_occurrences.setdefault(s.section_type, []).append(s)

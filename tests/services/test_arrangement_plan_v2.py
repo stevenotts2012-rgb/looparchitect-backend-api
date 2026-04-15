@@ -817,7 +817,7 @@ class TestRenderObservabilityV2:
         assert info["total_sections"] == len(STANDARD_STRUCTURE)
         assert "verse" in info["occurrence_counts"]
         assert "hook" in info["repeated_sections"], (
-            "hook should appear as repeated (3 times in STANDARD_STRUCTURE)"
+            "hook should appear as repeated (2 times in STANDARD_STRUCTURE)"
         )
 
     def test_empty_plan_returns_empty_info(self):
