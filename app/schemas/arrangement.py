@@ -405,6 +405,18 @@ class AudioArrangementGenerateResponse(BaseModel):
         description="Generated preview candidates. Save one explicitly to add to history.",
     )
 
+    # ---- Duration fields for the preview player ----
+    target_seconds: Optional[int] = Field(
+        default=None,
+        description="Requested arrangement duration in seconds (mirrors the request value). "
+                    "Use this to seed the audio player duration display before the render completes.",
+    )
+    bpm: Optional[float] = Field(
+        default=None,
+        description="Tempo of the source loop in BPM. Together with structure_preview bars this "
+                    "allows the frontend to derive per-section timestamps.",
+    )
+
     # ---- Phase 5: Producer intelligence fields (backward-compatible, all optional) ----
     producer_plan: Optional[ProducerPlanV2] = Field(
         default=None,
@@ -496,6 +508,12 @@ class ArrangementResponse(BaseModel):
     stems_zip_url: Optional[str] = None
     mastering_metadata: Optional[dict] = None
     arrangement_json: Optional[str] = Field(default=None, description="JSON timeline with sections")
+    # Duration fields — populated from the arrangement DB row so the preview player
+    # can show the expected length before/after render without an extra API call.
+    duration_seconds: Optional[int] = Field(
+        default=None,
+        description="Target duration in seconds (mirrors target_seconds from the generate request).",
+    )
     created_at: datetime
     updated_at: datetime
 

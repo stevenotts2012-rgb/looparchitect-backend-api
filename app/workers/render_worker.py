@@ -426,12 +426,41 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         "fallback_reasons": [],
                     }
 
+                # Build output_files so the polling endpoint returns a playable URL.
+                # Without this the frontend falls back to the streaming download endpoint
+                # which lacks Content-Length, causing the audio player to show 0:00/0:00.
+                output_files_for_job: list[OutputFile] = []
+                try:
+                    arr_output_key = arrangement_row.output_s3_key
+                    if arr_output_key:
+                        from app.services.storage import storage as _storage
+                        arr_signed_url = _storage.create_presigned_get_url(
+                            key=arr_output_key,
+                            expires_seconds=3600,
+                            download_filename=f"arrangement_{arrangement_id}.wav",
+                        )
+                        output_files_for_job = [
+                            OutputFile(
+                                name=f"arrangement_{arrangement_id}.wav",
+                                s3_key=arr_output_key,
+                                content_type="audio/wav",
+                                signed_url=arr_signed_url,
+                            )
+                        ]
+                except Exception as _url_exc:
+                    logger.warning(
+                        "Could not build output_files for job %s: %s — player will use download fallback",
+                        app_job_id,
+                        _url_exc,
+                    )
+
                 update_job_status(
                     db,
                     app_job_id,
                     "succeeded",
                     progress=100.0,
                     progress_message="Arrangement job completed",
+                    output_files=output_files_for_job or None,
                     render_metadata=render_metadata,
                 )
                 logger.info(
