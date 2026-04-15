@@ -367,7 +367,7 @@ export default function GeneratePage() {
     const secs = generateResponse?.target_seconds;
     if (!secs) return null;
     const m = Math.floor(secs / 60);
-    const s = secs % 60;
+    const s = Math.floor(secs % 60);
     return `${m}:${String(s).padStart(2, "0")}`;
   })();
 
