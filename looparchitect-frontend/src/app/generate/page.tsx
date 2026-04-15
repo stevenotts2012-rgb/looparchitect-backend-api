@@ -337,6 +337,10 @@ export default function GeneratePage() {
    * Audio preview URL — prefer the presigned URL from output_files (works for
    * both S3 and local storage); fall back to the streaming download endpoint
    * served directly from the Railway backend.
+   *
+   * The backend now populates output_files[0].signed_url on job completion so
+   * the player receives a URL with proper Content-Length and Accept-Ranges
+   * headers, enabling the browser to show the correct duration immediately.
    */
   const audioSrc: string | null = (() => {
     if (!isCompleted || !generateResponse?.arrangement_id) return null;
@@ -349,8 +353,22 @@ export default function GeneratePage() {
         ? signedUrl
         : `${BACKEND_BASE_URL}${signedUrl}`;
     }
-    // Fallback: stream directly from backend (bypasses Vercel limit)
+    // Fallback: stream directly from backend (bypasses Vercel limit).
+    // The backend now includes Content-Length and Accept-Ranges on this
+    // endpoint so the audio player can determine the total duration.
     return `${BACKEND_BASE_URL}/api/v1/arrangements/${generateResponse.arrangement_id}/download`;
+  })();
+
+  /**
+   * Expected duration label derived from the generate response.
+   * Shown as a hint in the UI while the render job is in progress.
+   */
+  const expectedDurationLabel: string | null = (() => {
+    const secs = generateResponse?.target_seconds;
+    if (!secs) return null;
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
   })();
 
   // ---------------------------------------------------------------------------
@@ -473,6 +491,12 @@ export default function GeneratePage() {
                 </div>
               )}
 
+              {isInProgress && expectedDurationLabel && (
+                <p className="text-sm text-gray-500">
+                  Expected duration: {expectedDurationLabel}
+                </p>
+              )}
+
               {jobStatus.progress_message && (
                 <p className="text-sm text-gray-600">
                   {jobStatus.progress_message}
@@ -497,7 +521,9 @@ export default function GeneratePage() {
           {/* Audio preview */}
           {audioSrc && (
             <div>
-              <p className="text-sm font-medium mb-1">Preview</p>
+              <p className="text-sm font-medium mb-1">
+                Preview{expectedDurationLabel ? ` (${expectedDurationLabel})` : ""}
+              </p>
               <audio
                 controls
                 src={audioSrc}

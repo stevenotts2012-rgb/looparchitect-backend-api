@@ -146,6 +146,18 @@ export interface GenerateArrangementResponse {
     render_job_id: string | null;
   }[];
   structure_preview: unknown[];
+  /**
+   * Target duration in seconds (mirrors the generate request's target_seconds).
+   * Present in all responses so the preview player can show an expected duration
+   * immediately — before the render job completes and returns an audioUrl.
+   */
+  target_seconds: number | null;
+  /**
+   * Tempo of the source loop in BPM.
+   * Combined with structure_preview bar counts this allows per-section timestamps
+   * to be calculated client-side.
+   */
+  bpm: number | null;
 }
 
 /**

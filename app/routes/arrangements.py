@@ -262,6 +262,11 @@ def _build_arrangement_response(arrangement: Arrangement) -> "ArrangementRespons
     """
     response = ArrangementResponse.from_orm(arrangement)
 
+    # Populate duration_seconds from the arrangement's target_seconds column so the
+    # frontend player can show expected length without a separate API call.
+    if arrangement.target_seconds is not None:
+        response = response.model_copy(update={"duration_seconds": arrangement.target_seconds})
+
     if arrangement.status == "done" and arrangement.output_s3_key:
         try:
             fresh_url = storage.create_presigned_get_url(
@@ -1179,7 +1184,7 @@ async def generate_arrangement(
                     or stored.get("guidance_mode", "structure_and_energy")
                 )
                 raw_strength = (
-                    request.reference_adaptation_strength_usedength
+                    request.reference_adaptation_strength
                     or stored.get("adaptation_strength", "medium")
                 )
                 try:
@@ -1467,6 +1472,10 @@ async def generate_arrangement(
         style_profile=json.loads(style_profile_json) if style_profile_json else None,
         structure_preview=structure_preview,
         candidates=candidates,
+        # Duration fields: surface target_seconds and bpm so the frontend preview
+        # player can show the expected duration without an extra API call.
+        target_seconds=effective_target_seconds,
+        bpm=float(loop.bpm or loop.tempo or 120.0),
         # Phase 5: backward-compatible producer intelligence fields
         producer_plan=producer_plan_v2,
         producer_notes=producer_notes_v2,
@@ -1629,7 +1638,8 @@ def download_arrangement(
     headers = {
         "Content-Disposition": f'attachment; filename="{download_filename}"',
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Disposition",
+        "Access-Control-Expose-Headers": "Content-Disposition, Content-Length, Accept-Ranges",
+        "Accept-Ranges": "bytes",
     }
 
     referer = request.headers.get("referer", "")
@@ -1644,12 +1654,15 @@ def download_arrangement(
                 detail="Arrangement file not found in local storage",
             )
 
+        file_size = local_path.stat().st_size
+        local_headers = {**headers, "Content-Length": str(file_size)}
+
         if is_swagger_request:
             return FileResponse(
                 path=str(local_path),
                 media_type=content_type,
                 filename=download_filename,
-                headers=headers,
+                headers=local_headers,
             )
 
         def iter_local_stream():
@@ -1663,7 +1676,7 @@ def download_arrangement(
         return StreamingResponse(
             iter_local_stream(),
             media_type=content_type,
-            headers=headers,
+            headers=local_headers,
         )
 
     if storage_backend != "s3":
@@ -1717,6 +1730,11 @@ def download_arrangement(
 
     content_type = s3_object.get("ContentType") or content_type
     body = s3_object["Body"]
+    # Forward Content-Length from S3 so the browser audio player can show duration.
+    s3_content_length = s3_object.get("ContentLength")
+    s3_headers = dict(headers)
+    if s3_content_length is not None:
+        s3_headers["Content-Length"] = str(s3_content_length)
 
     if is_swagger_request:
         suffix = os.path.splitext(download_filename)[1] or ".wav"
@@ -1730,7 +1748,7 @@ def download_arrangement(
             path=temp_path,
             media_type=content_type,
             filename=download_filename,
-            headers=headers,
+            headers=s3_headers,
             background=BackgroundTask(lambda: os.remove(temp_path) if os.path.exists(temp_path) else None),
         )
 
@@ -1745,7 +1763,7 @@ def download_arrangement(
     return StreamingResponse(
         iter_s3_stream(),
         media_type=content_type,
-        headers=headers,
+        headers=s3_headers,
     )
 
 @router.get(
