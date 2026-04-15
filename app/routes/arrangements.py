@@ -11,6 +11,7 @@ import json
 import asyncio
 import io
 import threading
+from dataclasses import asdict as dataclass_asdict
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -711,7 +712,7 @@ async def generate_arrangement(
     # Holds params needed to regenerate ProducerArrangement per candidate with a distinct
     # structure template.  Populated by the LLM-style and metadata-analysis paths below;
     # used inside the variation loop to produce structurally different arrangements.
-    _producer_gen_context: dict | None = None
+    producer_gen_context: dict | None = None
     correlation_id = getattr(http_request.state, "correlation_id", None) or http_request.headers.get("x-correlation-id")
 
     effective_style_text = (request.style_text_input or "").strip()
@@ -832,7 +833,7 @@ async def generate_arrangement(
 
                     # Defer ProducerEngine.generate() to the variation loop so each
                     # candidate receives a structurally distinct arrangement template.
-                    _producer_gen_context = {
+                    producer_gen_context = {
                         "genre": genre_for_producer,
                         "style_profile": style_profile,
                         "extra_json_keys": {},
@@ -935,7 +936,7 @@ async def generate_arrangement(
 
                     # Defer ProducerEngine.generate() to the variation loop so each
                     # candidate receives a structurally distinct arrangement template.
-                    _producer_gen_context = {
+                    producer_gen_context = {
                         "genre": detected_genre,
                         "style_profile": auto_style_profile,
                         "extra_json_keys": {
@@ -1329,39 +1330,38 @@ async def generate_arrangement(
         # template so each option presented to the user is structurally different
         # (not just a seed variation of the same section layout).
         candidate_producer_json = producer_arrangement_json
-        if _producer_gen_context is not None and producer_arrangement_json is None:
-            _template = _CANDIDATE_TEMPLATES[variation_index % len(_CANDIDATE_TEMPLATES)]
+        if producer_gen_context is not None and producer_arrangement_json is None:
+            candidate_template = _CANDIDATE_TEMPLATES[variation_index % len(_CANDIDATE_TEMPLATES)]
             try:
-                from dataclasses import asdict as _asdict
-                _pa = ProducerEngine.generate(
+                candidate_arrangement = ProducerEngine.generate(
                     target_seconds=effective_target_seconds,
                     tempo=float(loop.bpm or loop.tempo or 120.0),
-                    genre=_producer_gen_context["genre"],
-                    style_profile=_producer_gen_context.get("style_profile"),
-                    structure_template=_template,
+                    genre=producer_gen_context["genre"],
+                    style_profile=producer_gen_context.get("style_profile"),
+                    structure_template=candidate_template,
                 )
                 candidate_producer_json = json.dumps(
                     {
                         "version": "2.0",
-                        "producer_arrangement": _asdict(_pa),
-                        "structure_template": _template,
+                        "producer_arrangement": dataclass_asdict(candidate_arrangement),
+                        "structure_template": candidate_template,
                         "correlation_id": correlation_id,
-                        **_producer_gen_context.get("extra_json_keys", {}),
+                        **producer_gen_context.get("extra_json_keys", {}),
                     },
                     default=str,
                 )
                 logger.info(
                     "Generated candidate %d with template=%s sections=%d",
                     variation_index,
-                    _template,
-                    len(_pa.sections),
+                    candidate_template,
+                    len(candidate_arrangement.sections),
                 )
-            except Exception as _pg_err:
+            except Exception as candidate_gen_err:
                 logger.warning(
                     "Per-candidate ProducerEngine generation failed (index=%d template=%s): %s",
                     variation_index,
-                    _template,
-                    _pg_err,
+                    candidate_template,
+                    candidate_gen_err,
                     exc_info=True,
                 )
                 # candidate_producer_json stays None — renderer will fall back to style_sections
