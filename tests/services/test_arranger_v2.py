@@ -20,6 +20,7 @@ from app.services.arranger_v2 import (
     ArrangementValidationError,
     ArrangerState,
     HOOK_RISER_TRANSITIONS,
+    SECTION_TYPES,
     RoleValidationError,
     SectionPlan,
     build_arrangement_plan,
@@ -631,4 +632,118 @@ class TestRenderPlanConversion:
         assert len(transition_events) > 0, (
             "No riser/transition events found in render_plan events. "
             "Hooks should have riser events."
+        )
+
+
+# ===========================================================================
+# 10. All sections have loop references after attach_loops_to_sections
+# ===========================================================================
+
+class TestLoopReferences:
+    """Every section in the final render plan must carry loop variation references.
+
+    This test exercises the full pipeline:
+      build_arrangement_plan → to_render_plan → attach_loops_to_sections
+    and verifies that every section ends up with a populated ``loop_variations``
+    list so the render executor has explicit loop assignments to work with.
+    """
+
+    def _make_manifest(self, render_plan: dict) -> dict:
+        """Build a minimal loop-variation manifest for the given render_plan sections.
+
+        Includes one named variant for every canonical section type plus any
+        section types actually present in the plan.  Uses ``SECTION_TYPES`` as
+        the authoritative source of valid section type names so the manifest
+        stays in sync with the arranger_v2 type system.
+        """
+        import tempfile
+        import os
+
+        sections = render_plan.get("sections", [])
+        section_types = {s.get("type", "verse") for s in sections}
+        names = sorted(SECTION_TYPES | section_types)
+        tmp = tempfile.gettempdir()
+        return {
+            "active": True,
+            "count": len(names),
+            "names": names,
+            "files": {n: os.path.join(tmp, f"{n}.wav") for n in names},
+            "stems_used": False,
+            "sub_variants_enabled": False,
+        }
+
+    def test_all_sections_have_loop_references(self):
+        """Every section must have a non-empty loop_variations list after attachment."""
+        from app.services.arrangement_jobs import attach_loops_to_sections
+
+        plan = build_arrangement_plan(
+            available_roles=RICH_ROLES,
+            target_total_bars=64,
+        )
+        render_plan = plan.to_render_plan(arrangement_id=1)
+        manifest = self._make_manifest(render_plan)
+
+        attach_loops_to_sections(render_plan, manifest)
+
+        for section in render_plan["sections"]:
+            assert "loop_variations" in section, (
+                f"Section {section.get('name')!r} is missing loop_variations"
+            )
+            assert len(section["loop_variations"]) > 0, (
+                f"Section {section.get('name')!r} has an empty loop_variations list"
+            )
+
+    def test_loop_variant_key_is_set_on_every_section(self):
+        """Every section must have a loop_variant string assigned."""
+        from app.services.arrangement_jobs import attach_loops_to_sections
+
+        plan = build_arrangement_plan(
+            available_roles=RICH_ROLES,
+            target_total_bars=64,
+        )
+        render_plan = plan.to_render_plan(arrangement_id=1)
+        manifest = self._make_manifest(render_plan)
+
+        attach_loops_to_sections(render_plan, manifest)
+
+        for section in render_plan["sections"]:
+            loop_variant = section.get("loop_variant")
+            assert loop_variant, (
+                f"Section {section.get('name')!r} has no loop_variant assigned"
+            )
+            assert isinstance(loop_variant, str), (
+                f"Section {section.get('name')!r} loop_variant is not a string: {loop_variant!r}"
+            )
+
+    def test_attach_loops_raises_on_empty_manifest(self):
+        """attach_loops_to_sections must raise if the manifest has no variant names."""
+        from app.services.arrangement_jobs import attach_loops_to_sections
+
+        plan = build_arrangement_plan(
+            available_roles=MINIMAL_ROLES,
+            target_total_bars=32,
+        )
+        render_plan = plan.to_render_plan(arrangement_id=1)
+        empty_manifest = {"active": False, "count": 0, "names": [], "files": {}, "stems_used": False}
+
+        with pytest.raises(ValueError, match="no variant names"):
+            attach_loops_to_sections(render_plan, empty_manifest)
+
+    def test_loop_structure_matches_section_count(self):
+        """The number of sections with loop_variations must equal total plan sections."""
+        from app.services.arrangement_jobs import attach_loops_to_sections
+
+        plan = build_arrangement_plan(
+            available_roles=RICH_ROLES,
+            target_total_bars=64,
+        )
+        render_plan = plan.to_render_plan(arrangement_id=1)
+        manifest = self._make_manifest(render_plan)
+
+        attach_loops_to_sections(render_plan, manifest)
+
+        sections_with_loops = [s for s in render_plan["sections"] if s.get("loop_variations")]
+        assert len(sections_with_loops) == len(plan.sections), (
+            f"Expected {len(plan.sections)} sections with loop_variations, "
+            f"got {len(sections_with_loops)}"
         )
