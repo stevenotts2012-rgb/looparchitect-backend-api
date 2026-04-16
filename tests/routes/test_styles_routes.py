@@ -69,7 +69,7 @@ def test_validate_style_happy_path(client):
     assert "message" in data
 
 
-def test_validate_style_normalised_profile_matches_input(client):
+def test_validate_style_normalized_profile_matches_input(client):
     response = client.post("/api/v1/validate", json=VALID_PROFILE_PAYLOAD)
     profile = response.json()["normalized_profile"]
     assert profile["intent"] == "dark trap beat with heavy 808s"

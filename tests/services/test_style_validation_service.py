@@ -151,7 +151,7 @@ def test_out_of_range_confidence_is_clamped_with_warning(svc):
 
 
 # ---------------------------------------------------------------------------
-# Texture case normalisation
+# Texture case normalization
 # ---------------------------------------------------------------------------
 
 def test_texture_is_lowercased(svc):
