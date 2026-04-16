@@ -2476,6 +2476,8 @@ def _build_arranger_v2_render_plan(
     available_stem_keys: list[str] | None,
     loop_variation_manifest: dict | None,
     genre_hint: str | None,
+    key: str | None = None,
+    source_type: str = "loop",
 ) -> dict:
     """Build a render_plan using the Arranger V2 deterministic planning engine.
 
@@ -2542,7 +2544,9 @@ def _build_arranger_v2_render_plan(
         available_roles=available_roles,
         target_total_bars=target_total_bars,
         bpm=bpm,
+        key=key if key is not None else "C",
         source_quality_mode=source_quality_mode,
+        source_type=source_type,
     )
 
     try:
@@ -3131,6 +3135,8 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 available_stem_keys=list(loaded_stems.keys()) if loaded_stems else None,
                 loop_variation_manifest=loop_variation_manifest,
                 genre_hint=(arrangement.genre or loop.genre),
+                key=(loop.musical_key if loop.musical_key is not None else (loop.key if loop.key is not None else "C")),
+                source_type="full" if (loaded_stems and len(loaded_stems) > 1) else "loop",
             )
             log_feature_event(
                 logger,

@@ -169,9 +169,9 @@ class Settings(BaseSettings):
     #   4. Assign transitions (transition_engine.py)
     #   5. Validate plan (validator.py)
     #   6. Pass plan to render_executor — renderer makes NO arrangement decisions.
-    # Enable with ARRANGER_V2=true.
+    # Disable with ARRANGER_V2=false to revert to legacy planner.
     feature_arranger_v2: bool = Field(
-        default=False,
+        default=True,
         validation_alias="ARRANGER_V2",
     )
 
