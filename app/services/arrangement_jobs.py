@@ -2897,6 +2897,88 @@ def _load_audio_segment_from_wav_bytes(wav_bytes: bytes) -> AudioSegment:
     raise ValueError(f"Cannot decode audio file in any supported format. File signature: {sig}. Errors: {error_details}")
 
 
+def attach_loops_to_sections(render_plan: dict, loop_variation_manifest: dict | None) -> None:
+    """Attach loop_variations to every section in the render plan.
+
+    Ensures each section references specific loop variants before rendering.
+    For sections that are missing a ``loop_variant`` assignment (e.g. sections
+    produced by the arranger_v2 path which skips ``assign_section_variants``),
+    variant assignment is performed inline using the manifest.
+
+    This function mutates *render_plan* in-place.
+
+    Args:
+        render_plan: The render plan dict produced by any plan builder.
+        loop_variation_manifest: Manifest returned by
+            ``generate_loop_variations``.
+
+    Raises:
+        ValueError: If ``render_plan`` has no sections, the manifest has no
+            variant names, or any section cannot be assigned valid
+            loop_variations after all fallback attempts.
+    """
+    sections = render_plan.get("sections") or []
+    if not sections:
+        raise ValueError("render_plan has no sections")
+
+    manifest = loop_variation_manifest or {}
+    available_names: list[str] = manifest.get("names") or []
+
+    if not available_names:
+        raise ValueError(
+            "loop_variation_manifest has no variant names — cannot attach loop variations to sections"
+        )
+
+    # Assign loop_variant / loop_variant_file to any sections that are missing
+    # them.  This occurs when arranger_v2 builds the plan without calling
+    # assign_section_variants (it does not have access to the manifest).
+    needs_assignment = any(not section.get("loop_variant") for section in sections)
+    if needs_assignment:
+        assigned = assign_section_variants(sections, manifest)
+        render_plan["sections"] = assigned
+        sections = render_plan["sections"]
+
+    files: dict[str, str] = manifest.get("files") or {}
+
+    # Build the loop_variations list on every section.
+    for section in sections:
+        section_name = section.get("name") or section.get("type") or "unknown"
+        loop_variant = section.get("loop_variant")
+        if not loop_variant:
+            raise ValueError(f"No stems for section: {section_name}")
+
+        # Primary variant plus any sub-variants that share the same base name
+        # (e.g. "hook" → ["hook_A", "hook_B", "hook_C"]).
+        base_variant = section.get("base_variant") or loop_variant
+        sub_variants = sorted(
+            name for name in available_names if name.startswith(f"{base_variant}_")
+        )
+        section["loop_variations"] = [loop_variant] + sub_variants
+
+        if not section["loop_variations"]:
+            raise ValueError(f"Missing loop_variations for {section_name}")
+
+    # Pre-render section validation — fail early rather than at render time.
+    for section in sections:
+        section_name = section.get("name") or section.get("type") or "unknown"
+        if "loop_variations" not in section:
+            raise ValueError(
+                f"render_plan missing loop variation references on section: {section_name}"
+            )
+        if len(section["loop_variations"]) == 0:
+            raise ValueError(
+                f"Empty loop_variations list on section: {section_name}"
+            )
+
+    # Debug logging — one line per section so render issues are traceable.
+    for section in sections:
+        logger.debug(
+            "Section loop binding: name=%s loop_variations=%s",
+            section.get("name"),
+            section.get("loop_variations"),
+        )
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -3160,6 +3242,11 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 arrangement_preset=arrangement_preset,
                 available_stem_keys=list(loaded_stems.keys()) if loaded_stems else None,
             )
+
+        # Ensure every section has loop_variations before persisting or validating.
+        # This is required for both the arranger_v2 path (which does not call
+        # assign_section_variants) and as a safety net for the pre-render-plan path.
+        attach_loops_to_sections(render_plan, loop_variation_manifest)
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
