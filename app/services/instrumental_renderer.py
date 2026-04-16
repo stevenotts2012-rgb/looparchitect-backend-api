@@ -78,8 +78,13 @@ def render_and_export_instrumental(
     section_ms = target_ms // len(sections)
 
     final_audio = AudioSegment.empty()
+    section_crossfade_ms = 60  # Short crossfade to smooth transitions between sections
     for _ in sections:
-        final_audio += _repeat_to_duration(loop_audio, section_ms)
+        seg = _repeat_to_duration(loop_audio, section_ms)
+        if len(final_audio) == 0:
+            final_audio = seg
+        else:
+            final_audio = final_audio.append(seg, crossfade=section_crossfade_ms)
 
     # Trim to exact target length in case of rounding
     final_audio = final_audio[:target_ms]
