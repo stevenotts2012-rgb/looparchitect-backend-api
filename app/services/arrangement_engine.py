@@ -213,6 +213,7 @@ def render_phase_b_arrangement(
 
     arranged = AudioSegment.silent(duration=0)
     total_sections = len(sections)
+    section_crossfade_ms = 60  # Short crossfade to smooth level/EQ transitions between sections
     for section_index, section in enumerate(sections):
         section_ms = section["bars"] * bar_duration_ms
         section_audio = _repeat_audio_to_duration(loop_audio, section_ms)
@@ -240,7 +241,11 @@ def render_phase_b_arrangement(
             genre=genre_profile,
             style_params=style_params,
         )
-        arranged += section_audio
+        # Use a short crossfade between sections to prevent abrupt level/EQ jumps
+        if len(arranged) == 0:
+            arranged = section_audio
+        else:
+            arranged = arranged.append(section_audio, crossfade=section_crossfade_ms)
 
     timeline_json = _generate_phase_b_timeline_json(
         sections,
@@ -765,8 +770,8 @@ def _add_dropouts(
     # Calculate beat duration in ms
     beat_duration_ms = (60 / bpm) * 1000
 
-    # High intensity: dropouts every 4 beats, 0.5 beat duration
-    # Medium intensity: dropouts every 8 beats, 0.25 beat duration
+    # High intensity: dips every 4 beats, 0.5 beat duration
+    # Medium intensity: dips every 8 beats, 0.25 beat duration
     if intensity == "high":
         interval_ms = beat_duration_ms * 4
         dropout_duration_ms = beat_duration_ms * 0.5
@@ -776,10 +781,7 @@ def _add_dropouts(
 
     dropout_duration_ms = int(dropout_duration_ms)
 
-    # Build silence for dropouts
-    silence = AudioSegment.silent(duration=dropout_duration_ms)
-
-    # Apply dropouts at intervals
+    # Apply smooth volume dips (fade out → attenuate → fade in) instead of hard silence
     result = audio
     position = int(interval_ms)
     dropout_count = 0
@@ -787,8 +789,12 @@ def _add_dropouts(
     while position < target_ms:
         if position + dropout_duration_ms <= target_ms:
             before = result[:position]
+            dip_audio = result[position : position + dropout_duration_ms]
             after = result[position + dropout_duration_ms :]
-            result = before + silence + after
+            # Fade out the first half and fade in the second half, then attenuate
+            fade_duration_ms = max(1, len(dip_audio) // 2)
+            dip_audio = dip_audio.fade_out(fade_duration_ms).fade_in(fade_duration_ms) - 14
+            result = before + dip_audio + after
             dropout_count += 1
             position += int(interval_ms)
         else:
@@ -830,8 +836,8 @@ def _add_gain_variations(
         bar_end = min(int(position + bar_duration_ms), target_ms)
 
         if bar_end > position:
-            # Random gain between -2dB and +2dB
-            gain_db = np.random.uniform(-2, 2)
+            # Gentle gain variation ±0.75 dB to maintain dynamics without jarring jumps
+            gain_db = np.random.uniform(-0.75, 0.75)
             gain_factor = 10 ** (gain_db / 20)
 
             before = result[:position]
