@@ -160,6 +160,21 @@ class Settings(BaseSettings):
         validation_alias="ARRANGEMENT_TRUTH_OBSERVABILITY_V2",
     )
 
+    # Arranger V2 — fully deterministic, stateful, musically coherent arrangement
+    # engine with isolated planning layer (arranger_v2/ module).
+    # Replaces the loosely-structured stem selection with a deterministic pipeline:
+    #   1. Build ArrangementPlan (planner.py)
+    #   2. Select stems per section (density_engine.py)
+    #   3. Apply variation strategies (variation_engine.py)
+    #   4. Assign transitions (transition_engine.py)
+    #   5. Validate plan (validator.py)
+    #   6. Pass plan to render_executor — renderer makes NO arrangement decisions.
+    # Enable with ARRANGER_V2=true.
+    feature_arranger_v2: bool = Field(
+        default=False,
+        validation_alias="ARRANGER_V2",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
@@ -222,6 +237,7 @@ class Settings(BaseSettings):
         "feature_arrangement_transitions_v2",
         "feature_arrangement_truth_observability_v2",
         "feature_track_quality_analysis",
+        "feature_arranger_v2",
         mode="before",
     )
     @classmethod

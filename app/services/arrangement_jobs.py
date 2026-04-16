@@ -2468,6 +2468,114 @@ def _build_render_plan_artifact(
     }
 
 
+def _build_arranger_v2_render_plan(
+    arrangement_id: int,
+    bpm: float,
+    target_seconds: int,
+    stem_metadata: dict | None,
+    available_stem_keys: list[str] | None,
+    loop_variation_manifest: dict | None,
+    genre_hint: str | None,
+) -> dict:
+    """Build a render_plan using the Arranger V2 deterministic planning engine.
+
+    This function:
+    1. Resolves available roles from stem metadata or stem keys.
+    2. Builds an ArrangementPlan via arranger_v2.planner.
+    3. Validates the plan via arranger_v2.validator (raises on hard failures).
+    4. Converts the plan to the render_plan dict format expected by render_executor.
+
+    Raises:
+        ArrangementValidationError: If the plan fails pre-render validation.
+    """
+    from app.services.arranger_v2 import (
+        build_arrangement_plan,
+        validate_or_raise,
+        get_valid_role_strings,
+        ArrangementValidationError,
+    )
+
+    # Resolve available roles.
+    available_roles: list[str] = []
+    if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+        raw_roles = (
+            stem_metadata.get("roles_detected")
+            or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+        )
+        available_roles = get_valid_role_strings([str(r).strip().lower() for r in raw_roles])
+    elif available_stem_keys:
+        available_roles = get_valid_role_strings([str(k).strip().lower() for k in available_stem_keys])
+
+    if not available_roles:
+        # No stems available — fall back to a single full_mix role.
+        available_roles = ["full_mix"]
+        logger.info("arranger_v2: no roles resolved, using full_mix fallback")
+
+    # Compute target bar count.
+    bar_duration_seconds = (60.0 / bpm) * 4.0
+    target_total_bars = max(8, int(round(target_seconds / bar_duration_seconds)))
+
+    # Determine source quality mode.
+    source_quality_mode = "true_stems"
+    if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+        sep_method = str(
+            (stem_metadata.get("method") or stem_metadata.get("backend") or "")
+        ).strip().lower()
+        if sep_method in {"demucs", "spleeter", "builtin", "ai_separated", "ai"}:
+            source_quality_mode = "ai_separated"
+        elif available_stem_keys and not sep_method:
+            source_quality_mode = "true_stems"
+        elif loop_variation_manifest and loop_variation_manifest.get("stems_used"):
+            source_quality_mode = "zip_stems"
+    elif not available_stem_keys:
+        source_quality_mode = "stereo_fallback"
+
+    logger.info(
+        "arranger_v2: building plan — roles=%s total_bars=%d quality=%s bpm=%.1f",
+        available_roles,
+        target_total_bars,
+        source_quality_mode,
+        bpm,
+    )
+
+    plan = build_arrangement_plan(
+        available_roles=available_roles,
+        target_total_bars=target_total_bars,
+        bpm=bpm,
+        source_quality_mode=source_quality_mode,
+    )
+
+    try:
+        validate_or_raise(plan)
+    except ArrangementValidationError as val_err:
+        logger.error(
+            "arranger_v2: plan validation FAILED — %s. Render will not proceed.",
+            val_err,
+        )
+        raise
+
+    render_plan = plan.to_render_plan(arrangement_id=arrangement_id)
+
+    # Merge in loop variations and genre hint.
+    render_plan["loop_variations"] = loop_variation_manifest or {
+        "active": False, "count": 0, "names": [], "files": {}, "stems_used": False,
+    }
+    render_plan["render_profile"]["genre_profile"] = genre_hint or "generic"
+    render_plan["render_profile"]["stem_separation"] = stem_metadata or {
+        "enabled": False, "succeeded": False,
+    }
+    render_plan["sections_count"] = len(render_plan.get("sections", []))
+    render_plan["events_count"] = len(render_plan.get("events", []))
+
+    logger.info(
+        "arranger_v2: plan built — sections=%d events=%d total_bars=%d",
+        render_plan["sections_count"],
+        render_plan["events_count"],
+        plan.total_bars,
+    )
+    return render_plan
+
+
 def _build_pre_render_plan(
     arrangement_id: int,
     bpm: float,
@@ -3008,19 +3116,45 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             bpm=bpm,
         )
 
-        # Build render plan AFTER variation generation so sections reference loop variants.
-        render_plan = _build_pre_render_plan(
-            arrangement_id=arrangement_id,
-            bpm=bpm,
-            target_seconds=target_seconds,
-            producer_arrangement=producer_arrangement,
-            style_sections=style_sections,
-            genre_hint=(arrangement.genre or loop.genre),
-            stem_metadata=stem_metadata,
-            loop_variation_manifest=loop_variation_manifest,
-            arrangement_preset=arrangement_preset,
-            available_stem_keys=list(loaded_stems.keys()) if loaded_stems else None,
-        )
+        # ====================================================================
+        # ARRANGER V2: deterministic, stateful arrangement planning.
+        # When the flag is enabled, the new planning layer builds the full
+        # ArrangementPlan before any rendering.  The renderer honours the
+        # plan and makes NO arrangement decisions of its own.
+        # ====================================================================
+        if settings.feature_arranger_v2:
+            render_plan = _build_arranger_v2_render_plan(
+                arrangement_id=arrangement_id,
+                bpm=bpm,
+                target_seconds=target_seconds,
+                stem_metadata=stem_metadata,
+                available_stem_keys=list(loaded_stems.keys()) if loaded_stems else None,
+                loop_variation_manifest=loop_variation_manifest,
+                genre_hint=(arrangement.genre or loop.genre),
+            )
+            log_feature_event(
+                logger,
+                event="arranger_v2_plan_built",
+                correlation_id=correlation_id,
+                arrangement_id=arrangement_id,
+                sections_count=render_plan.get("sections_count", 0),
+                events_count=render_plan.get("events_count", 0),
+            )
+        else:
+            # Build render plan AFTER variation generation so sections reference loop variants.
+            render_plan = _build_pre_render_plan(
+                arrangement_id=arrangement_id,
+                bpm=bpm,
+                target_seconds=target_seconds,
+                producer_arrangement=producer_arrangement,
+                style_sections=style_sections,
+                genre_hint=(arrangement.genre or loop.genre),
+                stem_metadata=stem_metadata,
+                loop_variation_manifest=loop_variation_manifest,
+                arrangement_preset=arrangement_preset,
+                available_stem_keys=list(loaded_stems.keys()) if loaded_stems else None,
+            )
+
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
 
