@@ -2967,13 +2967,25 @@ def attach_loops_to_sections(render_plan: dict, loop_variation_manifest: dict | 
                 f"Empty loop_variations list on section: {section_name}"
             )
 
-    # Debug logging — one line per section so render issues are traceable.
+    # INFO-level logging — one line per section so loop assignments are visible in
+    # production logs and can be correlated with any renderer failures.
     for section in sections:
-        logger.debug(
-            "Section loop binding: name=%s loop_variations=%s",
+        logger.info(
+            "section_loop_binding: name=%s type=%s loop_variant=%s loop_variations=%s",
             section.get("name"),
+            section.get("type"),
+            section.get("loop_variant"),
             section.get("loop_variations"),
         )
+
+    bound_variants = sorted(
+        {str(s.get("loop_variant") or "") for s in sections if s.get("loop_variant")}
+    )
+    logger.info(
+        "attach_loops_to_sections complete: %d sections bound, unique variants assigned: %s",
+        len(sections),
+        bound_variants,
+    )
 
 
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
