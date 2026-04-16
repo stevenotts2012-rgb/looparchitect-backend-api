@@ -2558,6 +2558,25 @@ def _build_arranger_v2_render_plan(
         )
         raise
 
+    logger.info(
+        "arranger_v2: plan validation PASSED — sections=%d total_bars=%d",
+        len(plan.sections),
+        plan.total_bars,
+    )
+
+    for sp in plan.sections:
+        logger.info(
+            "arranger_v2: section name=%r type=%s occurrence=%d "
+            "roles=%s transition_in=%s transition_out=%s energy=%d",
+            sp.name,
+            sp.section_type,
+            sp.occurrence,
+            sp.active_roles,
+            sp.transition_in,
+            sp.transition_out,
+            sp.target_energy,
+        )
+
     render_plan = plan.to_render_plan(arrangement_id=arrangement_id)
 
     # Merge in loop variations and genre hint.
