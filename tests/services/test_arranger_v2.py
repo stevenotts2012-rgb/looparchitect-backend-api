@@ -320,6 +320,90 @@ class TestValidator:
         assert not result.valid, "Hook with no transition should fail validation"
         assert any("riser" in e.lower() or "transition" in e.lower() for e in result.errors)
 
+    def test_non_hook_missing_transition_fails(self):
+        """Any non-first section with no transition_in must produce a hard failure."""
+        sections = [
+            SectionPlan(
+                name="Intro",
+                section_type="intro",
+                occurrence=1,
+                index=0,
+                target_density=0.25,
+                target_density_label="sparse",
+                target_energy=1,
+                active_roles=["pads"],
+                variation_strategy="none",
+                bars=4,
+                start_bar=0,
+                transition_in="none",  # First section — always "none", OK.
+            ),
+            SectionPlan(
+                name="Verse",
+                section_type="verse",
+                occurrence=1,
+                index=1,
+                target_density=0.55,
+                target_density_label="medium",
+                target_energy=3,
+                active_roles=["drums", "bass"],
+                variation_strategy="none",
+                bars=8,
+                start_bar=4,
+                transition_in="none",  # Missing — must fail.
+            ),
+        ]
+        plan = ArrangementPlan(
+            sections=sections,
+            structure=["intro", "verse"],
+            energy_curve=[1, 3],
+            section_stem_map=[["pads"], ["drums", "bass"]],
+            total_bars=12,
+        )
+        result = validate_plan(plan)
+        assert not result.valid, (
+            "A non-hook section with no transition_in must fail validation"
+        )
+        assert any("transition" in e.lower() for e in result.errors), (
+            f"Expected a transition error, got: {result.errors}"
+        )
+
+    def test_default_loop_structure_matches_spec(self):
+        """Default loop structure must be intro → verse → hook → verse_2 → hook_2 → outro."""
+        plan = build_arrangement_plan(
+            available_roles=RICH_ROLES,
+            target_total_bars=48,
+            source_type="loop",
+        )
+        types = [s.section_type for s in plan.sections]
+        assert types[0] == "intro", f"First section must be intro, got {types[0]}"
+        assert types[-1] == "outro", f"Last section must be outro, got {types[-1]}"
+        assert "hook" in types, "Default loop structure must contain at least one hook"
+        assert "verse" in types, "Default loop structure must contain at least one verse"
+        # No pre_hook in the canonical simple structure.
+        assert "pre_hook" not in types, (
+            f"Default loop structure should not include pre_hook. Got: {types}"
+        )
+        # Must have two verse occurrences (verse and verse_2).
+        verses = [s for s in plan.sections if s.section_type == "verse"]
+        hooks = [s for s in plan.sections if s.section_type == "hook"]
+        assert len(verses) >= 2, f"Default loop structure needs verse_2, got {len(verses)} verse(s)"
+        assert len(hooks) >= 2, f"Default loop structure needs hook_2, got {len(hooks)} hook(s)"
+        # Verify the canonical sequence: verse_1 before hook_1 before verse_2 before hook_2.
+        verse_indices = [i for i, t in enumerate(types) if t == "verse"]
+        hook_indices = [i for i, t in enumerate(types) if t == "hook"]
+        assert verse_indices[0] < hook_indices[0], (
+            f"First verse (idx={verse_indices[0]}) must appear before first hook "
+            f"(idx={hook_indices[0]}). Got structure: {types}"
+        )
+        assert hook_indices[0] < verse_indices[1], (
+            f"First hook (idx={hook_indices[0]}) must appear before second verse "
+            f"(idx={verse_indices[1]}). Got structure: {types}"
+        )
+        assert verse_indices[1] < hook_indices[1], (
+            f"Second verse (idx={verse_indices[1]}) must appear before second hook "
+            f"(idx={hook_indices[1]}). Got structure: {types}"
+        )
+
     def test_validate_or_raise_raises_on_invalid(self):
         """validate_or_raise must raise ArrangementValidationError on invalid plan."""
         flat_sections = [

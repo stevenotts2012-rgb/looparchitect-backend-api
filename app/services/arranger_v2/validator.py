@@ -216,20 +216,27 @@ def _check_transitions(
     sections: list[SectionPlan],
     result: ValidationResult,
 ) -> None:
-    """Every non-first section must have a transition_in defined."""
+    """Every non-first section must have a transition_in defined.
+
+    A hard cut (transition_in='none') between any two sections is a validation
+    failure: all boundaries must carry an explicit transition type so the
+    renderer can produce audible contrast between sections.  Hooks additionally
+    require a build-up transition (riser or silence_gap) rather than a simple
+    fill or accent.
+    """
     for i, sp in enumerate(sections):
         if i == 0:
             continue  # First section never needs a transition_in.
         if not sp.transition_in or sp.transition_in == "none":
-            # A hard cut is acceptable in limited cases, but hooks must have a riser.
             if sp.section_type == "hook":
                 result.fail(
                     f"{sp.name} (index={i}) has no transition_in. "
                     "Hooks MUST have a riser or silence_gap before them."
                 )
             else:
-                result.warn(
-                    f"{sp.name} (index={i}) has no transition_in — hard cut detected."
+                result.fail(
+                    f"{sp.name} (index={i}) has no transition_in — hard cut not permitted. "
+                    "Every section boundary must carry an explicit transition."
                 )
 
     # Verify hook-specific rule: must be preceded by riser or silence_gap.
