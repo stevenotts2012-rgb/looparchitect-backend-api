@@ -92,11 +92,16 @@ _SECTION_NOTES: dict[str, str] = {
 # Default structures
 # ---------------------------------------------------------------------------
 
+# Canonical arrangement as described in the problem specification:
+#   intro → verse → hook → verse_2 → hook_2 → outro
+# Used when source_type is "loop" (single-loop or sparse stem input).
 _DEFAULT_STRUCTURE_LOOP = [
-    "intro", "verse", "pre_hook", "hook",
-    "verse", "pre_hook", "hook", "outro",
+    "intro", "verse", "hook",
+    "verse", "hook", "outro",
 ]
 
+# Extended arrangement with pre-hook tension sections and a bridge reset.
+# Used when source_type is "full" (multi-stem or full-track input).
 _DEFAULT_STRUCTURE_FULL = [
     "intro", "verse", "pre_hook", "hook",
     "verse", "pre_hook", "hook", "bridge", "outro",
