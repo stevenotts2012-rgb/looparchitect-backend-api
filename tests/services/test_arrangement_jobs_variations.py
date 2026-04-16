@@ -4,10 +4,12 @@ from app.services.arrangement_jobs import (
     _build_pre_render_plan,
     _render_producer_arrangement,
     _validate_render_plan_quality,
+    attach_loops_to_sections,
 )
 from pydub import AudioSegment
 from pydub.generators import Sine
 import json
+import pytest
 
 
 def test_build_pre_render_plan_assigns_loop_variants_to_sections() -> None:
@@ -1199,3 +1201,119 @@ def test_pre_hook_end_dropout_applied_to_rendered_audio() -> None:
         "must differ from the version without dropout. "
         "The end_dropout feature is not being applied to the audio."
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests for attach_loops_to_sections
+# ---------------------------------------------------------------------------
+
+_MANIFEST_BASE = {
+    "active": True,
+    "count": 6,
+    "names": ["intro", "verse", "hook", "bridge", "outro", "hook_A"],
+    "files": {
+        "intro": "loop_intro.wav",
+        "verse": "loop_verse.wav",
+        "hook": "loop_hook.wav",
+        "bridge": "loop_bridge.wav",
+        "outro": "loop_outro.wav",
+        "hook_A": "loop_hook_A.wav",
+    },
+    "stems_used": True,
+    "sub_variants_enabled": True,
+}
+
+_SECTIONS_NO_VARIANT = [
+    {"name": "Intro", "type": "intro", "bar_start": 0, "bars": 4, "energy": 0.3, "instruments": ["melody"]},
+    {"name": "Verse", "type": "verse", "bar_start": 4, "bars": 8, "energy": 0.6, "instruments": ["kick", "bass"]},
+    {"name": "Hook", "type": "hook", "bar_start": 12, "bars": 8, "energy": 0.9, "instruments": ["kick", "snare", "bass", "melody"]},
+    {"name": "Bridge", "type": "bridge", "bar_start": 20, "bars": 4, "energy": 0.45, "instruments": ["melody"]},
+    {"name": "Outro", "type": "outro", "bar_start": 24, "bars": 4, "energy": 0.35, "instruments": ["melody"]},
+]
+
+
+def test_attach_loops_to_sections_assigns_loop_variations() -> None:
+    """attach_loops_to_sections must set loop_variations (primary variant + sub-variants) on every section."""
+    import copy
+
+    render_plan = {"sections": copy.deepcopy(_SECTIONS_NO_VARIANT)}
+    attach_loops_to_sections(render_plan, _MANIFEST_BASE)
+
+    for section in render_plan["sections"]:
+        assert "loop_variations" in section, f"Section {section['name']} missing loop_variations"
+        assert len(section["loop_variations"]) > 0, f"Empty loop_variations for {section['name']}"
+
+
+def test_attach_loops_to_sections_assigns_loop_variant_when_missing() -> None:
+    """Sections without loop_variant should get it assigned by attach_loops_to_sections."""
+    import copy
+
+    render_plan = {"sections": copy.deepcopy(_SECTIONS_NO_VARIANT)}
+    attach_loops_to_sections(render_plan, _MANIFEST_BASE)
+
+    for section in render_plan["sections"]:
+        assert section.get("loop_variant"), f"Section {section['name']} still has no loop_variant"
+        assert section.get("loop_variant_file"), f"Section {section['name']} still has no loop_variant_file"
+
+
+def test_attach_loops_to_sections_includes_sub_variants() -> None:
+    """The hook section should include hook_A in its loop_variations list."""
+    import copy
+
+    render_plan = {"sections": copy.deepcopy(_SECTIONS_NO_VARIANT)}
+    attach_loops_to_sections(render_plan, _MANIFEST_BASE)
+
+    hook_section = next(s for s in render_plan["sections"] if s["name"] == "Hook")
+    assert "hook_A" in hook_section["loop_variations"]
+
+
+def test_attach_loops_to_sections_skips_reassignment_if_already_assigned() -> None:
+    """If sections already have loop_variant, attach_loops_to_sections must not overwrite them."""
+    sections_with_variant = [
+        {"name": "Intro", "type": "intro", "bar_start": 0, "bars": 4, "energy": 0.3,
+         "instruments": ["melody"], "loop_variant": "intro", "loop_variant_file": "loop_intro.wav"},
+        {"name": "Verse", "type": "verse", "bar_start": 4, "bars": 8, "energy": 0.6,
+         "instruments": ["kick", "bass"], "loop_variant": "verse", "loop_variant_file": "loop_verse.wav"},
+        {"name": "Hook", "type": "hook", "bar_start": 12, "bars": 8, "energy": 0.9,
+         "instruments": ["kick", "snare", "bass", "melody"], "loop_variant": "hook_A",
+         "loop_variant_file": "loop_hook_A.wav", "base_variant": "hook"},
+        {"name": "Bridge", "type": "bridge", "bar_start": 20, "bars": 4, "energy": 0.45,
+         "instruments": ["melody"], "loop_variant": "bridge", "loop_variant_file": "loop_bridge.wav"},
+        {"name": "Outro", "type": "outro", "bar_start": 24, "bars": 4, "energy": 0.35,
+         "instruments": ["melody"], "loop_variant": "outro", "loop_variant_file": "loop_outro.wav"},
+    ]
+    render_plan = {"sections": sections_with_variant}
+    attach_loops_to_sections(render_plan, _MANIFEST_BASE)
+
+    # Original loop_variant assignments must be preserved
+    assert render_plan["sections"][2]["loop_variant"] == "hook_A"
+    # loop_variations should still be populated
+    for section in render_plan["sections"]:
+        assert len(section["loop_variations"]) > 0
+
+
+def test_attach_loops_to_sections_raises_on_no_sections() -> None:
+    """Should raise ValueError if render_plan has no sections."""
+    with pytest.raises(ValueError, match="no sections"):
+        attach_loops_to_sections({"sections": []}, _MANIFEST_BASE)
+
+
+def test_attach_loops_to_sections_raises_on_empty_manifest() -> None:
+    """Should raise ValueError if the manifest has no variant names."""
+    render_plan = {"sections": [
+        {"name": "Verse", "type": "verse", "bar_start": 0, "bars": 4, "energy": 0.6, "instruments": []},
+    ]}
+    with pytest.raises(ValueError, match="no variant names"):
+        attach_loops_to_sections(render_plan, {"names": [], "files": {}})
+
+
+def test_attach_loops_to_sections_validates_render_plan_quality() -> None:
+    """validate_variation_plan_usage must pass after attach_loops_to_sections runs."""
+    import copy
+    from app.services.loop_variation_engine import validate_variation_plan_usage
+
+    render_plan = {"sections": copy.deepcopy(_SECTIONS_NO_VARIANT)}
+    attach_loops_to_sections(render_plan, _MANIFEST_BASE)
+
+    # Should not raise
+    validate_variation_plan_usage(render_plan)
