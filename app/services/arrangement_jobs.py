@@ -42,6 +42,20 @@ logger = logging.getLogger(__name__)
 # creating audible variation across the phrase boundary.
 _PHRASE_SPLIT_SECTION_IDX_OFFSET = 100
 
+# Short crossfade applied at every hard audio join (section boundaries, phrase splits,
+# dropout splice points, buildup sub-segment joins).  Keeps timing drift negligible
+# while eliminating click/pop artefacts that listeners perceive as "audio dropping".
+_SECTION_CROSSFADE_MS = 30
+
+# Heavy attenuation (dB) used in place of complete silence for pre-hook / mute effects.
+# Keeps a faint ghost of audio present rather than dead air, which listeners perceive
+# as broken playback at longer durations.
+_HEAVY_ATTENUATION_DB = 14
+
+# Maximum gap (ms) inserted before a "drop" impact so the silence is a "breath"
+# rather than dead air.  80 ms ≈ 1/25 bar at 120 BPM — barely perceptible.
+_DROP_GAP_MS = 80
+
 _ISOLATED_STEM_ROLES = {
     "drums",
     "percussion",
@@ -282,6 +296,18 @@ def _apply_headroom_ceiling(audio: AudioSegment, target_peak_dbfs: float = -6.0)
     if peak == float("-inf") or peak <= target_peak_dbfs:
         return audio
     return audio - (peak - target_peak_dbfs)
+
+
+def _crossfade_append(base: AudioSegment, tail: AudioSegment, crossfade_ms: int = _SECTION_CROSSFADE_MS) -> AudioSegment:
+    """Return a new AudioSegment combining *base* and *tail* with a short crossfade.
+
+    The crossfade eliminates click/pop artefacts at hard audio joins.
+    Falls back to simple concatenation when either segment is too short for the
+    requested crossfade or when crossfade_ms <= 0.
+    """
+    if crossfade_ms <= 0 or len(base) < crossfade_ms * 2 or len(tail) < crossfade_ms * 2:
+        return base + tail
+    return base.append(tail, crossfade=crossfade_ms)
 
 
 def _rms_dbfs(audio: AudioSegment) -> float:
@@ -1302,6 +1328,7 @@ def _apply_producer_move_effect(
         fill_len = int(min(len(segment), bar_duration_ms * 0.55))
         fill_start = max(0, len(segment) - fill_len)
         fill = segment[fill_start:].high_pass_filter(2300) + (4 + 3 * intensity)
+        fill = _apply_headroom_ceiling(fill, -1.5)
         return segment[:fill_start] + fill
 
     if move_type == "snare_pickup":
@@ -1313,7 +1340,8 @@ def _apply_producer_move_effect(
         for ms in range(0, len(pickup), grid):
             chunk = pickup[ms: min(len(pickup), ms + grid)]
             rebuilt += chunk + (5 if (ms // grid) % 2 == 0 else 1)
-        return segment[:pickup_start] + rebuilt
+        result = segment[:pickup_start] + _apply_headroom_ceiling(rebuilt, -1.5)
+        return result
 
     if move_type == "snare_roll":
         roll_len = int(min(len(segment), bar_duration_ms * 0.5))
@@ -1323,16 +1351,19 @@ def _apply_producer_move_effect(
         for ms in range(0, len(roll), grid):
             chunk = roll[ms: min(len(roll), ms + grid)]
             stutter += chunk + (4 if (ms // grid) % 2 == 0 else -2)
-        return segment[:max(0, len(segment) - roll_len)] + stutter
+        return segment[:max(0, len(segment) - roll_len)] + _apply_headroom_ceiling(stutter, -1.5)
 
     if move_type == "pre_hook_silence":
-        # Brief silence (at most 1 beat) to create tension 2 bars before the hook.
-        # Previously used 0.45 + 0.3*intensity = 0.72 bars of dead silence which sounded broken.
-        mute_ms = int(min(len(segment), bar_duration_ms * (0.15 + 0.10 * intensity)))
-        return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
+        # Very brief level dip (≤ 1/8 bar) to create anticipation before the hook
+        # without sounding like a broken playback.  Silence is replaced with an
+        # attenuated tail so listeners hear a "breath" rather than dead air.
+        dip_ms = int(min(len(segment), bar_duration_ms * (0.04 + 0.04 * intensity)))
+        dip_audio = segment[:dip_ms] - _HEAVY_ATTENUATION_DB  # Heavily attenuated, not total silence
+        return dip_audio + segment[dip_ms:]
 
     if move_type == "pre_hook_silence_drop":
-        gap_ms = int(min(len(segment), bar_duration_ms * (1.0 if stem_available else 0.5)))
+        # Use a short attenuation window (≤ 1/4 bar) rather than literal silence.
+        gap_ms = int(min(len(segment), bar_duration_ms * (0.15 if stem_available else 0.10)))
         gap_ms = max(1, gap_ms)
         lead = segment[:-gap_ms] if gap_ms < len(segment) else AudioSegment.silent(duration=0)
         source_tail = segment[-gap_ms:] if gap_ms < len(segment) else segment
@@ -1340,17 +1371,21 @@ def _apply_producer_move_effect(
             tail = source_tail.high_pass_filter(240) - 10
         else:
             tail = source_tail.reverse().fade_in(max(1, gap_ms // 4)).low_pass_filter(1800) - 8
-        return lead + AudioSegment.silent(duration=gap_ms // 2) + tail[: max(0, gap_ms - (gap_ms // 2))]
+        # Use a tiny silent gap (≤ 1/16 bar) rather than half-bar dead air
+        silence_ms = min(gap_ms // 4, int(bar_duration_ms * 0.06))
+        return lead + AudioSegment.silent(duration=silence_ms) + tail[: max(0, gap_ms - silence_ms)]
 
     if move_type == "riser_fx":
         tail_len = int(min(len(segment), bar_duration_ms * 0.75))
         start = max(0, len(segment) - tail_len)
         tail = segment[start:].high_pass_filter(250)
         tail = tail.fade_in(max(1, tail_len // 3)) + (4 + 3 * intensity if stem_available else 2 + 3 * intensity)
+        tail = _apply_headroom_ceiling(tail, -1.5)
         return segment[:start] + tail
 
     if move_type == "crash_hit":
         hit = segment.high_pass_filter(2200) + (5 + 2 * intensity)
+        hit = _apply_headroom_ceiling(hit, -1.5)
         hit_window = min(len(hit), int(bar_duration_ms * 0.2))
         if hit_window <= 0:
             return segment
@@ -1371,9 +1406,10 @@ def _apply_producer_move_effect(
         return AudioSegment.silent(duration=drop_len) + segment[drop_len:]
 
     if move_type == "bass_pause":
-        # Cap at 0.25 bars (1 beat) so the bass briefly pauses without sounding broken.
-        pause_bars = min(0.25, float(params.get("pause_bars", 0.25) or 0.25))
-        pause_len = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
+        # Cap at 0.12 bars (just under 1/2 beat) so bass briefly dips without
+        # sounding like dead air; attenuate instead of muting completely.
+        pause_bars = min(0.12, float(params.get("pause_bars", 0.12) or 0.12))
+        pause_len = int(min(len(segment), bar_duration_ms * max(0.05, pause_bars)))
         head = segment[:pause_len].high_pass_filter(260) - (3 if stem_available else 2)
         return head + segment[pause_len:]
 
@@ -1406,13 +1442,16 @@ def _apply_producer_move_effect(
             return segment.high_pass_filter(low_hz).low_pass_filter(high_hz)
 
     if move_type == "silence_drop":
-        pause_bars = float(params.get("pause_bars", 0.22 + (0.2 * intensity)) or (0.22 + (0.2 * intensity)))
-        gap_ms = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
+        # Keep gap short (≤ 0.12 bars) so it sounds like a "breath" rather than broken audio.
+        pause_bars = float(params.get("pause_bars", 0.06 + (0.06 * intensity)) or (0.06 + (0.06 * intensity)))
+        gap_ms = int(min(len(segment), bar_duration_ms * max(0.04, min(0.12, pause_bars))))
         return AudioSegment.silent(duration=gap_ms) + segment[gap_ms:]
 
     if move_type == "pre_hook_mute":
-        mute_ms = int(min(len(segment), bar_duration_ms * (0.40 + 0.25 * intensity)))
-        return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
+        # Attenuate rather than mute; use a very short window to avoid dead air.
+        mute_ms = int(min(len(segment), bar_duration_ms * (0.05 + 0.05 * intensity)))
+        dip = segment[:mute_ms] - _HEAVY_ATTENUATION_DB  # Heavy attenuation, not complete silence
+        return dip + segment[mute_ms:]
 
     if move_type == "fill_event":
         fill_len = int(min(len(segment), bar_duration_ms * 0.6))
@@ -1428,6 +1467,7 @@ def _apply_producer_move_effect(
             fill = chop
         else:
             fill = fill.high_pass_filter(2400) + (4 + 2 * intensity)
+        fill = _apply_headroom_ceiling(fill, -1.5)
         return segment[:fill_start] + fill
 
     if move_type == "texture_lift":
@@ -1457,16 +1497,15 @@ def _apply_producer_move_effect(
         return strip.fade_out(min(len(strip), int(bar_duration_ms * 0.85)))
 
     if move_type == "pre_hook_drum_mute":
-        # Cap at 0.25 bars (1 beat) to create tension without dead air.
-        pause_bars = min(0.25, float(params.get("pause_bars", 0.25) or 0.25))
-        mute_ms = int(min(len(segment), bar_duration_ms * max(0.1, pause_bars)))
-        return AudioSegment.silent(duration=mute_ms) + segment[mute_ms:]
+        # Attenuate rather than mute; cap at 0.08 bars to avoid dead air.
+        pause_bars = min(0.08, float(params.get("pause_bars", 0.08) or 0.08))
+        mute_ms = int(min(len(segment), bar_duration_ms * max(0.04, pause_bars)))
+        dip = segment[:mute_ms] - _HEAVY_ATTENUATION_DB
+        return dip + segment[mute_ms:]
 
     if move_type == "silence_drop_before_hook":
-        # Brief silence (at most 1 beat = 0.25 bars) to create dramatic anticipation.
-        # Previously used 0.30 + 0.30*intensity which at high intensity = 0.57 bars of silence —
-        # over half a bar of dead air that made sections sound broken.
-        gap_ms = int(min(len(segment), bar_duration_ms * (0.10 + 0.15 * intensity)))
+        # Very brief dip (≤ 1/16 bar) — enough for dramatic effect without dead air.
+        gap_ms = int(min(len(segment), bar_duration_ms * (0.04 + 0.04 * intensity)))
         tail = segment[gap_ms:] + (2 * intensity)
         return AudioSegment.silent(duration=gap_ms) + tail
 
@@ -1488,6 +1527,7 @@ def _apply_producer_move_effect(
         fill_start = max(0, len(segment) - fill_len)
         fill = segment[fill_start:]
         fill = fill.high_pass_filter(2500) + (4 + 3 * intensity)
+        fill = _apply_headroom_ceiling(fill, -1.5)
         return segment[:fill_start] + fill
 
     if move_type == "verse_melody_reduction":
@@ -1822,7 +1862,7 @@ def _render_producer_arrangement(
                         section_idx=section_idx + _PHRASE_SPLIT_SECTION_IDX_OFFSET,
                     )[:remaining_bars * bar_duration_ms]
 
-                    section_audio = (first_audio + second_audio)[:section_ms]
+                    section_audio = _crossfade_append(first_audio, second_audio)[:section_ms]
                     # Track both phrase role sets for diagnostics.
                     active_role_snapshot = list(dict.fromkeys(list(first_roles) + list(second_roles)))
                     _phrase_first_roles = list(first_stems.keys())
@@ -1899,8 +1939,8 @@ def _render_producer_arrangement(
                             bar_duration_ms=bar_duration_ms,
                             section_idx=section_idx,
                         )[: _dropout_end_ms - _dropout_start_ms]
-                        section_audio = (
-                            section_audio[:_dropout_start_ms] + _dropout_segment
+                        section_audio = _crossfade_append(
+                            section_audio[:_dropout_start_ms], _dropout_segment
                         )[:section_ms]
                         logger.info(
                             "END_DROPOUT section='%s' type=%s: muted %s in last %d bar(s)",
@@ -1980,7 +2020,8 @@ def _render_producer_arrangement(
         elif section_type in {"buildup", "build_up", "build"}:
             # BUILDUP: Gradual volume increase, building tension
             logger.info(f"Processing BUILDUP section: {section_name}")
-            # Create dramatic buildup by gradually increasing volume
+            # Create dramatic buildup by gradually increasing volume.
+            # Sub-segments are joined with crossfades to eliminate step-jump pops.
             buildup_segments = []
             num_segments = 4
             segment_length = len(section_audio) // num_segments
@@ -1988,19 +2029,22 @@ def _render_producer_arrangement(
             for i in range(num_segments):
                 start_pos = i * segment_length
                 end_pos = start_pos + segment_length if i < num_segments - 1 else len(section_audio)
-                segment = section_audio[start_pos:end_pos]
+                seg = section_audio[start_pos:end_pos]
                 
                 # Progressive volume boost
                 boost = -8 + (i * 4)  # Goes from -8dB to +4dB
-                segment = segment + boost
+                seg = seg + boost
                 
                 # Apply high-pass filter that opens up as build progresses
                 cutoff_freq = 200 + (i * 150)  # 200Hz -> 650Hz
-                segment = segment.high_pass_filter(cutoff_freq)
+                seg = seg.high_pass_filter(cutoff_freq)
                 
-                buildup_segments.append(segment)
+                buildup_segments.append(seg)
             
-            section_audio = sum(buildup_segments)
+            if buildup_segments:
+                section_audio = buildup_segments[0]
+                for bs in buildup_segments[1:]:
+                    section_audio = _crossfade_append(section_audio, bs)
             
         elif section_type in {"drop", "hook", "chorus"}:
             # HOOK: Full energy, headroom-safe boost
@@ -2117,15 +2161,15 @@ def _render_producer_arrangement(
                 variation_segment = section_audio[var_start_ms:var_end_ms]
                 
                 if var_type in {"hats_roll", "fill", "hi_hat_stutter"}:
-                    # Hat rolls and fills: volume boost
-                    variation_segment = variation_segment + 4
+                    # Hat rolls and fills: modest boost kept under ceiling
+                    variation_segment = variation_segment + 3
                 elif var_type in {"snare_fill", "drum_fill", "kick_fill"}:
-                    # Snare fills: heavy boost
-                    variation_segment = variation_segment + 5
+                    # Snare fills: boost capped to prevent spike above section level
+                    variation_segment = variation_segment + 4
                 elif var_type in {"bass_drop", "drop", "bass_glide"}:
-                    # Drops: add silence then huge impact
-                    drop_gap = min(200, len(variation_segment) // 4)
-                    variation_segment = AudioSegment.silent(duration=drop_gap) + variation_segment[drop_gap:] + 5
+                    # Drops: very brief dip then impact; keep gap short to avoid dead air
+                    drop_gap = min(_DROP_GAP_MS, len(variation_segment) // 8)
+                    variation_segment = AudioSegment.silent(duration=drop_gap) + variation_segment[drop_gap:] + 4
                 elif var_type == "reverse":
                     # Reverse effect
                     variation_segment = variation_segment.reverse()
@@ -2140,7 +2184,10 @@ def _render_producer_arrangement(
                         params=var_params,
                     )
                     section_applied_events.append(var_type)
-                
+
+                # Always cap variation segment level before splicing back to prevent spikes.
+                variation_segment = _apply_headroom_ceiling(variation_segment, target_peak_dbfs=-1.5)
+
                 # Splice back in
                 section_audio = section_audio[:var_start_ms] + variation_segment + section_audio[var_end_ms:]
 
@@ -2210,8 +2257,8 @@ def _render_producer_arrangement(
                     riser_start = max(0, len(section_audio) - trans_duration_ms)
                     pre_riser = section_audio[:riser_start]
                     riser_part = section_audio[riser_start:]
-                    # Create riser effect with volume automation
-                    riser_part = riser_part + 6  # Controlled boost
+                    # Create riser effect with volume automation; cap to prevent spike
+                    riser_part = _apply_headroom_ceiling(riser_part + 4, -1.5)
                     riser_part = riser_part.high_pass_filter(300)  # Filter lows
                     section_audio = pre_riser + riser_part
                     
@@ -2230,7 +2277,13 @@ def _render_producer_arrangement(
         section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
         previous_section_audio = section_audio
         
-        arranged += section_audio
+        # Use a short crossfade when appending this section to the growing mix so that
+        # sample-level discontinuities at section boundaries don't create audible
+        # clicks or pops that listeners perceive as "audio dropping".
+        if len(arranged) == 0:
+            arranged = section_audio
+        else:
+            arranged = _crossfade_append(arranged, section_audio)
         
         # Track section for timeline
         start_seconds = (bar_start * 4 * 60.0) / bpm
