@@ -2945,7 +2945,7 @@ def attach_loops_to_sections(render_plan: dict, loop_variation_manifest: dict | 
         section_name = section.get("name") or section.get("type") or "unknown"
         loop_variant = section.get("loop_variant")
         if not loop_variant:
-            raise ValueError(f"No stems for section: {section_name}")
+            raise ValueError(f"Missing loop_variant assignment for section: {section_name}")
 
         # Primary variant plus any sub-variants that share the same base name
         # (e.g. "hook" → ["hook_A", "hook_B", "hook_C"]).
@@ -2954,9 +2954,6 @@ def attach_loops_to_sections(render_plan: dict, loop_variation_manifest: dict | 
             name for name in available_names if name.startswith(f"{base_variant}_")
         )
         section["loop_variations"] = [loop_variant] + sub_variants
-
-        if not section["loop_variations"]:
-            raise ValueError(f"Missing loop_variations for {section_name}")
 
     # Pre-render section validation — fail early rather than at render time.
     for section in sections:

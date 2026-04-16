@@ -1233,7 +1233,7 @@ _SECTIONS_NO_VARIANT = [
 
 
 def test_attach_loops_to_sections_assigns_loop_variations() -> None:
-    """attach_loops_to_sections must set loop_variations on every section."""
+    """attach_loops_to_sections must set loop_variations (primary variant + sub-variants) on every section."""
     import copy
 
     render_plan = {"sections": copy.deepcopy(_SECTIONS_NO_VARIANT)}
