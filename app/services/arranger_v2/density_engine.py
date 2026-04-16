@@ -90,7 +90,7 @@ _SECTION_ROLE_PRIORITY: dict[str, list[list[str]]] = {
 _SECTION_ROLE_EXCLUSIONS: dict[str, frozenset[str]] = {
     "intro":     frozenset({"drums", "percussion", "bass"}),
     "verse":     frozenset(),
-    "pre_hook":  frozenset({"drums"}),  # tension build — momentarily pull drums back
+    "pre_hook":  frozenset(),   # drums stay in pre_hook — it's a tension ramp, not a rest
     "hook":      frozenset(),
     "bridge":    frozenset({"drums", "percussion", "bass"}),
     "breakdown": frozenset({"drums", "percussion", "bass"}),

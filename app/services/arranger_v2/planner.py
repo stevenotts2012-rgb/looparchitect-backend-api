@@ -309,7 +309,10 @@ def _fit_bars_to_target(
         adjust_indices = list(range(len(structure)))
 
     step = 0
-    while current != target and step < 512:
+    # Safety cap — prevents infinite loops when target is not achievable
+    # in multiples of 4 bars (e.g. target=33 with min section of 4 bars).
+    _MAX_BAR_ADJUSTMENT_ITERATIONS = 512
+    while current != target and step < _MAX_BAR_ADJUSTMENT_ITERATIONS:
         idx = adjust_indices[step % len(adjust_indices)]
         if current < target:
             bars[idx] += 4

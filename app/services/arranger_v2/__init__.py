@@ -22,6 +22,7 @@ from app.services.arranger_v2.types import (
     TRANSITION_TYPES,
     VARIATION_STRATEGIES,
     SECTION_TYPES,
+    HOOK_RISER_TRANSITIONS,
 )
 from app.services.arranger_v2.state import ArrangerState
 from app.services.arranger_v2.role_engine import (
@@ -68,7 +69,7 @@ __all__ = [
     "normalise_role",
     "compute_section_energy_weight",
     "RoleValidationError",
-    # Density engine
+    "HOOK_RISER_TRANSITIONS",
     "select_stems_for_section",
     "density_label_to_float",
     "density_float_to_label",

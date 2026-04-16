@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.arranger_v2.types import ArrangementPlan, SectionPlan
+from app.services.arranger_v2.types import ArrangementPlan, SectionPlan, HOOK_RISER_TRANSITIONS
 
 logger = logging.getLogger(__name__)
 
@@ -233,13 +233,12 @@ def _check_transitions(
                 )
 
     # Verify hook-specific rule: must be preceded by riser or silence_gap.
-    hook_riser_required = {"riser", "silence_gap", "fx_rise", "reverse_fx"}
     for i, sp in enumerate(sections):
         if sp.section_type != "hook":
             continue
         if i == 0:
             continue
-        if sp.transition_in not in hook_riser_required:
+        if sp.transition_in not in HOOK_RISER_TRANSITIONS:
             result.warn(
                 f"{sp.name} (index={i}) transition_in='{sp.transition_in}' is not "
                 f"a riser or silence_gap. Hooks sound better with a build-up transition."

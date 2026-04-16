@@ -19,6 +19,7 @@ from app.services.arranger_v2 import (
     ArrangementPlan,
     ArrangementValidationError,
     ArrangerState,
+    HOOK_RISER_TRANSITIONS,
     RoleValidationError,
     SectionPlan,
     build_arrangement_plan,
@@ -171,12 +172,11 @@ class TestTransitionsExist:
             available_roles=RICH_ROLES,
             target_total_bars=64,
         )
-        riser_types = {"riser", "silence_gap", "fx_rise", "reverse_fx"}
         for i, section in enumerate(plan.sections):
             if section.section_type == "hook" and i > 0:
-                assert section.transition_in in riser_types, (
+                assert section.transition_in in HOOK_RISER_TRANSITIONS, (
                     f"{section.name} has transition_in={section.transition_in!r}, "
-                    f"expected a riser type from {riser_types}"
+                    f"expected a riser type from {HOOK_RISER_TRANSITIONS}"
                 )
 
     def test_transition_plan_has_all_boundaries(self):
@@ -186,10 +186,9 @@ class TestTransitionsExist:
         # All except the first section should have an entry in the plan.
         assert len(transitions) == len(section_types)
         # Hooks must have riser or silence_gap.
-        riser_types = {"riser", "silence_gap", "reverse_fx"}
         for t in transitions:
             if t["to_type"] == "hook" and t["from_type"]:
-                assert t["transition_in"] in riser_types, (
+                assert t["transition_in"] in HOOK_RISER_TRANSITIONS, (
                     f"Hook transition_in={t['transition_in']!r} is not a riser type"
                 )
 

@@ -65,6 +65,15 @@ TRANSITION_TYPES: frozenset[str] = frozenset({
     "percussion_fill",
 })
 
+# Transition types that constitute a valid "build-up" for hook entry.
+# Used by the validator and tests to verify hook transitions.
+HOOK_RISER_TRANSITIONS: frozenset[str] = frozenset({
+    "riser",
+    "silence_gap",
+    "fx_rise",
+    "reverse_fx",
+})
+
 # Allowed variation strategy names.
 VARIATION_STRATEGIES: frozenset[str] = frozenset({
     "none",
