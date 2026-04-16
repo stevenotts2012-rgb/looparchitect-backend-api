@@ -16,7 +16,7 @@ from app.config import settings
 from app.db import init_db, engine, SessionLocal
 from app.middleware.cors import add_cors_middleware
 from app.middleware.logging import add_request_logging
-from app.routes import api, health, db_health, loops, render, arrange, arrangements, audio, styles, render_jobs, reference, track_quality
+from app.routes import api, health, db_health, loops, render, arrange, arrangements, audio, styles, render_jobs, reference, track_quality, loop_analysis
 from app.services.audio_runtime import configure_audio_binaries
 from app.queue import is_redis_available
 
@@ -299,6 +299,7 @@ app.include_router(render_jobs.router, prefix="/api/v1", tags=["jobs"])
 app.include_router(styles.router, prefix="/api/v1", tags=["styles"])
 app.include_router(reference.router, prefix="/api/v1/reference", tags=["reference"])
 app.include_router(track_quality.router, prefix="/api/v1/track", tags=["track_quality"])
+app.include_router(loop_analysis.router, prefix="/api/v1", tags=["loop_analysis"])
 
 if __name__ == "__main__":
     import uvicorn
