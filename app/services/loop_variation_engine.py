@@ -473,7 +473,17 @@ def validate_variation_plan_usage(render_plan: dict) -> None:
     unique_variants = {name for name in section_variants if name}
 
     if not unique_variants:
-        raise ValueError("render_plan missing loop variation references on sections")
+        missing_detail = [
+            str(section.get("name") or section.get("type") or f"section[{i}]")
+            for i, section in enumerate(sections)
+            if not (section.get("loop_variant") or section.get("loop_variant_file"))
+        ]
+        raise ValueError(
+            f"render_plan missing loop variation references on sections — "
+            f"all {len(sections)} section(s) lack loop_variant/loop_variant_file. "
+            f"Sections without assignment: {missing_detail[:10]}. "
+            "Ensure attach_loops_to_sections() is called before validation."
+        )
 
     if len(unique_variants) == 1:
         raise ValueError("render failed: every section uses the exact same audio loop")
