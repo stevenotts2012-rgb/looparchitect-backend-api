@@ -53,6 +53,10 @@ _RENDER_MOVE_EVENT_TYPES = {
     "call_response_variation",
     "pre_hook_silence_drop",
     "snare_pickup",
+    "reverse_fx",
+    "silence_gap",
+    "subtractive_entry",
+    "re_entry_accent",
 }
 
 
