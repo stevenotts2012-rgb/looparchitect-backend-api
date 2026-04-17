@@ -59,6 +59,31 @@ _RENDER_MOVE_EVENT_TYPES = {
     "re_entry_accent",
 }
 
+# Subset of _RENDER_MOVE_EVENT_TYPES that represent section-boundary transitions
+# (as opposed to within-section variations like stem_gain_change or enable_stem).
+# Events in this set are promoted to boundary_events so that observability
+# tracking in _build_render_spec_summary can correctly measure plan-vs-actual
+# transition match.  This must stay in sync with SUPPORTED_BOUNDARY_EVENTS in
+# transition_engine.py.
+_BOUNDARY_TRANSITION_EVENT_TYPES: frozenset[str] = frozenset({
+    "pre_hook_silence_drop",
+    "drum_fill",
+    "snare_pickup",
+    "riser_fx",
+    "reverse_cymbal",
+    "crash_hit",
+    "bridge_strip",
+    "outro_strip",
+    "pre_hook_drum_mute",
+    "bass_pause",
+    "silence_drop_before_hook",
+    "final_hook_expansion",
+    "reverse_fx",
+    "silence_gap",
+    "subtractive_entry",
+    "re_entry_accent",
+})
+
 
 def extract_producer_moves(events: list[dict]) -> list[str]:
     """Extract producer move hints from render plan events."""
@@ -144,17 +169,25 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         if target is None and normalized_sections:
             target = normalized_sections[-1]
         if target is not None:
-            target["variations"].append(
-                {
-                    "bar": event_bar,
-                    "variation_type": event_type,
-                    "intensity": float(event.get("intensity", 0.7) or 0.7),
-                    "duration_bars": event.get("duration_bars"),
-                    "description": event.get("description", ""),
-                    "params": event.get("params") if isinstance(event.get("params"), dict) else {},
-                }
-            )
-            if event_type in {"pre_hook_silence_drop", "drum_fill", "snare_pickup", "riser_fx", "reverse_cymbal", "crash_hit", "bridge_strip", "outro_strip"}:
+            # Skip adding to variations when the section's boundary_events already
+            # contains an event of the same type (from _apply_stem_primary_section_states).
+            # Adding it to both paths would cause the same DSP to run twice on the
+            # same audio window, stacking transitions on a single boundary.
+            existing_boundary_types = {
+                str(e.get("type") or "") for e in target.get("boundary_events", [])
+            }
+            if event_type not in existing_boundary_types:
+                target["variations"].append(
+                    {
+                        "bar": event_bar,
+                        "variation_type": event_type,
+                        "intensity": float(event.get("intensity", 0.7) or 0.7),
+                        "duration_bars": event.get("duration_bars"),
+                        "description": event.get("description", ""),
+                        "params": event.get("params") if isinstance(event.get("params"), dict) else {},
+                    }
+                )
+            if event_type in _BOUNDARY_TRANSITION_EVENT_TYPES and event_type not in existing_boundary_types:
                 target.setdefault("boundary_events", []).append(
                     {
                         "type": event_type,
