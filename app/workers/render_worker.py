@@ -38,6 +38,7 @@ from app.services.render_executor import render_from_plan
 from app.services.storage import storage
 from app.schemas.job import OutputFile
 from app.services.arrangement_jobs import _parse_stem_metadata_from_loop
+from app.services.arrangement_scorer import score_and_reject
 from app.services.audit_logging import log_feature_event
 from app.services.render_observability import (
     assemble_render_metadata,
@@ -677,6 +678,10 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             filename = "arrangement.wav"
             output_path = temp_dir / filename
             try:
+                # Score the render plan before committing render resources.
+                parsed_plan = json.loads(render_plan_json) if isinstance(render_plan_json, str) else render_plan_json
+                score_and_reject(parsed_plan)
+
                 # Wrap render_from_plan() in a local lambda so that both the
                 # callable reference AND the direct `render_from_plan(` call
                 # site appear in the source of render_loop_worker.  The lambda
