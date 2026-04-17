@@ -285,7 +285,11 @@ class TestTransitionEvents:
             next_start_bar=16,
         )
         event_types = {e.event_type for e in events}
-        assert "pre_hook_silence_drop" in event_types, "Bridge entry needs silence drop"
+        # Bridge entry now uses silence_gap (smooth density reduction) instead of
+        # pre_hook_silence_drop which was repurposed for hook entries.
+        assert event_types & {"silence_gap", "pre_hook_silence_drop"}, (
+            f"Bridge entry needs a silence/gap event, got {event_types}"
+        )
 
     def test_verse_to_verse_produces_drum_fill(self):
         events = get_transition_events(
@@ -293,10 +297,14 @@ class TestTransitionEvents:
             next_section_type="verse",
             prev_end_bar=7,
             next_start_bar=8,
+            available_roles=["drums", "bass", "melody"],
         )
         event_types = {e.event_type for e in events}
-        # verse → verse should get a fill
-        assert "drum_fill" in event_types, f"verse→verse should get drum_fill, got {event_types}"
+        # verse → verse should get a rhythmic fill; drum_fill when drums are available.
+        assert event_types & {"drum_fill", "snare_pickup"}, (
+            f"verse→verse should get a fill event, got {event_types}"
+        )
+        assert "drum_fill" in event_types, f"verse→verse with drums should get drum_fill, got {event_types}"
 
     def test_final_hook_gets_expansion_event(self):
         events = get_transition_events(

@@ -32,6 +32,12 @@ SUPPORTED_BOUNDARY_EVENTS = {
     "outro_strip",
     "pre_hook_drum_mute",
     "bass_pause",
+    "silence_drop_before_hook",
+    "final_hook_expansion",
+    "reverse_fx",
+    "silence_gap",
+    "subtractive_entry",
+    "re_entry_accent",
 }
 
 

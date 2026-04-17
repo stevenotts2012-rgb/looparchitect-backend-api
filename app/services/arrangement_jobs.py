@@ -811,6 +811,9 @@ def _apply_stem_primary_section_states(
         occurrence_counter: dict[str, int] = {}
         prev_same_type_roles: dict[str, list[str]] = {}
         prev_adjacent_roles: list[str] = []
+        # Carry-forward buffer: start_of_section transition events generated
+        # at the END of section N are staged here and applied to section N+1.
+        pending_start_of_section_events: list = []
 
         for section_idx, section in enumerate(sections):
             section_type = _normalize_section_type(section.get("type") or "verse")
@@ -900,14 +903,39 @@ def _apply_stem_primary_section_states(
             section_bars = int(section.get("bars", 1) or 1)
             prev_end_bar = bar_start + section_bars - 1
 
+            # Apply any start_of_section events that were staged by the PREVIOUS
+            # section's boundary (e.g. crash_hit, re_entry_accent, subtractive_entry).
+            # These are applied as "on_downbeat" so the renderer places them at the
+            # very start of this section (bar 0 relative).
+            for te in pending_start_of_section_events:
+                baseline_variations.append({
+                    "variation_type": te.event_type,
+                    "bar_start": bar_start,
+                    "duration_bars": 1,
+                    "intensity": te.intensity,
+                    "params": te.params,
+                })
+                boundary_events.append({
+                    "type": te.event_type,
+                    "bar": te.bar,
+                    "placement": "on_downbeat",
+                    "intensity": te.intensity,
+                    "params": te.params,
+                })
+            pending_start_of_section_events = []
+
             if next_section_type:
                 next_bar_start = bar_start + section_bars
+                next_occurrence = occurrence_counter.get(next_section_type, 0) + 1
+                next_is_repeat = next_occurrence > 1
                 transition_events = get_transition_events(
                     prev_section_type=section_type,
                     next_section_type=next_section_type,
                     prev_end_bar=prev_end_bar,
                     next_start_bar=next_bar_start,
-                    occurrence_of_next=occurrence_counter.get(next_section_type, 0) + 1,
+                    occurrence_of_next=next_occurrence,
+                    is_repeat=next_is_repeat,
+                    available_roles=available_roles,
                 )
                 for te in transition_events:
                     if te.placement == "end_of_section":
@@ -925,6 +953,9 @@ def _apply_stem_primary_section_states(
                             "intensity": te.intensity,
                             "params": te.params,
                         })
+                    elif te.placement == "start_of_section":
+                        # Stage for the next section iteration.
+                        pending_start_of_section_events.append(te)
 
             # Section-specific baseline variations (always applied).
             if section_type == "pre_hook":
@@ -1304,6 +1335,10 @@ _PRODUCER_MOVE_TYPES = {
     "call_response_variation",
     "pre_hook_silence_drop",
     "snare_pickup",
+    "reverse_fx",
+    "silence_gap",
+    "subtractive_entry",
+    "re_entry_accent",
 }
 
 
@@ -1565,6 +1600,46 @@ def _apply_producer_move_effect(
         tail = segment[quarter * 3:]
         return call + response + tail
 
+    if move_type == "reverse_fx":
+        # Reverse sweep on the tail: builds dramatic tension going into (or out of)
+        # a section boundary.  Longer and more prominent than reverse_cymbal.
+        rev_len = int(min(len(segment), bar_duration_ms))
+        start = max(0, len(segment) - rev_len)
+        rev = segment[start:].reverse().high_pass_filter(800)
+        rev = rev + (4 + 2 * intensity if stem_available else 2 + 2 * intensity)
+        rev = _apply_headroom_ceiling(rev, -1.5)
+        return segment[:start] + rev
+
+    if move_type == "silence_gap":
+        # Brief but noticeable attenuation window — stronger than silence_drop.
+        # Used at bridge/breakdown entry to signal density reduction.
+        gap_ms = int(min(len(segment), bar_duration_ms * (0.12 + 0.08 * intensity)))
+        gap_ms = max(1, min(gap_ms, max(1, len(segment) - 1)))
+        lead = segment[:-gap_ms] if gap_ms < len(segment) else AudioSegment.silent(duration=0)
+        tail = segment[-gap_ms:] if gap_ms < len(segment) else segment
+        attenuated = tail - (14 + 4 * intensity)
+        return lead + attenuated
+
+    if move_type == "subtractive_entry":
+        # Gentle re-entry: first portion of the section is slightly attenuated and
+        # fades up.  Creates "energy release" feel at hook→verse or sparse→anything.
+        fade_ms = min(len(segment), int(bar_duration_ms * (0.5 + 0.25 * (1 - intensity))))
+        fade_ms = max(1, fade_ms)
+        fade_part = segment[:fade_ms].fade_in(max(1, fade_ms // 2))
+        attenuation = max(0, 4.0 * (1.0 - intensity))
+        fade_part = fade_part - attenuation
+        return fade_part + segment[fade_ms:]
+
+    if move_type == "re_entry_accent":
+        # Accent the opening beat of a repeated hook so it does not recycle the
+        # exact same entry texture as the first occurrence.  Brighter and wider
+        # than crash_hit; targets the transient attack window only.
+        accent_ms = min(len(segment), int(bar_duration_ms * 0.25))
+        accent_ms = max(1, accent_ms)
+        accent = segment[:accent_ms].high_pass_filter(1800) + (5 + 3 * intensity)
+        accent = _apply_headroom_ceiling(accent, -1.5)
+        return accent + segment[accent_ms:]
+
     return segment
 
 
@@ -1623,6 +1698,7 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     - How many phrase splits were executed
     - Which hook stages were rendered
     - Total applied transition/event count
+    - Per-section transition plan vs actual comparison (observability)
 
     Parameters
     ----------
@@ -1640,6 +1716,14 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     transition_event_count = 0
     section_role_rows: list[dict] = []
 
+    # Transition observability accumulators.
+    transition_plan_by_section: list[dict] = []
+    actual_transition_events_used: list[str] = []
+    transition_type_counts: dict[str, int] = {}
+    sections_missing_transitions: list[str] = []
+    plan_match_count = 0
+    plan_total_count = 0
+
     for section in timeline_sections:
         stems_used = frozenset(section.get("runtime_active_stems") or section.get("active_stem_roles") or [])
         stem_sets.append(stems_used)
@@ -1651,7 +1735,38 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         if isinstance(hook_ev, dict) and hook_ev.get("stage"):
             hook_stages.append(str(hook_ev["stage"]))
 
-        transition_event_count += len(section.get("applied_events") or [])
+        applied = section.get("applied_events") or []
+        transition_event_count += len(applied)
+
+        # Track actual transition types used.
+        for ev in applied:
+            ev_str = str(ev)
+            transition_type_counts[ev_str] = transition_type_counts.get(ev_str, 0) + 1
+            if ev_str not in actual_transition_events_used:
+                actual_transition_events_used.append(ev_str)
+
+        # Build transition plan vs actual comparison.
+        planned_boundary = [
+            str(e.get("type") or "")
+            for e in (section.get("boundary_events") or [])
+            if e.get("type")
+        ]
+        matched = [e for e in planned_boundary if e in set(applied)]
+        plan_match_count += len(matched)
+        plan_total_count += len(planned_boundary)
+
+        section_name = str(section.get("name") or section.get("type") or "")
+        transition_plan_by_section.append({
+            "section": section_name,
+            "section_type": section.get("type", ""),
+            "planned_events": planned_boundary,
+            "applied_events": list(applied),
+            "matched_count": len(matched),
+            "plan_coverage": round(len(matched) / max(1, len(planned_boundary)), 3),
+        })
+
+        if not applied:
+            sections_missing_transitions.append(section_name)
 
         section_role_rows.append({
             "section_index": len(section_role_rows),
@@ -1671,6 +1786,8 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     most_common_entry = stem_set_counts.most_common(1)
     most_reused = most_common_entry[0][1] if most_common_entry else 0
 
+    plan_vs_actual_match = round(plan_match_count / max(1, plan_total_count), 3)
+
     return {
         "sections_count": len(timeline_sections),
         "distinct_stem_set_count": distinct_count,
@@ -1679,6 +1796,12 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         "hook_stages": hook_stages,
         "transition_event_count": transition_event_count,
         "section_role_map": section_role_rows,
+        # Transition observability (added for transition flow audit).
+        "transition_plan_by_section": transition_plan_by_section,
+        "actual_transition_events_used": actual_transition_events_used,
+        "transition_type_count": transition_type_counts,
+        "sections_missing_transitions": sections_missing_transitions,
+        "plan_vs_actual_transition_match": plan_vs_actual_match,
     }
 
 

@@ -486,6 +486,9 @@ def get_transition_events(
     prev_end_bar: int,
     next_start_bar: int,
     occurrence_of_next: int = 1,
+    is_repeat: bool = False,
+    available_roles: Optional[list[str]] = None,
+    source_quality: Optional[str] = None,
 ) -> list[TransitionEvent]:
     """Return deterministic transition events for the boundary between two sections.
 
@@ -499,35 +502,104 @@ def get_transition_events(
         First bar of the incoming section.
     occurrence_of_next:
         How many times the incoming section type has appeared (1 = first).
+    is_repeat:
+        True when the incoming section type has appeared before.  Repeated
+        sections use different transition types to avoid same-entry syndrome.
+    available_roles:
+        Optional list of available stem roles.  Transition intensity is
+        raised when richer stem sources are available (fx, drums, etc.).
+    source_quality:
+        Optional source quality hint (e.g. "true_stems", "ai_separated").
+        Higher quality enables stronger transition DSP.
 
     Returns
     -------
     list[TransitionEvent]
-        Empty if no transition is warranted; otherwise 1–3 events.
+        Empty if no transition is warranted; otherwise 1–4 events.
+        Placement values:
+          "end_of_section"   — applied to the LAST bar of prev_section
+          "start_of_section" — applied to the FIRST bar of next_section
     """
     events: list[TransitionEvent] = []
     prev = str(prev_section_type).strip().lower()
     nxt = str(next_section_type).strip().lower()
+    roles = set(available_roles or [])
+    has_fx = "fx" in roles
+    has_drums = "drums" in roles or "percussion" in roles
+    is_stem_rich = source_quality in {"true_stems", "zip_stems"} or len(roles) >= 3
 
-    # Hook entry is the highest-priority transition.
+    # ------------------------------------------------------------------
+    # HOOK ENTRY — highest-priority transition.
+    # Hooks must feel like a clear lift / re-entry regardless of source.
+    # Repeated hooks use a different accent so they don't recycle the same
+    # entry sensation.
+    # ------------------------------------------------------------------
     if nxt in {"hook", "drop", "chorus"}:
-        # Silence drop before hook.
+        # Stronger riser when coming from a bridge/breakdown (wider energy gap).
+        coming_from_sparse = prev in {"bridge", "breakdown", "intro"}
+        riser_intensity = 0.90 if coming_from_sparse else 0.82
+        crash_intensity = 0.92 if coming_from_sparse else 0.88
+
+        # Pre-hook silence gap to create anticipation.
         events.append(TransitionEvent(
             bar=max(0, next_start_bar - 1),
             event_type="silence_drop_before_hook",
             placement="end_of_section",
-            intensity=0.85,
+            intensity=0.85 if not is_repeat else 0.78,
             description="Brief silence before hook entry for impact",
         ))
-        # Crash hit at hook downbeat.
-        events.append(TransitionEvent(
-            bar=next_start_bar,
-            event_type="crash_hit",
-            placement="start_of_section",
-            intensity=0.90,
-            description="Hook entry crash",
-        ))
-        # Extra final-hook expansion for repeated hooks.
+
+        # Riser FX to build energy into the hook.
+        if has_fx or is_stem_rich:
+            events.append(TransitionEvent(
+                bar=max(0, next_start_bar - 1),
+                event_type="riser_fx",
+                placement="end_of_section",
+                intensity=riser_intensity,
+                description="FX riser into hook",
+            ))
+        elif coming_from_sparse:
+            # No FX stem but a sparse predecessor — use a reverse_fx instead.
+            events.append(TransitionEvent(
+                bar=max(0, next_start_bar - 1),
+                event_type="reverse_fx",
+                placement="end_of_section",
+                intensity=0.75,
+                description="Reverse FX build into hook from sparse section",
+            ))
+
+        # Drum fill at end of outgoing section (if drums exist and we're not
+        # coming from an already percussion-sparse section).
+        if has_drums and prev not in {"bridge", "breakdown", "intro"}:
+            events.append(TransitionEvent(
+                bar=max(0, prev_end_bar),
+                event_type="drum_fill",
+                placement="end_of_section",
+                intensity=0.80,
+                description=f"Drum fill exiting {prev} into hook",
+            ))
+
+        # Crash hit at the hook downbeat — the actual re-entry accent.
+        # Repeated hooks use re_entry_accent to avoid same-entry recycling.
+        if is_repeat and occurrence_of_next >= 2:
+            events.append(TransitionEvent(
+                bar=next_start_bar,
+                event_type="re_entry_accent",
+                placement="start_of_section",
+                intensity=crash_intensity,
+                params={"hook_occurrence": occurrence_of_next},
+                description=f"Hook re-entry accent (occurrence {occurrence_of_next})",
+            ))
+        else:
+            events.append(TransitionEvent(
+                bar=next_start_bar,
+                event_type="crash_hit",
+                placement="start_of_section",
+                intensity=crash_intensity,
+                description="Hook entry crash",
+            ))
+
+        # Extra expansion for third hook or later.
         if occurrence_of_next >= 3:
             events.append(TransitionEvent(
                 bar=next_start_bar,
@@ -539,40 +611,99 @@ def get_transition_events(
             ))
         return events
 
-    # Pre-hook creates tension before the hook.
+    # ------------------------------------------------------------------
+    # PRE-HOOK ENTRY — build tension before the hook
+    # ------------------------------------------------------------------
     if nxt == "pre_hook":
         events.append(TransitionEvent(
             bar=max(0, next_start_bar - 1),
-            event_type="snare_pickup",
+            event_type="snare_pickup" if not is_repeat else "drum_fill",
             placement="end_of_section",
             intensity=0.80,
-            description="Snare pickup leading into pre-hook",
+            description="Rhythmic pickup leading into pre-hook",
         ))
         events.append(TransitionEvent(
             bar=max(0, next_start_bar - 1),
             event_type="riser_fx",
             placement="end_of_section",
-            intensity=0.75,
+            intensity=0.78,
             description="FX riser into pre-hook",
         ))
         return events
 
-    # Bridge/breakdown entry: strong mute drop.
+    # ------------------------------------------------------------------
+    # BRIDGE / BREAKDOWN ENTRY — reduce density smoothly, no hard cut
+    # ------------------------------------------------------------------
     if nxt in {"bridge", "breakdown"}:
+        # Silence gap: brief but noticeable "drop" to signal the energy reduction.
         events.append(TransitionEvent(
             bar=max(0, next_start_bar - 1),
-            event_type="pre_hook_silence_drop",
+            event_type="silence_gap",
             placement="end_of_section",
-            intensity=0.88,
-            description="Subtraction drop before bridge/breakdown",
+            intensity=0.80,
+            description=f"Silence gap before {nxt} for smooth density reduction",
+        ))
+        # Reverse FX sweep to signal the energy going down.
+        events.append(TransitionEvent(
+            bar=max(0, next_start_bar - 1),
+            event_type="reverse_fx",
+            placement="end_of_section",
+            intensity=0.72,
+            description=f"Reverse FX sweep into {nxt}",
+        ))
+        # Subtractive entry at the start of bridge/breakdown so it opens gently.
+        events.append(TransitionEvent(
+            bar=next_start_bar,
+            event_type="subtractive_entry",
+            placement="start_of_section",
+            intensity=0.70,
+            description=f"Subtractive entry into {nxt}",
         ))
         return events
 
-    # Section-end drum fills for verse → anything or hook → verse.
-    if prev in {"verse", "hook"} and nxt not in {"outro", "breakdown", "bridge"}:
+    # ------------------------------------------------------------------
+    # OUTRO ENTRY — resolve naturally
+    # ------------------------------------------------------------------
+    if nxt == "outro":
+        events.append(TransitionEvent(
+            bar=next_start_bar,
+            event_type="subtractive_entry",
+            placement="start_of_section",
+            intensity=0.65,
+            description="Subtractive entry into outro for natural resolution",
+        ))
+        return events
+
+    # ------------------------------------------------------------------
+    # HOOK → VERSE — release energy without a hard reset
+    # ------------------------------------------------------------------
+    if prev in {"hook", "drop", "chorus"} and nxt == "verse":
+        if has_drums:
+            events.append(TransitionEvent(
+                bar=max(0, prev_end_bar),
+                event_type="drum_fill",
+                placement="end_of_section",
+                intensity=0.72,
+                description="Drum fill exiting hook into verse",
+            ))
+        # Subtractive entry so verse opens with slightly reduced density,
+        # giving the impression of energy release rather than a hard stop.
+        events.append(TransitionEvent(
+            bar=next_start_bar,
+            event_type="subtractive_entry",
+            placement="start_of_section",
+            intensity=0.60,
+            description="Soft verse re-entry after hook (energy release)",
+        ))
+        return events
+
+    # ------------------------------------------------------------------
+    # VERSE EXIT / INTRO EXIT — drum fill when moving forward
+    # ------------------------------------------------------------------
+    if prev in {"verse", "intro"} and nxt not in {"outro", "breakdown", "bridge", "pre_hook"}:
         events.append(TransitionEvent(
             bar=max(0, prev_end_bar),
-            event_type="drum_fill",
+            event_type="drum_fill" if has_drums else "snare_pickup",
             placement="end_of_section",
             intensity=0.70,
             description=f"Drum fill exiting {prev}",
