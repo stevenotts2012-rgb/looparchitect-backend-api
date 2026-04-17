@@ -30,6 +30,7 @@ from app.services.loop_variation_engine import (
     generate_loop_variations,
     validate_variation_plan_usage,
 )
+from app.services.arrangement_scorer import score_and_reject
 from app.services.producer_moves_engine import ProducerMovesEngine
 from app.services.render_executor import render_from_plan
 from app.services.storage import storage
@@ -3290,6 +3291,8 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
         )
 
         _validate_render_plan_quality(render_plan)
+
+        score_and_reject(render_plan)
 
         try:
             fd, temp_wav_path = tempfile.mkstemp(suffix=".wav")
