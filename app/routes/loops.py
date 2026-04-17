@@ -75,7 +75,9 @@ def _build_stem_analysis_json(
                 source_audio,
                 loop_id=loop_id,
                 source_key=source_key,
-                backend=(settings.stem_separation_backend or "builtin").strip().lower(),
+                # Use the preferred backend (e.g. demucs_htdemucs_6s); the pipeline
+                # falls back automatically through the priority chain to builtin.
+                backend=(settings.preferred_stem_backend or "builtin").strip().lower(),
             )
             if adv_result.succeeded:
                 manifest = adv_result.to_manifest(loop_id)

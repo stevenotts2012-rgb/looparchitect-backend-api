@@ -1,4 +1,16 @@
-"""Stem separation service with backend abstraction and safe fallback behavior."""
+"""Stem separation service with backend abstraction and safe fallback behavior.
+
+Backend priority (highest-quality first)
+-----------------------------------------
+1. demucs_htdemucs_6s  — 6-stem Demucs model (drums/bass/vocals/guitar/piano/other)
+2. demucs_htdemucs     — 4-stem Demucs model (drums/bass/vocals/other)
+3. demucs              — alias for demucs_htdemucs
+4. builtin / mock      — frequency-based spectral split (always available, no ML deps)
+
+When a Demucs backend is configured but the ``demucs`` package is not installed,
+a ``DemucsUnavailableError`` is raised so callers can fall back gracefully.
+The legacy ``separate_and_store_stems`` helper also falls back automatically.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +25,25 @@ from app.config import settings
 from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
+
+# Demucs model names recognised by this service
+DEMUCS_MODEL_HTDEMUCS_6S = "htdemucs_6s"
+DEMUCS_MODEL_HTDEMUCS = "htdemucs"
+
+# Map of service backend alias → Demucs model name
+_DEMUCS_BACKEND_TO_MODEL: dict[str, str] = {
+    "demucs_htdemucs_6s": DEMUCS_MODEL_HTDEMUCS_6S,
+    "demucs_htdemucs": DEMUCS_MODEL_HTDEMUCS,
+    "demucs": DEMUCS_MODEL_HTDEMUCS,
+}
+
+# Stem names produced by each Demucs model
+DEMUCS_6S_STEMS: tuple[str, ...] = ("drums", "bass", "vocals", "guitar", "piano", "other")
+DEMUCS_4S_STEMS: tuple[str, ...] = ("drums", "bass", "vocals", "other")
+
+
+class DemucsUnavailableError(RuntimeError):
+    """Raised when the demucs package is not installed or the model cannot be loaded."""
 
 
 @dataclass
@@ -36,7 +67,13 @@ class StemSeparationResult:
 
 
 def _builtin_stems(audio: AudioSegment) -> dict[str, AudioSegment]:
-    """Generate approximate stems using frequency-based splits."""
+    """Generate approximate stems using frequency-based splits.
+
+    This is the always-available fallback that requires no ML dependencies.
+    Output stem names match the Demucs 4-stem naming convention so downstream
+    consumers (advanced_stem_separation, stem_role_mapper) can handle them
+    uniformly.
+    """
     bass = audio.low_pass_filter(180)
     vocals = audio.high_pass_filter(200).low_pass_filter(3500)
     drums = audio.high_pass_filter(60).low_pass_filter(9000)
@@ -50,10 +87,120 @@ def _builtin_stems(audio: AudioSegment) -> dict[str, AudioSegment]:
     }
 
 
+def _demucs_stems(
+    audio: AudioSegment,
+    model_name: str = DEMUCS_MODEL_HTDEMUCS,
+) -> dict[str, AudioSegment]:
+    """Separate *audio* using the Demucs ML library.
+
+    Parameters
+    ----------
+    audio:
+        Full mix to separate.
+    model_name:
+        Demucs model identifier (e.g. ``htdemucs_6s``, ``htdemucs``).
+
+    Returns
+    -------
+    dict[str, AudioSegment]
+        Stem name → separated AudioSegment.
+
+    Raises
+    ------
+    DemucsUnavailableError
+        When the ``demucs`` package is not installed or the model cannot load.
+    RuntimeError
+        When inference fails for any other reason.
+
+    Notes
+    -----
+    Full Demucs inference requires the ``demucs`` package (``pip install demucs``)
+    and a compatible CPU/GPU environment.  This method is intentionally left as
+    a well-typed stub that raises ``DemucsUnavailableError`` when the package is
+    absent.  The calling code falls back to ``_builtin_stems`` automatically.
+    To enable real Demucs inference, install the package and replace the body of
+    this function with the appropriate ``demucs.api`` or ``demucs.apply`` call.
+    """
+    try:
+        import demucs  # noqa: F401 — availability check only
+    except ImportError as exc:
+        raise DemucsUnavailableError(
+            f"demucs package is not installed (model={model_name!r}). "
+            "Install it with: pip install demucs"
+        ) from exc
+
+    # ── Real Demucs inference would be implemented here ──────────────────────
+    # Example (requires demucs>=4.0):
+    #
+    #   from demucs.api import Separator
+    #   separator = Separator(model=model_name)
+    #   origin, separated = separator.separate_audio_segment(audio)
+    #   return {name: seg for name, seg in separated.items()}
+    #
+    # The stub below raises so that callers fall back to _builtin_stems.
+    raise DemucsUnavailableError(
+        f"Demucs package found but inference is not configured (model={model_name!r}). "
+        "Implement the separator call in _demucs_stems() to enable ML-based separation."
+    )
+
+
 def _export_segment_to_wav_bytes(audio: AudioSegment) -> bytes:
     output = io.BytesIO()
     audio.export(output, format="wav")
     return output.getvalue()
+
+
+def separate_stems_with_fallback(
+    audio: AudioSegment,
+    preferred_backend: str = "builtin",
+) -> tuple[dict[str, AudioSegment], str]:
+    """Separate *audio* using the best available backend.
+
+    Tries *preferred_backend* first; falls back through the priority chain
+    until a backend succeeds.  Always succeeds — worst case returns
+    frequency-based ``_builtin_stems``.
+
+    Parameters
+    ----------
+    audio:
+        Full-mix AudioSegment to separate.
+    preferred_backend:
+        Backend alias to try first (``demucs_htdemucs_6s``, ``demucs_htdemucs``,
+        ``demucs``, ``builtin``).
+
+    Returns
+    -------
+    (stems_dict, used_backend_name)
+        ``stems_dict`` maps stem name → AudioSegment.
+        ``used_backend_name`` is the alias of the backend that actually ran.
+    """
+    norm = preferred_backend.strip().lower()
+
+    # ── Demucs backends ──────────────────────────────────────────────────────
+    if norm in _DEMUCS_BACKEND_TO_MODEL:
+        model_name = _DEMUCS_BACKEND_TO_MODEL[norm]
+        try:
+            stems = _demucs_stems(audio, model_name=model_name)
+            logger.info("Demucs separation succeeded (backend=%s model=%s)", norm, model_name)
+            return stems, norm
+        except DemucsUnavailableError as exc:
+            logger.info(
+                "Demucs unavailable for backend=%s: %s — falling back to builtin",
+                norm,
+                exc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Demucs separation failed (backend=%s model=%s): %s — falling back to builtin",
+                norm,
+                model_name,
+                exc,
+                exc_info=True,
+            )
+
+    # ── Builtin frequency-based fallback ─────────────────────────────────────
+    stems = _builtin_stems(audio)
+    return stems, "builtin"
 
 
 def separate_and_store_stems(
@@ -62,13 +209,18 @@ def separate_and_store_stems(
     loop_id: int,
     source_key: str | None = None,
 ) -> StemSeparationResult:
-    """Run stem separation (when enabled) and persist stems to storage."""
-    backend = (settings.stem_separation_backend or "builtin").strip().lower()
+    """Run stem separation (when enabled) and persist stems to storage.
+
+    Uses the backend configured in ``settings.stem_separation_backend``.
+    Falls back to the builtin frequency-based separator when the preferred
+    backend (e.g. a Demucs model) is unavailable, rather than raising.
+    """
+    configured_backend = (settings.stem_separation_backend or "builtin").strip().lower()
     enabled = bool(settings.feature_stem_separation)
     if not enabled:
         return StemSeparationResult(
             enabled=False,
-            backend=backend,
+            backend=configured_backend,
             succeeded=False,
             stems_generated=[],
             stem_s3_keys={},
@@ -76,10 +228,11 @@ def separate_and_store_stems(
         )
 
     try:
-        if backend in {"builtin", "mock"}:
-            stems = _builtin_stems(source_audio)
+        if configured_backend == "mock":
+            # Mock backend is a test alias for the builtin splitter
+            stems, used_backend = _builtin_stems(source_audio), "mock"
         else:
-            raise ValueError(f"Unsupported stem backend: {backend}")
+            stems, used_backend = separate_stems_with_fallback(source_audio, configured_backend)
 
         stem_s3_keys: dict[str, str] = {}
         for stem_name, stem_audio in stems.items():
@@ -94,7 +247,7 @@ def separate_and_store_stems(
 
         return StemSeparationResult(
             enabled=True,
-            backend=backend,
+            backend=used_backend,
             succeeded=True,
             stems_generated=list(stem_s3_keys.keys()),
             stem_s3_keys=stem_s3_keys,
@@ -110,7 +263,7 @@ def separate_and_store_stems(
         )
         return StemSeparationResult(
             enabled=True,
-            backend=backend,
+            backend=configured_backend,
             succeeded=False,
             stems_generated=[],
             stem_s3_keys={},

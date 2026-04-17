@@ -184,15 +184,23 @@ _ALIAS_TABLE: list[tuple[str, str, float]] = [
 ]
 
 # AI-separated stem names (Demucs-style) → initial broad canonical role
+# Covers both the standard 4-stem model (drums/bass/vocals/other) and the
+# htdemucs_6s 6-stem model (drums/bass/vocals/guitar/piano/other).
 _AI_STEM_MAP: dict[str, str] = {
+    # 4-stem model outputs
     "drums":  "drums",
     "bass":   "bass",
     "vocals": "vocal",
     "vocal":  "vocal",
     "other":  "melody",   # second-stage classifier may refine further
     "melody": "melody",
+    # htdemucs_6s additional stems (direct high-confidence mapping)
     "piano":  "piano",
     "guitar": "guitar",
+    # Additional aliases for future model variants
+    "keys":   "keys",
+    "synth":  "synth",
+    "strings": "strings",
 }
 
 # Low-confidence fallback: role → safer grouped role

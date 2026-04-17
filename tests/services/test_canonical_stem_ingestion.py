@@ -525,12 +525,23 @@ class TestAdvancedStemSeparation:
             assert entry.source_type == SOURCE_AI_SEPARATED
 
     def test_fails_gracefully_on_bad_backend(self):
+        """An unknown backend falls back to builtin instead of raising.
+
+        The pipeline's job is to always produce stems.  An unrecognised backend
+        alias is treated like a missing Demucs install — graceful degradation to
+        the frequency-based builtin splitter, not a hard failure.
+        """
         from app.services.advanced_stem_separation import run_advanced_separation
+        from unittest.mock import MagicMock, patch
 
         audio = AudioSegment.silent(duration=1000)
-        result = run_advanced_separation(audio, loop_id=997, backend="nonexistent_backend")
-        assert result.succeeded is False
-        assert result.error is not None
+        with patch("app.services.advanced_stem_separation.storage") as mock_storage:
+            mock_storage.upload_file = MagicMock()
+            result = run_advanced_separation(audio, loop_id=997, backend="nonexistent_backend")
+        # The pipeline falls back to builtin, so it succeeds
+        assert result.succeeded is True
+        assert result.backend == "builtin"
+        assert len(result.stem_entries) > 0
 
     def test_to_manifest_loop_id_set_correctly(self):
         from app.services.advanced_stem_separation import AdvancedSeparationResult, CanonicalStemEntry
@@ -781,3 +792,254 @@ class TestNoSilentStemLoss:
             ingest_result, loop_id=60, stem_s3_keys=stem_keys
         )
         assert any(e.file_key == "d.wav" for e in manifest.stems)
+
+
+# ===========================================================================
+# Backend priority chain — stem_separation.py
+# ===========================================================================
+
+
+class TestStemSeparationBackendPriorityChain:
+    """separate_stems_with_fallback always returns stems, even when preferred backend fails."""
+
+    def test_builtin_backend_returns_four_stems(self):
+        from app.services.stem_separation import separate_stems_with_fallback
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=1000)
+        stems, used = separate_stems_with_fallback(audio, "builtin")
+        assert isinstance(stems, dict)
+        assert len(stems) >= 4
+        assert used == "builtin"
+
+    def test_mock_backend_alias_accepted(self):
+        from app.services.stem_separation import separate_stems_with_fallback
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        stems, used = separate_stems_with_fallback(audio, "mock")
+        # mock falls to builtin chain
+        assert isinstance(stems, dict)
+        assert len(stems) >= 1
+
+    def test_demucs_htdemucs_6s_falls_back_to_builtin_when_unavailable(self):
+        """When demucs is not installed, demucs_htdemucs_6s falls back to builtin."""
+        from app.services.stem_separation import separate_stems_with_fallback
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        # demucs is not installed in the test environment, so this must fall back
+        stems, used_backend = separate_stems_with_fallback(audio, "demucs_htdemucs_6s")
+        assert isinstance(stems, dict)
+        assert len(stems) >= 1
+        # The used backend should be "builtin" (fallback)
+        assert used_backend == "builtin"
+
+    def test_demucs_htdemucs_falls_back_to_builtin_when_unavailable(self):
+        from app.services.stem_separation import separate_stems_with_fallback
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        stems, used_backend = separate_stems_with_fallback(audio, "demucs_htdemucs")
+        assert isinstance(stems, dict)
+        assert used_backend == "builtin"
+
+    def test_demucs_alias_falls_back_to_builtin_when_unavailable(self):
+        from app.services.stem_separation import separate_stems_with_fallback
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        stems, used_backend = separate_stems_with_fallback(audio, "demucs")
+        assert isinstance(stems, dict)
+        assert used_backend == "builtin"
+
+    def test_builtin_stems_returns_standard_keys(self):
+        from app.services.stem_separation import _builtin_stems
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        stems = _builtin_stems(audio)
+        assert set(stems.keys()) == {"bass", "drums", "vocals", "other"}
+
+
+class TestDemucsUnavailableError:
+    def test_demucs_stems_raises_when_not_installed(self):
+        from app.services.stem_separation import _demucs_stems, DemucsUnavailableError
+        from pydub import AudioSegment
+        import unittest.mock
+
+        audio = AudioSegment.silent(duration=500)
+        # Ensure demucs is not importable
+        with unittest.mock.patch.dict("sys.modules", {"demucs": None}):
+            with pytest.raises(DemucsUnavailableError):
+                _demucs_stems(audio, model_name="htdemucs_6s")
+
+    def test_separate_and_store_stems_falls_back_on_demucs_backend(self):
+        """separate_and_store_stems falls back to builtin when demucs backend is configured."""
+        from app.services.stem_separation import separate_and_store_stems
+        from unittest.mock import MagicMock, patch
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        with patch("app.services.stem_separation.settings") as mock_settings:
+            mock_settings.feature_stem_separation = True
+            mock_settings.stem_separation_backend = "demucs_htdemucs_6s"
+            with patch("app.services.stem_separation.storage") as mock_storage:
+                mock_storage.upload_file = MagicMock()
+                result = separate_and_store_stems(audio, loop_id=1)
+        assert result.enabled is True
+        assert result.succeeded is True
+        assert result.backend == "builtin"  # fell back
+
+
+# ===========================================================================
+# htdemucs_6s stem name mapping — stem_role_mapper.py
+# ===========================================================================
+
+
+class TestHtdemucs6sStemMapping:
+    """AI stem names from the 6-stem model map to correct canonical roles."""
+
+    @pytest.mark.parametrize("stem_name,expected_role", [
+        # 4-stem model names
+        ("drums",   "drums"),
+        ("bass",    "bass"),
+        ("vocals",  "vocal"),
+        ("other",   "melody"),
+        # htdemucs_6s additional stems
+        ("piano",   "piano"),
+        ("guitar",  "guitar"),
+        ("keys",    "keys"),
+        ("synth",   "synth"),
+        ("strings", "strings"),
+    ])
+    def test_6s_stem_name_maps_to_canonical_role(self, stem_name, expected_role):
+        result = map_ai_stem_to_role(stem_name)
+        assert result.canonical_role == expected_role, (
+            f"Stem {stem_name!r}: expected {expected_role!r}, got {result.canonical_role!r}"
+        )
+
+    def test_guitar_broad_role_is_melody(self):
+        result = map_ai_stem_to_role("guitar")
+        assert result.broad_role == "melody"
+
+    def test_piano_broad_role_is_melody(self):
+        result = map_ai_stem_to_role("piano")
+        assert result.broad_role == "melody"
+
+
+# ===========================================================================
+# 6-stem model second-stage classification — advanced_stem_separation.py
+# ===========================================================================
+
+
+class TestSecondStageClassify6Stem:
+    """_second_stage_classify handles htdemucs_6s-style stem names correctly."""
+
+    def test_guitar_direct_mapping(self):
+        from app.services.advanced_stem_separation import _second_stage_classify
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        candidate = _second_stage_classify("guitar", audio)
+        assert candidate.role == "guitar"
+        assert candidate.broad_role == "melody"
+        assert candidate.confidence >= 0.60
+
+    def test_piano_direct_mapping(self):
+        from app.services.advanced_stem_separation import _second_stage_classify
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        candidate = _second_stage_classify("piano", audio)
+        assert candidate.role == "piano"
+        assert candidate.broad_role == "melody"
+
+    def test_keys_direct_mapping(self):
+        from app.services.advanced_stem_separation import _second_stage_classify
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        candidate = _second_stage_classify("keys", audio)
+        assert candidate.role == "keys"
+        assert candidate.broad_role == "harmony"
+
+    def test_all_6s_stems_produce_valid_candidates(self):
+        from app.services.advanced_stem_separation import _second_stage_classify
+        from app.services.stem_separation import DEMUCS_6S_STEMS
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=500)
+        for stem in DEMUCS_6S_STEMS:
+            candidate = _second_stage_classify(stem, audio)
+            assert candidate.role, f"role must not be empty for stem={stem!r}"
+            assert candidate.broad_role, f"broad_role must not be empty for stem={stem!r}"
+            assert 0.0 < candidate.confidence <= 1.0
+
+
+# ===========================================================================
+# Advanced separation — backend reported in result matches used backend
+# ===========================================================================
+
+
+class TestAdvancedSeparationBackendReporting:
+    """The AdvancedSeparationResult.backend field always records what actually ran."""
+
+    def test_builtin_backend_reported_in_result(self):
+        from app.services.advanced_stem_separation import run_advanced_separation
+        from unittest.mock import MagicMock, patch
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=1000)
+        with patch("app.services.advanced_stem_separation.storage") as mock_storage:
+            mock_storage.upload_file = MagicMock()
+            result = run_advanced_separation(audio, loop_id=200, backend="builtin")
+        assert result.succeeded is True
+        assert result.backend == "builtin"
+
+    def test_demucs_fallback_reports_builtin(self):
+        """When demucs_htdemucs_6s is unavailable, result.backend == 'builtin'."""
+        from app.services.advanced_stem_separation import run_advanced_separation
+        from unittest.mock import MagicMock, patch
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=1000)
+        with patch("app.services.advanced_stem_separation.storage") as mock_storage:
+            mock_storage.upload_file = MagicMock()
+            result = run_advanced_separation(audio, loop_id=201, backend="demucs_htdemucs_6s")
+        assert result.succeeded is True
+        # demucs not installed → pipeline fell back to builtin
+        assert result.backend == "builtin"
+
+    def test_manifest_from_6s_fallback_has_ai_separated_source_type(self):
+        from app.services.advanced_stem_separation import run_advanced_separation
+        from unittest.mock import MagicMock, patch
+        from pydub import AudioSegment
+
+        audio = AudioSegment.silent(duration=1000)
+        with patch("app.services.advanced_stem_separation.storage") as mock_storage:
+            mock_storage.upload_file = MagicMock()
+            result = run_advanced_separation(audio, loop_id=202, backend="demucs_htdemucs_6s")
+        manifest = result.to_manifest(202)
+        for entry in manifest.stems:
+            assert entry.source_type == SOURCE_AI_SEPARATED
+
+
+# ===========================================================================
+# preferred_stem_backend config setting
+# ===========================================================================
+
+
+class TestPreferredStemBackendConfig:
+    def test_default_is_demucs_htdemucs_6s(self):
+        from app.config import Settings
+
+        s = Settings()
+        assert s.preferred_stem_backend == "demucs_htdemucs_6s"
+
+    def test_env_override_accepted(self, monkeypatch):
+        monkeypatch.setenv("PREFERRED_STEM_BACKEND", "builtin")
+        from app.config import Settings
+
+        s = Settings()
+        assert s.preferred_stem_backend == "builtin"

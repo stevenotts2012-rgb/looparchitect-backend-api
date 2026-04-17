@@ -45,6 +45,7 @@ from app.services.stem_separation import (
     StemSeparationResult,
     _builtin_stems,
     _export_segment_to_wav_bytes,
+    separate_stems_with_fallback,
 )
 from app.services.storage import storage
 
@@ -228,7 +229,11 @@ def _classify_other_subrole(audio: AudioSegment) -> SubRoleCandidate:
 def _second_stage_classify(
     stem_name: str, audio: AudioSegment
 ) -> SubRoleCandidate:
-    """Route a broad Demucs stem to the appropriate sub-role classifier."""
+    """Route a broad Demucs stem to the appropriate sub-role classifier.
+
+    Handles both the standard 4-stem model output (drums/bass/vocals/other)
+    and the 6-stem htdemucs_6s model output (drums/bass/vocals/guitar/piano/other).
+    """
     norm = stem_name.lower().strip()
     if norm == "drums":
         return _classify_drums_subrole(audio)
@@ -239,6 +244,15 @@ def _second_stage_classify(
     # vocals → keep as "vocal" with high confidence
     if norm in ("vocals", "vocal"):
         return SubRoleCandidate("vocal", "vocals", 0.85, "subrole:vocal:direct_mapping")
+    # ── 6-stem model explicit stems ────────────────────────────────────────
+    # guitar and piano are produced directly by htdemucs_6s; pass through with
+    # high confidence so Stage 2 does not try to re-classify them spectrally.
+    if norm == "guitar":
+        return SubRoleCandidate("guitar", "melody", 0.88, "subrole:guitar:6s_direct")
+    if norm == "piano":
+        return SubRoleCandidate("piano", "melody", 0.88, "subrole:piano:6s_direct")
+    if norm == "keys":
+        return SubRoleCandidate("keys", "harmony", 0.85, "subrole:keys:6s_direct")
     # Unknown — safe fallback
     return SubRoleCandidate(norm, CANONICAL_TO_BROAD.get(norm, norm), 0.60, "subrole:unknown:passthrough")
 
@@ -257,8 +271,11 @@ def run_advanced_separation(
 ) -> AdvancedSeparationResult:
     """Run the two-stage advanced stem separation pipeline.
 
-    Stage 1: Broad stem separation (builtin or future Demucs)
-    Stage 2: Spectral analysis to derive richer sub-roles per stem
+    Stage 1: Broad stem separation via the best available backend.
+             Tries *backend* first; falls back through the priority chain
+             (demucs_htdemucs_6s → demucs_htdemucs → builtin) automatically
+             so the pipeline is never blocked by missing ML dependencies.
+    Stage 2: Spectral analysis to derive richer sub-roles per stem.
 
     Parameters
     ----------
@@ -269,18 +286,23 @@ def run_advanced_separation(
     source_key:
         Original source storage key (for logging).
     backend:
-        Separation backend identifier ("builtin" or future backends).
+        Preferred separation backend identifier.  Valid values:
+        ``demucs_htdemucs_6s``, ``demucs_htdemucs``, ``demucs``,
+        ``builtin``, ``mock``.
+        When a Demucs backend is requested but unavailable, the pipeline
+        falls back to ``builtin`` and records the used backend in the result.
 
     Returns
     -------
     AdvancedSeparationResult with per-stem CanonicalStemEntry objects.
     """
     try:
-        # ── Stage 1: broad separation ──────────────────────────────────────
-        if backend in {"builtin", "mock"}:
-            broad_stems = _builtin_stems(source_audio)
+        # ── Stage 1: broad separation with priority-chain fallback ──────────
+        norm_backend = (backend or "builtin").strip().lower()
+        if norm_backend == "mock":
+            broad_stems, used_backend = _builtin_stems(source_audio), "mock"
         else:
-            raise ValueError(f"Unsupported advanced separation backend: {backend}")
+            broad_stems, used_backend = separate_stems_with_fallback(source_audio, norm_backend)
 
         stem_entries: list[CanonicalStemEntry] = []
 
@@ -323,8 +345,9 @@ def run_advanced_separation(
             stem_entries.append(entry)
 
             logger.debug(
-                "Advanced separation [loop=%s]: %s → sub_role=%s conf=%.2f reason=%s",
+                "Advanced separation [loop=%s backend=%s]: %s → sub_role=%s conf=%.2f reason=%s",
                 loop_id,
+                used_backend,
                 broad_name,
                 canonical_role,
                 confidence,
@@ -333,7 +356,7 @@ def run_advanced_separation(
 
         return AdvancedSeparationResult(
             succeeded=True,
-            backend=backend,
+            backend=used_backend,
             stem_entries=stem_entries,
         )
 
