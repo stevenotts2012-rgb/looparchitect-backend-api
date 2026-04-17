@@ -25,6 +25,34 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Constants for plan quality enforcement
+# ---------------------------------------------------------------------------
+
+# Minimum Jaccard distance required between repeated sections of the same type.
+_MIN_JACCARD_CONTRAST: float = 0.20
+
+# Minimum novelty score (0.0–1.0) for a plan to be accepted; plans scoring below
+# this threshold are considered too generic and trigger deterministic fallback.
+_MIN_NOVELTY_SCORE: float = 0.30
+
+# Phrases that indicate the AI is producing vague, non-actionable planning notes.
+_VAGUE_PHRASES: frozenset[str] = frozenset([
+    "add more energy",
+    "make it bigger",
+    "keep it the same but stronger",
+    "more energy",
+    "just like before",
+    "same as before",
+    "keep the same",
+    "same but stronger",
+    "make it louder",
+    "just louder",
+    "more intense",
+    "similar to before",
+    "repeat the same",
+])
+
 
 # ---------------------------------------------------------------------------
 # Suggestion schema
@@ -33,13 +61,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SuggestedSectionEntry:
-    """A single section suggestion from the AI co-producer."""
+    """A single section suggestion from the AI co-producer.
+
+    All fields must be explicit — vague descriptions or missing contrast data
+    will cause the plan to be rejected.
+    """
 
     section_type: str           # "intro" | "verse" | "pre_hook" | "hook" | "bridge" | "breakdown" | "outro"
     bars: int
     energy: int                 # 1–5
     active_roles: List[str] = field(default_factory=list)
     notes: str = ""
+
+    # Strict planning fields (required for contrast-driven planning)
+    target_density: str = "medium"          # sparse | medium | full
+    transition_in: str = "none"             # how the section enters
+    transition_out: str = "none"            # how the section exits
+    variation_strategy: str = "none"        # none | role_rotation | drop_kick | support_swap | add_percussion | change_pattern
+    introduced_elements: List[str] = field(default_factory=list)   # new roles vs. prev same-type section
+    dropped_elements: List[str] = field(default_factory=list)      # removed roles vs. prev same-type section
 
 
 @dataclass
@@ -66,6 +106,13 @@ class AIProducerSuggestion:
     validation_passed: bool = False
     validation_errors: List[str] = field(default_factory=list)
 
+    # AI planning observability
+    ai_plan_raw: str = ""                           # Raw LLM output before parsing
+    ai_plan_rejected_reason: str = ""               # Why the plan was rejected (if any)
+    ai_section_deltas: List[dict] = field(default_factory=list)  # Diffs between repeated sections
+    ai_novelty_score: float = 0.0                   # 0.0–1.0 plan novelty/contrast score
+    ai_plan_vs_actual_match: Optional[float] = None  # Fraction of sections where plan == actual
+
     def to_dict(self) -> dict:
         return {
             "suggested_sections": [
@@ -75,6 +122,12 @@ class AIProducerSuggestion:
                     "energy": s.energy,
                     "active_roles": s.active_roles,
                     "notes": s.notes,
+                    "target_density": s.target_density,
+                    "transition_in": s.transition_in,
+                    "transition_out": s.transition_out,
+                    "variation_strategy": s.variation_strategy,
+                    "introduced_elements": s.introduced_elements,
+                    "dropped_elements": s.dropped_elements,
                 }
                 for s in self.suggested_sections
             ],
@@ -86,7 +139,146 @@ class AIProducerSuggestion:
             "fallback_used": self.fallback_used,
             "validation_passed": self.validation_passed,
             "validation_errors": self.validation_errors,
+            "ai_plan_raw": self.ai_plan_raw,
+            "ai_plan_rejected_reason": self.ai_plan_rejected_reason,
+            "ai_section_deltas": self.ai_section_deltas,
+            "ai_novelty_score": self.ai_novelty_score,
+            "ai_plan_vs_actual_match": self.ai_plan_vs_actual_match,
         }
+
+
+# ---------------------------------------------------------------------------
+# Vague phrase detection
+# ---------------------------------------------------------------------------
+
+
+def _contains_vague_phrase(text: str) -> bool:
+    """Return True if *text* contains a known vague producer instruction.
+
+    Vague instructions (e.g. "add more energy", "make it bigger") give the
+    renderer nothing concrete to act on and cause arrangements to collapse
+    into identical-sounding sections.
+    """
+    if not text:
+        return False
+    lower = text.strip().lower()
+    return any(phrase in lower for phrase in _VAGUE_PHRASES)
+
+
+# ---------------------------------------------------------------------------
+# Plan novelty scorer
+# ---------------------------------------------------------------------------
+
+
+def score_ai_plan(
+    suggestion: AIProducerSuggestion,
+) -> tuple[float, list[dict]]:
+    """Score an AI plan for novelty and audible contrast.
+
+    Returns ``(novelty_score, section_deltas)`` where:
+
+    * ``novelty_score`` — 0.0–1.0 float.  Plans below :data:`_MIN_NOVELTY_SCORE`
+      are considered too generic and trigger deterministic fallback.
+    * ``section_deltas`` — list of dicts describing role/energy changes between
+      consecutive occurrences of the same section type.
+
+    Scoring components (weighted average):
+
+    1. *Repeated-section contrast* (weight 0.40):
+       Mean sufficient-contrast fraction across all repeated-section pairs.
+       A pair is "sufficient" when their Jaccard role-set distance >=
+       :data:`_MIN_JACCARD_CONTRAST` OR the absolute energy delta >= 1.
+
+    2. *Energy curve variance* (weight 0.30):
+       Normalised variance of the energy curve.  Flat curves (all same energy)
+       score 0.0; a curve spanning the full 1-5 range scores >= 1.0 (capped).
+
+    3. *Hook novelty* (weight 0.30):
+       Fraction of hooks that have at least one ``introduced_elements`` entry.
+       When no hooks are present the component is skipped.
+    """
+    sections = suggestion.suggested_sections
+    if not sections:
+        return 0.0, []
+
+    # Group by section type in order of occurrence.
+    by_type: dict[str, list[SuggestedSectionEntry]] = {}
+    for s in sections:
+        by_type.setdefault(s.section_type, []).append(s)
+
+    section_deltas: list[dict] = []
+    contrast_scores: list[float] = []
+
+    # --- Component 1: repeated-section contrast ---
+    for stype, instances in by_type.items():
+        if len(instances) < 2:
+            continue
+        for i in range(1, len(instances)):
+            a = instances[i - 1]
+            b = instances[i]
+            prev_set = set(a.active_roles)
+            curr_set = set(b.active_roles)
+            union = prev_set | curr_set
+            if union:
+                jaccard = 1.0 - len(prev_set & curr_set) / len(union)
+            else:
+                jaccard = 0.0
+            energy_delta = b.energy - a.energy
+            roles_added = sorted(curr_set - prev_set)
+            roles_removed = sorted(prev_set - curr_set)
+            sufficient = jaccard >= _MIN_JACCARD_CONTRAST or abs(energy_delta) >= 1
+
+            section_deltas.append({
+                "section_type": stype,
+                "occurrence_a": i,
+                "occurrence_b": i + 1,
+                "roles_added": roles_added,
+                "roles_removed": roles_removed,
+                "energy_delta": energy_delta,
+                "jaccard_distance": round(jaccard, 3),
+                "sufficient_contrast": sufficient,
+            })
+            contrast_scores.append(1.0 if sufficient else 0.0)
+
+    # --- Component 2: energy curve variance ---
+    energies = [s.energy for s in sections]
+    if len(energies) >= 2:
+        mean_e = sum(energies) / len(energies)
+        variance = sum((e - mean_e) ** 2 for e in energies) / len(energies)
+        energy_score = min(1.0, variance / 2.0)
+    else:
+        energy_score = 0.5
+
+    # --- Component 3: hook novelty ---
+    hooks = by_type.get("hook", [])
+    hook_novelty_score: Optional[float]
+    if hooks:
+        hooks_with_intro = sum(1 for h in hooks if h.introduced_elements)
+        hook_novelty_score = min(1.0, hooks_with_intro / len(hooks))
+    else:
+        hook_novelty_score = None  # no hooks — skip component
+
+    # --- Weighted combination ---
+    weights: list[float] = []
+    values: list[float] = []
+
+    if contrast_scores:
+        weights.append(0.40)
+        values.append(sum(contrast_scores) / len(contrast_scores))
+
+    weights.append(0.30)
+    values.append(energy_score)
+
+    if hook_novelty_score is not None:
+        weights.append(0.30)
+        values.append(hook_novelty_score)
+
+    if not weights:
+        return 0.5, section_deltas
+
+    total_weight = sum(weights)
+    final_score = sum(w * v for w, v in zip(weights, values)) / total_weight
+    return round(final_score, 3), section_deltas
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +298,19 @@ def validate_ai_suggestion(
     Validate an AIProducerSuggestion against hard structural rules.
 
     Returns (is_valid, list_of_errors).
+
+    Hard rules checked:
+    - Section types must be known.
+    - Hook energy must exceed every verse energy.
+    - Intro energy must be <= 3.
+    - Suggested roles must be a subset of available_roles.
+    - Bar counts must be positive multiples of 4.
+    - Confidence must be 0.0-1.0.
+    - Repeated verses/hooks must have at least ``_MIN_JACCARD_CONTRAST``
+      role-set distance OR an energy delta >= 1 (audible contrast required).
+    - Bridge/breakdown sections must reduce density (energy <= 2).
+    - Outro sections must simplify (energy <= 2).
+    - Section notes must not contain vague generic phrases.
     """
     errors: list[str] = []
 
@@ -139,6 +344,22 @@ def validate_ai_suggestion(
                 f"AI suggestion: intro energy ({intro.energy}) too high — must be <= 3"
             )
 
+    # Rule: bridge/breakdown must reduce density (energy <= 2)
+    for sec in suggestion.suggested_sections:
+        if sec.section_type in {"bridge", "breakdown"} and sec.energy > 2:
+            errors.append(
+                f"AI suggestion: '{sec.section_type}' must reduce density "
+                f"(energy must be <= 2, got {sec.energy})"
+            )
+
+    # Rule: outro must simplify (energy <= 2)
+    for outro in [s for s in suggestion.suggested_sections if s.section_type == "outro"]:
+        if outro.energy > 2:
+            errors.append(
+                f"AI suggestion: 'outro' must simplify "
+                f"(energy must be <= 2, got {outro.energy})"
+            )
+
     # Rule: suggested roles must be a subset of available_roles
     if available_roles:
         available_set = set(available_roles)
@@ -161,6 +382,43 @@ def validate_ai_suggestion(
     # Rule: confidence must be 0–1
     if not (0.0 <= suggestion.confidence <= 1.0):
         errors.append(f"AI suggestion confidence {suggestion.confidence} out of range [0, 1]")
+
+    # Rule: repeated sections must have audible contrast
+    by_type: dict[str, list[SuggestedSectionEntry]] = {}
+    for s in suggestion.suggested_sections:
+        by_type.setdefault(s.section_type, []).append(s)
+
+    for stype, instances in by_type.items():
+        if stype in {"intro", "outro"}:
+            # intro/outro are allowed to be similar — they bracket the arrangement
+            continue
+        if len(instances) < 2:
+            continue
+        for i in range(1, len(instances)):
+            a = instances[i - 1]
+            b = instances[i]
+            prev_set = set(a.active_roles)
+            curr_set = set(b.active_roles)
+            union = prev_set | curr_set
+            jaccard = (
+                1.0 - len(prev_set & curr_set) / len(union)
+                if union
+                else 0.0
+            )
+            energy_delta = abs(b.energy - a.energy)
+            if jaccard < _MIN_JACCARD_CONTRAST and energy_delta < 1:
+                errors.append(
+                    f"AI suggestion: repeated '{stype}' sections {i} and {i + 1} are "
+                    f"too similar (Jaccard={jaccard:.2f}, energy_delta={energy_delta}) — "
+                    "at least 2 meaningful differences are required between repeated sections"
+                )
+
+    # Rule: section notes must not be vague
+    for sec in suggestion.suggested_sections:
+        if _contains_vague_phrase(sec.notes):
+            errors.append(
+                f"AI suggestion: section '{sec.section_type}' notes are too vague: '{sec.notes}'"
+            )
 
     is_valid = len(errors) == 0
     return is_valid, errors
@@ -271,11 +529,35 @@ class AIProducerAssistService:
                 "falling back to rules-only path",
                 len(errors),
             )
+            rejected_reason = f"Validation errors: {'; '.join(errors)}"
             return AIProducerSuggestion(
                 fallback_used=True,
                 reasoning=f"AI suggestion failed validation: {'; '.join(errors)}",
                 validation_errors=errors,
                 model_used=self.model,
+                ai_plan_raw=raw_suggestion.ai_plan_raw,
+                ai_plan_rejected_reason=rejected_reason,
+            )
+
+        # Score the plan — reject plans that are too generic
+        novelty_score, section_deltas = score_ai_plan(raw_suggestion)
+        raw_suggestion.ai_novelty_score = novelty_score
+        raw_suggestion.ai_section_deltas = section_deltas
+
+        if novelty_score < _MIN_NOVELTY_SCORE:
+            rejected_reason = (
+                f"Novelty score too low: {novelty_score:.3f} < {_MIN_NOVELTY_SCORE} — "
+                "plan is too generic; falling back to deterministic arrangement"
+            )
+            logger.warning("AIProducerAssistService: %s", rejected_reason)
+            return AIProducerSuggestion(
+                fallback_used=True,
+                reasoning=rejected_reason,
+                model_used=self.model,
+                ai_plan_raw=raw_suggestion.ai_plan_raw,
+                ai_plan_rejected_reason=rejected_reason,
+                ai_novelty_score=novelty_score,
+                ai_section_deltas=section_deltas,
             )
 
         raw_suggestion.model_used = self.model
@@ -322,7 +604,9 @@ class AIProducerAssistService:
 
         raw_text = (response.choices[0].message.content or "").strip()
         payload = json.loads(raw_text)
-        return self._parse_response(payload)
+        suggestion = self._parse_response(payload)
+        suggestion.ai_plan_raw = raw_text  # capture raw LLM output for observability
+        return suggestion
 
     def _build_prompt(
         self,
@@ -341,18 +625,31 @@ class AIProducerAssistService:
 
         return (
             "You are an AI music production co-producer. "
-            "Propose a section-by-section arrangement plan.\n"
-            "Rules (MUST follow):\n"
+            "Propose a strict, deterministic, contrast-driven section-by-section arrangement plan.\n"
+            "HARD RULES (MUST follow — plans violating these are rejected):\n"
             "- Use only roles from available_roles list.\n"
             "- Hook energy must be strictly greater than verse energy.\n"
             "- Intro energy must be <= 3.\n"
+            "- Bridge and breakdown energy must be <= 2 (density reduction required).\n"
+            "- Outro energy must be <= 2 (simplification required).\n"
             "- Bar counts must be positive multiples of 4.\n"
             "- Confidence must be 0.0 to 1.0.\n"
+            "- Repeated sections (verse 1 vs verse 2, hook 1 vs hook 2) MUST differ: "
+            "use different active_roles (Jaccard distance >= 0.20) OR an energy difference of at least 1.\n"
+            "- DO NOT use vague notes like 'add more energy', 'make it bigger', "
+            "'keep it the same but stronger'. Be specific about WHAT changes.\n"
             f"- Target approximately {target_bars} total bars.\n"
             f"{style_instruction}\n"
             "Output JSON with keys: suggested_sections (list), confidence, reasoning, "
             "style_guess, producer_notes (list of strings).\n"
-            "Each section: section_type, bars, energy (1-5), active_roles (list), notes.\n"
+            "Each section MUST include ALL of these keys: "
+            "section_type, bars, energy (1-5), active_roles (list), notes (specific action), "
+            "target_density (sparse|medium|full), transition_in (none|drum_fill|fx_rise|fx_hit|"
+            "mute_drop|bass_drop|vocal_chop|arp_lift|percussion_fill), "
+            "transition_out (same choices), "
+            "variation_strategy (none|role_rotation|drop_kick|support_swap|add_percussion|change_pattern), "
+            "introduced_elements (list of new roles vs prev occurrence), "
+            "dropped_elements (list of removed roles vs prev occurrence).\n"
             f"available_roles: {json.dumps(available_roles)}\n"
             f"genre: {genre}\n"
             f"tempo: {tempo} BPM\n"
@@ -374,6 +671,12 @@ class AIProducerAssistService:
                     energy=max(1, min(5, int(sec.get("energy", 3)))),
                     active_roles=[str(r) for r in sec.get("active_roles", [])],
                     notes=str(sec.get("notes", "")),
+                    target_density=str(sec.get("target_density", "medium")).lower(),
+                    transition_in=str(sec.get("transition_in", "none")).lower(),
+                    transition_out=str(sec.get("transition_out", "none")).lower(),
+                    variation_strategy=str(sec.get("variation_strategy", "none")).lower(),
+                    introduced_elements=[str(r) for r in sec.get("introduced_elements", [])],
+                    dropped_elements=[str(r) for r in sec.get("dropped_elements", [])],
                 )
             )
 
