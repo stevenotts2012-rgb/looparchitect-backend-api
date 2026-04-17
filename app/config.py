@@ -106,6 +106,17 @@ class Settings(BaseSettings):
         validation_alias="ADVANCED_STEM_SEPARATION_V2",
     )
 
+    # Preferred stem separation backend for the advanced pipeline.
+    # Controls Stage 1 of run_advanced_separation().  The pipeline always falls
+    # back to the builtin frequency-based splitter when the preferred backend
+    # is unavailable (e.g. Demucs not installed).
+    # Valid values: demucs_htdemucs_6s | demucs_htdemucs | demucs | builtin
+    # Default: demucs_htdemucs_6s (6-stem model, highest quality when available)
+    preferred_stem_backend: str = Field(
+        default="demucs_htdemucs_6s",
+        validation_alias="PREFERRED_STEM_BACKEND",
+    )
+
     # Arrangement Quality Gates — extended quality gate checks (section contrast,
     # repeat differentiation, hook payoff, melodic overcrowding, low-end mud,
     # source confidence, arrangement audibility) plus auto-repair.
