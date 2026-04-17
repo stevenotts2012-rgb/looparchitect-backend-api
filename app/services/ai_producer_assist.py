@@ -219,11 +219,10 @@ def score_ai_plan(
             prev_set = set(a.active_roles)
             curr_set = set(b.active_roles)
             union = prev_set | curr_set
-            jaccard = (
-                1.0 - len(prev_set & curr_set) / len(union)
-                if union
-                else 0.0
-            )
+            if union:
+                jaccard = 1.0 - len(prev_set & curr_set) / len(union)
+            else:
+                jaccard = 0.0
             energy_delta = b.energy - a.energy
             roles_added = sorted(curr_set - prev_set)
             roles_removed = sorted(prev_set - curr_set)
@@ -407,10 +406,10 @@ def validate_ai_suggestion(
                 else 0.0
             )
             energy_delta = abs(b.energy - a.energy)
-            if jaccard < _MIN_JACCARD_CONTRAST and energy_delta == 0:
+            if jaccard < _MIN_JACCARD_CONTRAST and energy_delta < 1:
                 errors.append(
                     f"AI suggestion: repeated '{stype}' sections {i} and {i + 1} are "
-                    f"too similar (Jaccard={jaccard:.2f}, energy_delta=0) — "
+                    f"too similar (Jaccard={jaccard:.2f}, energy_delta={energy_delta}) — "
                     "at least 2 meaningful differences are required between repeated sections"
                 )
 
@@ -636,7 +635,7 @@ class AIProducerAssistService:
             "- Bar counts must be positive multiples of 4.\n"
             "- Confidence must be 0.0 to 1.0.\n"
             "- Repeated sections (verse 1 vs verse 2, hook 1 vs hook 2) MUST differ: "
-            "use different active_roles (Jaccard distance >= 0.20) OR different energy levels.\n"
+            "use different active_roles (Jaccard distance >= 0.20) OR an energy difference of at least 1.\n"
             "- DO NOT use vague notes like 'add more energy', 'make it bigger', "
             "'keep it the same but stronger'. Be specific about WHAT changes.\n"
             f"- Target approximately {target_bars} total bars.\n"
