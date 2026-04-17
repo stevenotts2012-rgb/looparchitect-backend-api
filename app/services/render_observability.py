@@ -286,6 +286,25 @@ def extract_section_occurrence_info(
     }
 
 
+def _compute_plan_vs_actual_match(
+    planned: list[dict],
+    actual: list[dict],
+) -> Optional[float]:
+    """Compute fraction of sections where planned roles exactly match actual roles.
+
+    Returns a 0.0–1.0 float, or None when either list is empty.
+    """
+    if not planned or not actual:
+        return None
+    min_len = min(len(planned), len(actual))
+    matches = sum(
+        1
+        for i in range(min_len)
+        if set(planned[i].get("roles", [])) == set(actual[i].get("roles", []))
+    )
+    return round(matches / min_len, 3)
+
+
 # ---------------------------------------------------------------------------
 # Full metadata assembly
 # ---------------------------------------------------------------------------
@@ -351,5 +370,26 @@ def assemble_render_metadata(
         metadata["section_occurrence_info"] = observability["section_occurrence_info"]
     if observability.get("source_quality_mode"):
         metadata["source_quality_mode"] = observability["source_quality_mode"]
+
+    # AI planning observability fields.
+    for ai_key in (
+        "ai_plan_raw",
+        "ai_plan_rejected_reason",
+        "ai_section_deltas",
+        "ai_novelty_score",
+    ):
+        if ai_key in observability:
+            metadata[ai_key] = observability[ai_key]
+
+    # Compute plan-vs-actual match if not already supplied.
+    if "ai_plan_vs_actual_match" in observability:
+        metadata["ai_plan_vs_actual_match"] = observability["ai_plan_vs_actual_match"]
+    else:
+        computed = _compute_plan_vs_actual_match(
+            observability.get("planned_stem_map_by_section", []),
+            observability.get("actual_stem_map_by_section", []),
+        )
+        if computed is not None:
+            metadata["ai_plan_vs_actual_match"] = computed
 
     return metadata
