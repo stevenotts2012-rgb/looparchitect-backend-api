@@ -905,16 +905,11 @@ def _apply_stem_primary_section_states(
 
             # Apply any start_of_section events that were staged by the PREVIOUS
             # section's boundary (e.g. crash_hit, re_entry_accent, subtractive_entry).
-            # These are applied as "on_downbeat" so the renderer places them at the
-            # very start of this section (bar 0 relative).
+            # These are registered in boundary_events with placement "on_downbeat" so
+            # the renderer applies them at the very start of this section (bar 0
+            # relative).  They must NOT also be added to baseline_variations — doing
+            # so would cause the same DSP to run twice on the same audio window.
             for te in pending_start_of_section_events:
-                baseline_variations.append({
-                    "variation_type": te.event_type,
-                    "bar_start": bar_start,
-                    "duration_bars": 1,
-                    "intensity": te.intensity,
-                    "params": te.params,
-                })
                 boundary_events.append({
                     "type": te.event_type,
                     "bar": te.bar,
@@ -939,13 +934,10 @@ def _apply_stem_primary_section_states(
                 )
                 for te in transition_events:
                     if te.placement == "end_of_section":
-                        baseline_variations.append({
-                            "variation_type": te.event_type,
-                            "bar_start": te.bar,
-                            "duration_bars": 1,
-                            "intensity": te.intensity,
-                            "params": te.params,
-                        })
+                        # Register only in boundary_events — NOT in baseline_variations.
+                        # Adding the same event to both paths causes double-application
+                        # of the DSP effect on the same audio window, stacking strong
+                        # transitions into a single section boundary.
                         boundary_events.append({
                             "type": te.event_type,
                             "bar": te.bar,
@@ -1788,6 +1780,34 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
 
     plan_vs_actual_match = round(plan_match_count / max(1, plan_total_count), 3)
 
+    # Flat list of every planned transition event type (one entry per planned event,
+    # ordered by section then by event position within the section).
+    planned_transition_events: list[str] = []
+    for entry in transition_plan_by_section:
+        planned_transition_events.extend(entry.get("planned_events") or [])
+
+    # Per-section boundary audio signature for post-render audits.
+    # Captures what was planned and what was actually applied at each boundary,
+    # along with the section type so callers can detect weak or missing transitions.
+    boundary_audio_signature: dict[str, dict] = {}
+    for entry in transition_plan_by_section:
+        sig_key = entry.get("section") or entry.get("section_type") or ""
+        if not sig_key:
+            continue
+        # Deduplicate keys by appending index when names collide.
+        base_key = sig_key
+        collision_idx = 1
+        while sig_key in boundary_audio_signature:
+            sig_key = f"{base_key}_{collision_idx}"
+            collision_idx += 1
+        boundary_audio_signature[sig_key] = {
+            "section_type": entry.get("section_type", ""),
+            "planned_transition_count": len(entry.get("planned_events") or []),
+            "applied_transition_count": len(entry.get("applied_events") or []),
+            "transition_types_applied": list(entry.get("applied_events") or []),
+            "plan_coverage": entry.get("plan_coverage", 0.0),
+        }
+
     return {
         "sections_count": len(timeline_sections),
         "distinct_stem_set_count": distinct_count,
@@ -1798,10 +1818,15 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         "section_role_map": section_role_rows,
         # Transition observability (added for transition flow audit).
         "transition_plan_by_section": transition_plan_by_section,
+        "planned_transition_events": planned_transition_events,
         "actual_transition_events_used": actual_transition_events_used,
         "transition_type_count": transition_type_counts,
         "sections_missing_transitions": sections_missing_transitions,
+        # Alias matching the observability spec field name.
+        "sections_with_no_transition": sections_missing_transitions,
         "plan_vs_actual_transition_match": plan_vs_actual_match,
+        # Per-section boundary audio signature for post-render audits.
+        "boundary_audio_signature": boundary_audio_signature,
     }
 
 
@@ -2324,7 +2349,10 @@ def _render_producer_arrangement(
             intensity = float(boundary_event.get("intensity", 0.7) or 0.7)
             params = boundary_event.get("params") if isinstance(boundary_event.get("params"), dict) else {}
 
-            if placement == "on_downbeat":
+            if placement in {"on_downbeat", "start_of_section"}:
+                # Both placements target the very first bar of the section so that
+                # entry accents (crash_hit, re_entry_accent, subtractive_entry) are
+                # audible at the opening downbeat rather than misplaced at the tail.
                 event_start_ms = 0
                 event_end_ms = min(len(section_audio), bar_duration_ms)
             elif placement == "mid_section":
