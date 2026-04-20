@@ -3556,6 +3556,211 @@ def _run_pattern_variation_shadow(
     return result
 
 
+def _run_groove_engine_shadow(
+    render_plan: dict,
+    available_roles: list[str],
+    arrangement_id: int,
+    correlation_id: str,
+    source_quality: str = "true_stems",
+) -> dict:
+    """Run the Groove Engine as a shadow planner (non-blocking).
+
+    Builds a :class:`GroovePlan` for each section in *render_plan*, validates
+    the full plan set with :class:`GrooveValidator`, logs all findings, and
+    returns a JSON-safe result dict.  It never raises — any exception is
+    caught and recorded in the ``error`` key so the live render path is
+    completely unaffected.
+
+    Parameters
+    ----------
+    render_plan:
+        The already-built render plan dict (post-``attach_loops_to_sections``).
+    available_roles:
+        Resolved stem roles for the source material.
+    arrangement_id:
+        Arrangement ID used in log messages.
+    correlation_id:
+        Correlation ID used for structured log events.
+    source_quality:
+        Source quality mode string (default ``"true_stems"``).
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``plans``              – list of serialised :class:`GroovePlan` dicts
+    * ``section_count``      – number of sections processed
+    * ``total_events``       – total groove events across all sections
+    * ``low_bounce_sections`` – names of sections with bounce_score < 0.3
+    * ``validation_issues``  – list of serialised validation issue dicts
+    * ``error``              – error message string on failure, ``None`` on success
+    """
+    from app.services.groove_engine.groove_engine import GrooveEngine
+    from app.services.groove_engine.types import GrooveContext
+    from app.services.groove_engine.validator import GrooveValidator
+
+    result: dict = {
+        "plans": [],
+        "section_count": 0,
+        "total_events": 0,
+        "low_bounce_sections": [],
+        "validation_issues": [],
+        "error": None,
+    }
+
+    try:
+        sections_raw = render_plan.get("sections") or []
+        if not sections_raw:
+            logger.info(
+                "GROOVE_SHADOW [arr=%d] no sections in render plan — skipping",
+                arrangement_id,
+            )
+            return result
+
+        engine = GrooveEngine(default_source_quality=source_quality)
+
+        # Count total occurrences per type for context building
+        type_totals: dict[str, int] = {}
+        for s in sections_raw:
+            stype = str(s.get("type") or s.get("name") or "verse").strip().lower()
+            type_totals[stype] = type_totals.get(stype, 0) + 1
+
+        occurrence_counts: dict[str, int] = {}
+        serialised_plans: list[dict] = []
+        low_bounce_names: list[str] = []
+        groove_plan_objects: list = []
+        total_events = 0
+
+        for idx, s in enumerate(sections_raw):
+            stype = str(s.get("type") or s.get("name") or "verse").strip().lower()
+            section_name = str(
+                s.get("section_name") or s.get("name") or stype.title()
+            )
+            bars = int(s.get("bars") or 8)
+            roles: list[str] = list(
+                s.get("active_stem_roles") or s.get("instruments") or available_roles or []
+            )
+            energy = float(s.get("energy") or _section_energy_from_arc(stype, 1))
+            density = float(s.get("density") or 0.6)
+
+            # Pull timeline events from the already-built timeline shadow plan
+            timeline_events: list[dict] = []
+            tl_plan = render_plan.get("_timeline_plan") or {}
+            tl_sections = (tl_plan.get("plan") or {}).get("sections") or []
+            if idx < len(tl_sections):
+                timeline_events = list(tl_sections[idx].get("events") or [])
+
+            # Pull pattern variation events from the already-built shadow plan
+            pattern_variations: list[dict] = []
+            pv_plans = (render_plan.get("_pattern_variation_plans") or {}).get("plans") or []
+            if idx < len(pv_plans):
+                pattern_variations = [pv_plans[idx]]
+
+            occurrence_counts[stype] = occurrence_counts.get(stype, 0) + 1
+            occ_idx = occurrence_counts[stype] - 1  # 0-based
+
+            ctx = GrooveContext(
+                section_name=section_name,
+                section_index=idx,
+                section_occurrence_index=occ_idx,
+                total_occurrences=type_totals.get(stype, 1),
+                bars=bars,
+                energy=energy,
+                density=density,
+                active_roles=roles,
+                timeline_events=timeline_events,
+                pattern_variations=pattern_variations,
+                source_quality=source_quality,
+                available_roles=available_roles,
+            )
+
+            plan = engine.build_groove_plan(ctx)
+            total_events += len(plan.groove_events)
+            groove_plan_objects.append(plan)
+
+            logger.info(
+                "GROOVE_SHADOW [arr=%d] section=%r occ=%d profile=%r "
+                "intensity=%.2f bounce=%.3f events=%d heuristics=%s",
+                arrangement_id,
+                section_name,
+                occ_idx,
+                plan.groove_profile_name,
+                plan.groove_intensity,
+                plan.bounce_score,
+                len(plan.groove_events),
+                plan.applied_heuristics,
+            )
+
+            if plan.bounce_score < 0.3 and roles:
+                low_bounce_names.append(section_name)
+                logger.warning(
+                    "GROOVE_SHADOW [arr=%d] LOW_BOUNCE section=%r "
+                    "score=%.3f — groove plan may feel flat",
+                    arrangement_id,
+                    section_name,
+                    plan.bounce_score,
+                )
+
+            serialised_plans.append(plan.to_dict())
+
+        # Validate the full set of plans
+        validator = GrooveValidator()
+        issues = validator.validate(groove_plan_objects, source_quality=source_quality)
+
+        serialised_issues = []
+        for issue in issues:
+            logger.warning(
+                "GROOVE_SHADOW [arr=%d] VALIDATION_%s rule=%s section=%r: %s",
+                arrangement_id,
+                issue.severity.upper(),
+                issue.rule,
+                issue.section_name,
+                issue.message,
+            )
+            serialised_issues.append({
+                "rule": issue.rule,
+                "severity": issue.severity,
+                "message": issue.message,
+                "section_name": issue.section_name,
+            })
+
+        if not issues:
+            logger.info(
+                "GROOVE_SHADOW [arr=%d] validation passed — no issues found",
+                arrangement_id,
+            )
+
+        result.update({
+            "plans": serialised_plans,
+            "section_count": len(sections_raw),
+            "total_events": total_events,
+            "low_bounce_sections": low_bounce_names,
+            "validation_issues": serialised_issues,
+        })
+
+        log_feature_event(
+            logger,
+            event="groove_engine_shadow_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            section_count=len(sections_raw),
+            total_events=total_events,
+            low_bounce_count=len(low_bounce_names),
+            validation_issue_count=len(issues),
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "GROOVE_SHADOW [arr=%d] planning failed (non-blocking): %s",
+            arrangement_id,
+            exc,
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+
+    return result
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -3893,6 +4098,41 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 arrangement_id=arrangement_id,
                 correlation_id=correlation_id,
                 source_quality=_pv_source_quality,
+            )
+
+        # ====================================================================
+        # GROOVE ENGINE SHADOW: groove planning for observability.
+        # Runs GrooveEngine for each section in the finalised render-plan.
+        # Results are stored in render_plan["_groove_plans"] for inspection
+        # via render_plan_json.
+        # Does NOT modify rendered audio (shadow mode only).
+        # ====================================================================
+        if settings.feature_groove_engine_shadow:
+            _ge_source_quality = "stereo_fallback"
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _ge_source_quality = str(
+                    stem_metadata.get("source_quality") or "true_stems"
+                )
+            elif loaded_stems and len(loaded_stems) > 1:
+                _ge_source_quality = "true_stems"
+            elif loaded_stems:
+                _ge_source_quality = "ai_separated"
+
+            _ge_roles: list[str] = []
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _ge_roles = _ordered_unique_roles(
+                    stem_metadata.get("roles_detected")
+                    or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+                )
+            elif loaded_stems:
+                _ge_roles = _ordered_unique_roles(list(loaded_stems.keys()))
+
+            render_plan["_groove_plans"] = _run_groove_engine_shadow(
+                render_plan=render_plan,
+                available_roles=_ge_roles,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+                source_quality=_ge_source_quality,
             )
 
         arrangement.render_plan_json = json.dumps(render_plan)
