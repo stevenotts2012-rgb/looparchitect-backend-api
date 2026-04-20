@@ -246,6 +246,20 @@ class Settings(BaseSettings):
         validation_alias="DROP_ENGINE_SHADOW",
     )
 
+    # Motif Engine Shadow Mode — runs the Motif Engine as a shadow planner during
+    # arrangement jobs for observability and motif identity inspection.
+    # Extracts a core melodic/harmonic motif, plans its reuse across sections, and
+    # validates structural cohesion (hook > verse, bridge varies, outro resolves).
+    # Does NOT drive live rendering.  Results are stored inside render_plan_json
+    # under the ``_motif_plan``, ``_motif_scores``, ``_motif_warnings``, and
+    # ``_motif_fallback_used`` keys.
+    # Enabled by default so every job emits motif identity observability data.
+    # Disable with MOTIF_ENGINE_SHADOW=false to suppress the extra planning pass.
+    feature_motif_engine_shadow: bool = Field(
+        default=True,
+        validation_alias="MOTIF_ENGINE_SHADOW",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
@@ -312,6 +326,7 @@ class Settings(BaseSettings):
         "feature_timeline_engine_shadow",
         "feature_pattern_variation_shadow",
         "feature_drop_engine_shadow",
+        "feature_motif_engine_shadow",
         mode="before",
     )
     @classmethod
