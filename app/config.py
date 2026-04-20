@@ -220,6 +220,18 @@ class Settings(BaseSettings):
         validation_alias="GROOVE_ENGINE_SHADOW",
     )
 
+    # AI Producer System Shadow Mode — runs the multi-agent producer workflow
+    # (PlannerAgent → CriticAgent → RepairAgent → Validator) as a shadow planner
+    # during arrangement jobs for observability and plan quality inspection.
+    # Does NOT drive live rendering.  Results are stored inside render_plan_json
+    # under the ``_ai_producer_plan``, ``_ai_critic_scores``, ``_ai_repair_actions``,
+    # ``_ai_rejected_reason``, and ``_ai_fallback_used`` keys.
+    # Disabled by default.  Enable with AI_PRODUCER_SYSTEM_SHADOW=true.
+    feature_ai_producer_system_shadow: bool = Field(
+        default=False,
+        validation_alias="AI_PRODUCER_SYSTEM_SHADOW",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field

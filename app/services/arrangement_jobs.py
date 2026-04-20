@@ -3761,6 +3761,127 @@ def _run_groove_engine_shadow(
     return result
 
 
+def _run_ai_producer_system_shadow(
+    render_plan: dict,
+    available_roles: list[str],
+    arrangement_id: int,
+    correlation_id: str,
+    source_quality: str = "stereo_fallback",
+) -> dict:
+    """Run the AI Producer System as a shadow planner (non-blocking).
+
+    Executes the full multi-agent workflow:
+    PlannerAgent → CriticAgent → RepairAgent → Validator.
+
+    The result is stored in render_plan["_ai_producer_plan"] etc. for
+    inspection via render_plan_json.  It never raises — any exception is
+    caught and recorded so the live render path is completely unaffected.
+
+    Parameters
+    ----------
+    render_plan:
+        The already-built render plan dict.
+    available_roles:
+        Resolved stem roles for the source material.
+    arrangement_id:
+        Arrangement ID used in log messages.
+    correlation_id:
+        Correlation ID used for structured log events.
+    source_quality:
+        Source quality mode string.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``plan``             – serialised AIProducerPlan or ``None``
+    * ``critic_scores``    – serialised AICriticScore or ``None``
+    * ``repair_actions``   – list of serialised AIRepairAction dicts
+    * ``validator_warnings`` – list of warning strings
+    * ``accepted``         – bool
+    * ``rejected_reason``  – rejection explanation or ``""``
+    * ``fallback_used``    – bool
+    * ``error``            – error message on failure, ``None`` on success
+    """
+    from app.services.ai_producer_system.orchestrator import (
+        AIProducerOrchestrator,
+        result_to_dict,
+    )
+
+    result: dict = {
+        "plan": None,
+        "critic_scores": None,
+        "repair_actions": [],
+        "validator_warnings": [],
+        "accepted": False,
+        "rejected_reason": "",
+        "fallback_used": False,
+        "error": None,
+    }
+
+    try:
+        sections_raw = render_plan.get("sections") or []
+        if not sections_raw:
+            logger.info(
+                "AI_PRODUCER_SHADOW [arr=%d] no sections in render plan — skipping",
+                arrangement_id,
+            )
+            return result
+
+        # Build section template from normalised render-plan sections
+        section_template: list[dict] = []
+        for s in sections_raw:
+            name = str(s.get("type") or s.get("name") or "verse").strip().lower()
+            bars = int(s.get("bars") or 8)
+            section_template.append({"name": name, "bars": bars})
+
+        orchestrator = AIProducerOrchestrator(
+            available_roles=available_roles,
+            source_quality=source_quality,
+            arrangement_id=arrangement_id,
+            correlation_id=correlation_id,
+        )
+        producer_result = orchestrator.run(section_template=section_template)
+        serialised = result_to_dict(producer_result)
+
+        result.update({
+            "plan": serialised.get("planner_output"),
+            "critic_scores": serialised.get("critic_scores"),
+            "repair_actions": serialised.get("repair_actions", []),
+            "validator_warnings": serialised.get("validator_warnings", []),
+            "accepted": producer_result.accepted,
+            "rejected_reason": producer_result.rejected_reason,
+            "fallback_used": producer_result.fallback_used,
+        })
+
+        log_feature_event(
+            logger,
+            event="ai_producer_shadow_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            section_count=len(section_template),
+            accepted=producer_result.accepted,
+            fallback_used=producer_result.fallback_used,
+            repair_count=len(producer_result.repair_actions),
+            overall_score=(
+                producer_result.critic_scores.overall_score
+                if producer_result.critic_scores else 0.0
+            ),
+            validator_warning_count=len(producer_result.validator_warnings),
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "AI_PRODUCER_SHADOW [arr=%d] planning failed (non-blocking): %s",
+            arrangement_id,
+            exc,
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+
+    return result
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -4134,6 +4255,48 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 correlation_id=correlation_id,
                 source_quality=_ge_source_quality,
             )
+
+        # ====================================================================
+        # AI PRODUCER SYSTEM SHADOW: multi-agent producer workflow for
+        # observability and plan quality inspection.
+        # Runs PlannerAgent → CriticAgent → RepairAgent → Validator against
+        # the finalised render-plan sections.  Results are stored in
+        # render_plan under the ``_ai_producer_plan`` key for inspection
+        # via render_plan_json.
+        # Does NOT drive live rendering (shadow mode only).
+        # ====================================================================
+        if settings.feature_ai_producer_system_shadow:
+            _ai_source_quality = "stereo_fallback"
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _ai_source_quality = str(
+                    stem_metadata.get("source_quality") or "true_stems"
+                )
+            elif loaded_stems and len(loaded_stems) > 1:
+                _ai_source_quality = "true_stems"
+            elif loaded_stems:
+                _ai_source_quality = "ai_separated"
+
+            _ai_roles: list[str] = []
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _ai_roles = _ordered_unique_roles(
+                    stem_metadata.get("roles_detected")
+                    or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+                )
+            elif loaded_stems:
+                _ai_roles = _ordered_unique_roles(list(loaded_stems.keys()))
+
+            _ai_result = _run_ai_producer_system_shadow(
+                render_plan=render_plan,
+                available_roles=_ai_roles,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+                source_quality=_ai_source_quality,
+            )
+            render_plan["_ai_producer_plan"] = _ai_result.get("plan")
+            render_plan["_ai_critic_scores"] = _ai_result.get("critic_scores")
+            render_plan["_ai_repair_actions"] = _ai_result.get("repair_actions", [])
+            render_plan["_ai_rejected_reason"] = _ai_result.get("rejected_reason", "")
+            render_plan["_ai_fallback_used"] = _ai_result.get("fallback_used", False)
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
