@@ -171,7 +171,7 @@ class AIMicroPlanner:
                 deltas.append(AIMicroBarRange(
                     bar_start=build_start,
                     bar_end=bars,
-                    hat_behavior="open_hat_8th bars {}-{}; hat_density_up".format(build_start, bars),
+                    hat_behavior=f"open_hat_8th bars {build_start}-{bars}; hat_density_up",
                     reason="Hat density build in last 4 bars of pre-hook — creates tension before hook",
                 ))
 
@@ -183,15 +183,15 @@ class AIMicroPlanner:
                 deltas.append(AIMicroBarRange(
                     bar_start=1,
                     bar_end=bars,
-                    kick_behavior="four_on_floor bars 1-{}".format(bars),
-                    hat_behavior="closed_hat_8th bars 1-4; open_hat_upbeat bars 5-{}".format(bars),
+                    kick_behavior=f"four_on_floor bars 1-{bars}",
+                    hat_behavior=f"closed_hat_8th bars 1-4; open_hat_upbeat bars 5-{bars}",
                     reason="Hook: kick four-on-floor from bar 1; hat variation introduces novelty",
                 ))
             if has_bass:
                 deltas.append(AIMicroBarRange(
                     bar_start=1,
                     bar_end=bars,
-                    bass_behavior="bass_root_quarter bars 1-2; bass_pattern bars 3-{}".format(bars),
+                    bass_behavior=f"bass_root_quarter bars 1-2; bass_pattern bars 3-{bars}",
                     reason="Hook: bass root note entry for impact then pattern from bar 3",
                 ))
 
@@ -219,8 +219,8 @@ class AIMicroPlanner:
                     bar_start=bars - 1,
                     bar_end=bars,
                     fill_at=bars,
-                    kick_behavior="kick_fill bar {}".format(bars),
-                    hat_behavior="snare_roll bar {}".format(bars),
+                    kick_behavior=f"kick_fill bar {bars}",
+                    hat_behavior=f"snare_roll bar {bars}",
                     reason=f"Section-end fill at bar {bars} — standard producer transition technique",
                 ))
 
@@ -233,8 +233,8 @@ class AIMicroPlanner:
                     bar_end=bars,
                     drop_at=drop_bar,
                     role_remove=[r for r in section.active_roles if r in ("drums", "bass")],
-                    kick_behavior="mute_kick bar {}".format(drop_bar),
-                    bass_behavior="mute_bass bar {}".format(drop_bar),
+                    kick_behavior=f"mute_kick bar {drop_bar}",
+                    bass_behavior=f"mute_bass bar {drop_bar}",
                     reason=f"Drop on bar {drop_bar} at end of breakdown — tension before re-entry",
                 ))
                 # Re-entry hint (the next section owns re-entry but we log intent here)

@@ -681,9 +681,8 @@ def build_reference_profile(structure: ReferenceStructure) -> ReferenceProfile:
 
     # --- hook density -----------------------------------------------------------
     hook_sections = [s for s in sections if s.section_type_guess == "hook"]
-    hook_density: Optional[float]
     if hook_sections:
-        hook_density = round(sum(s.density_level for s in hook_sections) / len(hook_sections), 3)
+        hook_density: Optional[float] = round(sum(s.density_level for s in hook_sections) / len(hook_sections), 3)
     else:
         hook_density = None
 
@@ -703,9 +702,8 @@ def build_reference_profile(structure: ReferenceStructure) -> ReferenceProfile:
     contrast_sections = [
         s for s in sections if s.section_type_guess in ("breakdown", "bridge")
     ]
-    breakdown_depth: Optional[float]
     if contrast_sections:
-        breakdown_depth = round(min(s.energy_level for s in contrast_sections), 3)
+        breakdown_depth: Optional[float] = round(min(s.energy_level for s in contrast_sections), 3)
     else:
         breakdown_depth = None
 
