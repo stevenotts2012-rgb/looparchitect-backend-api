@@ -162,15 +162,19 @@ class ProducerRulesEngine:
         repair_count = 0
 
         rules = [
-            ("sparse_intro",         cls._rule_sparse_intro),
-            ("hook_elevation",       cls._rule_hook_elevation),
-            ("energy_ramp",          cls._rule_energy_ramp),
-            ("bridge_contrast",      cls._rule_bridge_contrast),
-            ("outro_simplification", cls._rule_outro_simplification),
-            ("repetition_control",   cls._rule_repetition_control),
-            ("overcrowding_guard",   cls._rule_overcrowding_guard),
-            ("role_aware_adaptation",cls._rule_role_aware_adaptation),
-            ("quality_guards",       cls._rule_quality_guards),
+            ("sparse_intro",            cls._rule_sparse_intro),
+            ("hook_elevation",          cls._rule_hook_elevation),
+            ("energy_ramp",             cls._rule_energy_ramp),
+            ("bridge_contrast",         cls._rule_bridge_contrast),
+            ("outro_simplification",    cls._rule_outro_simplification),
+            ("repetition_control",      cls._rule_repetition_control),
+            ("overcrowding_guard",      cls._rule_overcrowding_guard),
+            ("role_aware_adaptation",   cls._rule_role_aware_adaptation),
+            ("quality_guards",          cls._rule_quality_guards),
+            # --- New producer heuristics (Phase 5) ---
+            ("verse_2_differs",         cls._rule_verse_2_differs),
+            ("pre_hook_tension",        cls._rule_pre_hook_tension),
+            ("change_every_4_8_bars",   cls._rule_change_every_4_8_bars),
         ]
 
         if run_strict:
@@ -677,5 +681,144 @@ class ProducerRulesEngine:
                     f"Removed sustained roles: {', '.join(roles_to_remove)}"
                 ),
             ))
+
+        return violations
+
+    # ------------------------------------------------------------------
+    # New producer heuristics (Phase 5)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _rule_verse_2_differs(cls, plan: ProducerArrangementPlanV2) -> list[RuleViolation]:
+        """Verse 2 must differ from Verse 1 in at least one audible way.
+
+        Audible difference = role set Jaccard distance >= 0.20 OR energy delta >= 1.
+        If verse 2 is identical to verse 1, upgrade its variation_strategy to
+        LAYER_ADD or RHYTHM_VARIATION so downstream rendering can act on it.
+        """
+        violations: list[RuleViolation] = []
+        verses = [s for s in plan.sections if s.section_type == SectionKind.VERSE]
+        if len(verses) < 2:
+            return violations
+
+        verse1 = verses[0]
+        verse2 = verses[1]
+
+        prev_set = set(verse1.active_roles)
+        curr_set = set(verse2.active_roles)
+        union = prev_set | curr_set
+        jaccard = (1.0 - len(prev_set & curr_set) / len(union)) if union else 0.0
+        energy_delta = abs(verse2.target_energy.value - verse1.target_energy.value)
+
+        if jaccard < 0.20 and energy_delta < 1:
+            # Repair: upgrade variation strategy and boost energy by 1 if at headroom
+            if verse2.target_energy.value < EnergyLevel.VERY_HIGH.value:
+                verse2.target_energy = EnergyLevel(verse2.target_energy.value + 1)
+                repair = "Verse 2 energy boosted by 1 to create audible contrast vs Verse 1"
+            else:
+                verse2.variation_strategy = VariationStrategy.RHYTHM_VARIATION
+                repair = "Verse 2 variation_strategy set to RHYTHM_VARIATION to create contrast"
+
+            violations.append(RuleViolation(
+                rule_name="verse_2_differs",
+                section_index=verse2.index,
+                section_label=verse2.label,
+                description=(
+                    f"Verse 2 is too similar to Verse 1 "
+                    f"(Jaccard={jaccard:.2f}, energy_delta={energy_delta}) — "
+                    "verse 2 must introduce at least one audible change"
+                ),
+                severity="error",
+                auto_repaired=True,
+                repair_description=repair,
+            ))
+
+        return violations
+
+    @classmethod
+    def _rule_pre_hook_tension(cls, plan: ProducerArrangementPlanV2) -> list[RuleViolation]:
+        """Pre-hook sections must create tension: energy > verse AND density <= medium.
+
+        If a pre-hook is too dense or too quiet, it doesn't set up the hook properly.
+        Auto-repair: force density to MEDIUM and boost energy to >= HIGH if needed.
+        """
+        violations: list[RuleViolation] = []
+        verses = [s for s in plan.sections if s.section_type == SectionKind.VERSE]
+        pre_hooks = [s for s in plan.sections if s.section_type == SectionKind.PRE_HOOK]
+
+        max_verse_energy = max(
+            (s.target_energy.value for s in verses), default=EnergyLevel.MEDIUM.value
+        )
+
+        for ph in pre_hooks:
+            repaired = False
+            repair_parts: list[str] = []
+
+            # Rule: pre-hook energy should exceed verse energy
+            if ph.target_energy.value <= max_verse_energy:
+                target_e = min(EnergyLevel.HIGH.value, max_verse_energy + 1)
+                ph.target_energy = EnergyLevel(target_e)
+                repair_parts.append(f"energy raised to {target_e}")
+                repaired = True
+
+            # Rule: pre-hook density must not be FULL (leaves no room for hook payoff)
+            if ph.density == DensityLevel.FULL:
+                ph.density = DensityLevel.MEDIUM
+                repair_parts.append("density capped at medium")
+                repaired = True
+
+            if repaired:
+                violations.append(RuleViolation(
+                    rule_name="pre_hook_tension",
+                    section_index=ph.index,
+                    section_label=ph.label,
+                    description=(
+                        f"{ph.label} does not create proper tension "
+                        f"(energy={ph.target_energy.value}, density={ph.density.value}) — "
+                        "pre-hook must exceed verse energy and use medium density to build anticipation"
+                    ),
+                    severity="error",
+                    auto_repaired=True,
+                    repair_description="; ".join(repair_parts),
+                ))
+
+        return violations
+
+    @classmethod
+    def _rule_change_every_4_8_bars(cls, plan: ProducerArrangementPlanV2) -> list[RuleViolation]:
+        """When at least 3 roles are available, something should change every 4–8 bars.
+
+        A "change" means:
+        - A section starts/ends (natural change).
+        - OR a section's variation_strategy is not REPEAT.
+
+        This rule flags (but does not auto-repair) sections longer than 8 bars that
+        have REPEAT strategy and could benefit from an internal variation.
+        Only triggered when 3+ roles are available (single-stem sources can repeat freely).
+        """
+        violations: list[RuleViolation] = []
+
+        # Only meaningful when 3+ roles are available
+        if len(plan.available_roles) < 3:
+            return violations
+
+        for s in plan.sections:
+            if s.length_bars > 8 and s.variation_strategy == VariationStrategy.REPEAT:
+                # The section is longer than 8 bars with no planned variation
+                violations.append(RuleViolation(
+                    rule_name="change_every_4_8_bars",
+                    section_index=s.index,
+                    section_label=s.label,
+                    description=(
+                        f"{s.label} is {s.length_bars} bars with variation_strategy=REPEAT "
+                        "and 3+ stems available — something should change every 4–8 bars"
+                    ),
+                    severity="warning",
+                    auto_repaired=False,
+                    repair_description=(
+                        "Consider adding a mid-section role add/remove or pattern variation "
+                        "in the micro plan"
+                    ),
+                ))
 
         return violations

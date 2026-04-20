@@ -1,7 +1,8 @@
 """
-Reference-Guided Arrangement Mode — Domain Schemas (Phase 1).
+Reference-Guided Arrangement Mode — Domain Schemas (Phase 1 + 5).
 
-Defines all types for reference audio analysis and structural guidance.
+Defines all types for reference audio analysis, structural guidance, and the
+high-level ReferenceProfile used by the AI planning layer.
 
 Design guardrails:
 - Reference audio is used ONLY for structure and energy guidance.
@@ -208,3 +209,79 @@ class ReferenceProducerGuidance(BaseModel):
         "Arrangement is generated from user's source material. "
         "Reference audio provides structural blueprint only."
     )
+
+
+# ---------------------------------------------------------------------------
+# Reference profile (Phase 5 — high-level producer-facing summary)
+# ---------------------------------------------------------------------------
+
+
+class ReferenceProfile(BaseModel):
+    """High-level structural profile extracted from a reference track.
+
+    Exposes producer-facing metrics that the AI planning layer uses to anchor
+    its section plan, micro plan, and critic scoring.
+
+    All fields are derived exclusively from the structural/energy analysis —
+    no musical content (notes, chords, patterns) is represented here.
+    """
+
+    # Section order: list of guessed section types in sequence
+    section_order: List[str] = Field(
+        default_factory=list,
+        description="Ordered list of section type guesses (e.g. ['intro','verse','hook',...])",
+    )
+
+    # Section lengths in estimated bars
+    section_lengths: List[int] = Field(
+        default_factory=list,
+        description="Estimated bar count for each section in section_order",
+    )
+
+    # Hook density: mean density_level of all detected hook sections (0–1)
+    hook_density: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Mean density level across detected hook sections (0=sparse, 1=dense); null if no hooks",
+    )
+
+    # Transition frequency: fraction of section boundaries with strong transitions
+    transition_frequency: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of section boundaries that have strong transitions (strength >= 0.4)",
+    )
+
+    # Breakdown depth: minimum energy level found in any breakdown/bridge section (0–1)
+    breakdown_depth: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Minimum energy level of detected breakdown/bridge sections; null if none found",
+    )
+
+    # Outro behavior: short text description of how energy evolves in the outro
+    outro_behavior: str = Field(
+        default="",
+        description="Description of the outro's energy pattern (e.g. 'fades out', 'abrupt end', 'sustained low')",
+    )
+
+    # Energy contour: coarse shape of the full energy arc
+    energy_contour: str = Field(
+        default="",
+        description=(
+            "Coarse energy-arc shape: "
+            "'builds_to_peak', 'peaks_in_middle', 'flat', 'falls_off', 'standard'"
+        ),
+    )
+
+    # Total reference duration (seconds)
+    total_duration_sec: float = Field(default=0.0, ge=0.0)
+
+    # Detected tempo (BPM), nullable
+    tempo_bpm: Optional[float] = Field(default=None)
+
+    # Overall analysis confidence
+    analysis_confidence: float = Field(default=0.5, ge=0.0, le=1.0)

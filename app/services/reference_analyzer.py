@@ -55,6 +55,7 @@ def _check_librosa() -> bool:
 from app.schemas.reference_arrangement import (
     ReferenceSection,
     ReferenceStructure,
+    ReferenceProfile,
 )
 
 # Analysis constants (V1 heuristic parameters)
@@ -654,3 +655,106 @@ class ReferenceAnalyzer:
 
 # Module-level singleton
 reference_analyzer = ReferenceAnalyzer()
+
+
+# ---------------------------------------------------------------------------
+# Reference profile builder (standalone helper used by AI planning layer)
+# ---------------------------------------------------------------------------
+
+
+def build_reference_profile(structure: ReferenceStructure) -> ReferenceProfile:
+    """Build a :class:`ReferenceProfile` from a :class:`ReferenceStructure`.
+
+    The profile is a producer-facing summary that exposes:
+    - section_order / section_lengths
+    - hook_density, transition_frequency, breakdown_depth
+    - outro_behavior, energy_contour
+
+    This is a pure deterministic transformation — no LLM required.
+    All values are derived from the structural analysis only.
+    """
+    sections = structure.sections
+
+    # --- section order & lengths ------------------------------------------------
+    section_order = [s.section_type_guess for s in sections]
+    section_lengths = [s.estimated_bars for s in sections]
+
+    # --- hook density -----------------------------------------------------------
+    hook_sections = [s for s in sections if s.section_type_guess == "hook"]
+    hook_density: Optional[float]
+    if hook_sections:
+        hook_density = round(sum(s.density_level for s in hook_sections) / len(hook_sections), 3)
+    else:
+        hook_density = None
+
+    # --- transition frequency ---------------------------------------------------
+    #   Fraction of section boundaries with any strong transition (in or out >= 0.4)
+    if sections:
+        strong_boundaries = sum(
+            1
+            for s in sections
+            if s.transition_in_strength >= 0.4 or s.transition_out_strength >= 0.4
+        )
+        transition_frequency = round(strong_boundaries / len(sections), 3)
+    else:
+        transition_frequency = 0.0
+
+    # --- breakdown depth --------------------------------------------------------
+    contrast_sections = [
+        s for s in sections if s.section_type_guess in ("breakdown", "bridge")
+    ]
+    breakdown_depth: Optional[float]
+    if contrast_sections:
+        breakdown_depth = round(min(s.energy_level for s in contrast_sections), 3)
+    else:
+        breakdown_depth = None
+
+    # --- outro behavior ---------------------------------------------------------
+    outro_behavior = ""
+    outro_sections = [s for s in sections if s.section_type_guess == "outro"]
+    if outro_sections:
+        last_outro = outro_sections[-1]
+        if last_outro.energy_level < 0.2:
+            outro_behavior = "fades_to_silence"
+        elif last_outro.energy_level < 0.4:
+            outro_behavior = "fades_out"
+        elif last_outro.transition_in_strength >= 0.5:
+            outro_behavior = "abrupt_end"
+        else:
+            outro_behavior = "sustained_low"
+
+    # --- energy contour ---------------------------------------------------------
+    energies = [s.energy_level for s in sections]
+    energy_contour = "flat"
+    if len(energies) >= 3:
+        n = len(energies)
+        peak_idx = energies.index(max(energies))
+        first_half_avg = sum(energies[: n // 2]) / max(n // 2, 1)
+        second_half_avg = sum(energies[n // 2 :]) / max(n - n // 2, 1)
+        min_e = min(energies)
+        max_e = max(energies)
+        variance = sum((e - (first_half_avg + second_half_avg) / 2) ** 2 for e in energies) / n
+
+        if max_e - min_e < 0.1:
+            energy_contour = "flat"
+        elif peak_idx <= n // 3:
+            energy_contour = "falls_off"
+        elif peak_idx >= 2 * n // 3:
+            energy_contour = "builds_to_peak"
+        elif n // 3 < peak_idx < 2 * n // 3:
+            energy_contour = "peaks_in_middle"
+        else:
+            energy_contour = "standard"
+
+    return ReferenceProfile(
+        section_order=section_order,
+        section_lengths=section_lengths,
+        hook_density=hook_density,
+        transition_frequency=transition_frequency,
+        breakdown_depth=breakdown_depth,
+        outro_behavior=outro_behavior,
+        energy_contour=energy_contour,
+        total_duration_sec=structure.total_duration_sec,
+        tempo_bpm=structure.tempo_estimate,
+        analysis_confidence=structure.analysis_confidence,
+    )
