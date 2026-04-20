@@ -169,19 +169,62 @@ class PatternVariationPlanner:
             source_quality=self.source_quality,
         )
 
-        all_events = drum_events + melodic_events + bass_events
-
-        # Enforce variation budget: cap total simultaneous pattern events
-        if len(all_events) > self._budget:
-            all_events = all_events[: self._budget]
-            logger.debug(
-                "planner: %s occ=%d — trimmed to budget %d",
-                section_name, occurrence, self._budget,
-            )
+        all_events = self._interleave_within_budget(
+            drum_events, melodic_events, bass_events
+        )
 
         section_plan.events = all_events
         section_plan.notes = self._build_notes(section_type, occurrence, all_events)
         return section_plan
+
+    # ------------------------------------------------------------------ #
+    # Budget-aware interleaving                                            #
+    # ------------------------------------------------------------------ #
+
+    def _interleave_within_budget(
+        self,
+        drum_events: list,
+        melodic_events: list,
+        bass_events: list,
+    ) -> list:
+        """Combine drum, melodic, and bass events within the variation budget.
+
+        Events are interleaved in round-robin order across the three layers so
+        that if the combined count exceeds *budget*, no single layer monopolises
+        all available slots.  Each layer is guaranteed at least one event slot
+        before any layer gets a second slot.
+
+        Returns a flat list ordered drum → melodic → bass within each round.
+        """
+        if self._budget == 0:
+            return []
+
+        total = len(drum_events) + len(melodic_events) + len(bass_events)
+        if total <= self._budget:
+            return drum_events + melodic_events + bass_events
+
+        # Round-robin interleave: take one event per layer per pass
+        result: list = []
+        layers = [drum_events, melodic_events, bass_events]
+        indices = [0, 0, 0]
+
+        while len(result) < self._budget:
+            added_any = False
+            for i, layer in enumerate(layers):
+                if len(result) >= self._budget:
+                    break
+                if indices[i] < len(layer):
+                    result.append(layer[indices[i]])
+                    indices[i] += 1
+                    added_any = True
+            if not added_any:
+                break  # All layers exhausted
+
+        logger.debug(
+            "planner: interleaved %d events from %d total (budget=%d)",
+            len(result), total, self._budget,
+        )
+        return result
 
     # ------------------------------------------------------------------ #
     # State updates                                                        #

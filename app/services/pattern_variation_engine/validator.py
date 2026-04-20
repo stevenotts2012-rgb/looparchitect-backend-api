@@ -346,7 +346,7 @@ class PatternVariationValidator:
     @staticmethod
     def _find_section(
         plan: PatternVariationPlan, section_name: str
-    ) -> PatternSectionPlan | None:
+    ) -> Optional[PatternSectionPlan]:
         for s in plan.sections:
             if s.section_name == section_name:
                 return s
