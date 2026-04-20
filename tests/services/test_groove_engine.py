@@ -1,7 +1,7 @@
 """
 Unit tests for the Groove Engine.
 
-Coverage (40+ tests):
+Coverage (96 tests):
 1.  GrooveEvent type contract and bounds checking.
 2.  GrooveProfile construction and field clamping.
 3.  GrooveContext section_type derivation.

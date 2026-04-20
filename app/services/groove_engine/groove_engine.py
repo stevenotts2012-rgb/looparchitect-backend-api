@@ -392,14 +392,7 @@ def score_bounce(
 def _timing_roles_from_context(ctx: GrooveContext) -> List[str]:
     """Return the subset of active roles that should receive microtiming events."""
     timing_roles_priority = ["drums", "bass", "percussion"]
-    result = []
-    for role in timing_roles_priority:
-        if role in ctx.active_roles:
-            result.append(role)
-    # If no explicit timing roles found, use whatever active_roles are present
-    if not result:
-        result = [r for r in ctx.active_roles if r in ("drums", "bass", "percussion")]
-    return result
+    return [role for role in timing_roles_priority if role in ctx.active_roles]
 
 
 def _groove_type_for_role(role: str, offset: float) -> str:
