@@ -197,6 +197,17 @@ class Settings(BaseSettings):
         validation_alias="TIMELINE_ENGINE_SHADOW",
     )
 
+    # Pattern Variation Engine Shadow Mode — runs PatternVariationEngine as a
+    # parallel planner during arrangement jobs for observability.
+    # Does NOT apply variations to audio.  Serialised plans are stored inside
+    # render_plan_json under the ``_pattern_variation_plans`` key.
+    # Enabled by default so every job emits pattern variation observability data.
+    # Disable with PATTERN_VARIATION_SHADOW=false to suppress the extra planning pass.
+    feature_pattern_variation_shadow: bool = Field(
+        default=True,
+        validation_alias="PATTERN_VARIATION_SHADOW",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
@@ -261,6 +272,7 @@ class Settings(BaseSettings):
         "feature_track_quality_analysis",
         "feature_arranger_v2",
         "feature_timeline_engine_shadow",
+        "feature_pattern_variation_shadow",
         mode="before",
     )
     @classmethod
