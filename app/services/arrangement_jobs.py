@@ -3882,6 +3882,169 @@ def _run_ai_producer_system_shadow(
     return result
 
 
+def _run_drop_engine_shadow(
+    render_plan: dict,
+    available_roles: list[str],
+    arrangement_id: int,
+    correlation_id: str,
+    source_quality: str = "stereo_fallback",
+) -> dict:
+    """Run the Drop Engine as a shadow planner (non-blocking).
+
+    Builds a :class:`~app.services.drop_engine.types.DropPlan` by running
+    :class:`~app.services.drop_engine.planner.DropEnginePlanner` followed by
+    :class:`~app.services.drop_engine.validator.DropValidator` against the
+    finalised render-plan sections.
+
+    Results are stored in render_plan ``_drop_plan`` etc. for inspection via
+    render_plan_json.  Never raises — any exception is caught and recorded
+    so the live render path is completely unaffected.
+
+    Parameters
+    ----------
+    render_plan:
+        The already-built render plan dict.
+    available_roles:
+        Resolved stem roles for the source material.
+    arrangement_id:
+        Arrangement ID used in log messages.
+    correlation_id:
+        Correlation ID used for structured log events.
+    source_quality:
+        Source quality mode string.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``plan``          – serialised DropPlan or ``None``
+    * ``scores``        – list of per-boundary score dicts
+    * ``warnings``      – list of serialised DropValidationIssue dicts
+    * ``fallback_used`` – bool
+    * ``error``         – error message on failure, ``None`` on success
+    """
+    from app.services.drop_engine.planner import DropEnginePlanner
+    from app.services.drop_engine.validator import DropValidator
+
+    result: dict = {
+        "plan": None,
+        "scores": [],
+        "warnings": [],
+        "fallback_used": False,
+        "error": None,
+    }
+
+    try:
+        sections_raw = render_plan.get("sections") or []
+        if not sections_raw:
+            logger.info(
+                "DROP_ENGINE_SHADOW [arr=%d] no sections in render plan — skipping",
+                arrangement_id,
+            )
+            return result
+
+        planner = DropEnginePlanner(
+            source_quality=source_quality,
+            available_roles=available_roles,
+        )
+
+        # Pass through upstream shadow plan summaries when available.
+        groove_summaries: list[dict] = []
+        groove_plans_raw = render_plan.get("_groove_plans") or {}
+        if isinstance(groove_plans_raw, dict):
+            groove_summaries = groove_plans_raw.get("plans") or []
+
+        pv_summaries: list[dict] = []
+        pv_plans_raw = render_plan.get("_pattern_variation_plans") or {}
+        if isinstance(pv_plans_raw, dict):
+            pv_summaries = pv_plans_raw.get("plans") or []
+
+        ai_summaries: list[dict] = []
+        ai_plan = render_plan.get("_ai_producer_plan")
+        if isinstance(ai_plan, dict):
+            ai_summaries = [ai_plan]
+
+        drop_plan = planner.build(
+            sections=sections_raw,
+            groove_summaries=groove_summaries,
+            pattern_variation_summaries=pv_summaries,
+            ai_producer_plan_summaries=ai_summaries,
+        )
+
+        validator = DropValidator()
+        issues = validator.validate(drop_plan)
+
+        scores = [
+            {
+                "boundary_name": b.boundary_name,
+                "from_section": b.from_section,
+                "to_section": b.to_section,
+                "occurrence_index": b.occurrence_index,
+                "tension_score": round(b.tension_score, 4),
+                "payoff_score": round(b.payoff_score, 4),
+                "primary_event_type": (
+                    b.primary_drop_event.event_type
+                    if b.primary_drop_event is not None
+                    else None
+                ),
+                "support_event_types": [e.event_type for e in b.support_events],
+            }
+            for b in drop_plan.boundaries
+        ]
+
+        result.update(
+            {
+                "plan": drop_plan.to_dict(),
+                "scores": scores,
+                "warnings": [i.to_dict() for i in issues],
+                "fallback_used": drop_plan.fallback_used,
+            }
+        )
+
+        log_feature_event(
+            logger,
+            event="drop_engine_shadow_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            boundary_count=len(drop_plan.boundaries),
+            total_drop_count=drop_plan.total_drop_count,
+            repeated_hook_variation_score=round(
+                drop_plan.repeated_hook_drop_variation_score, 4
+            ),
+            fallback_used=drop_plan.fallback_used,
+            warning_count=len(issues),
+        )
+
+        # Structured per-boundary log for inspection.
+        for boundary in drop_plan.boundaries:
+            log_feature_event(
+                logger,
+                event="drop_boundary_plan",
+                correlation_id=correlation_id,
+                arrangement_id=arrangement_id,
+                boundary_name=boundary.boundary_name,
+                primary_event_type=(
+                    boundary.primary_drop_event.event_type
+                    if boundary.primary_drop_event is not None
+                    else None
+                ),
+                support_event_types=[e.event_type for e in boundary.support_events],
+                tension_score=round(boundary.tension_score, 4),
+                payoff_score=round(boundary.payoff_score, 4),
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "DROP_ENGINE_SHADOW [arr=%d] planning failed (non-blocking): %s",
+            arrangement_id,
+            exc,
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+
+    return result
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -4297,6 +4460,48 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_ai_repair_actions"] = _ai_result.get("repair_actions", [])
             render_plan["_ai_rejected_reason"] = _ai_result.get("rejected_reason", "")
             render_plan["_ai_fallback_used"] = _ai_result.get("fallback_used", False)
+
+        # ====================================================================
+        # DROP ENGINE SHADOW: drop design planning for observability.
+        # Runs DropEnginePlanner + DropValidator against the finalised
+        # render-plan sections.  Results are stored in render_plan under:
+        #   _drop_plan           — serialised DropPlan
+        #   _drop_scores         — per-boundary tension/payoff scores
+        #   _drop_warnings       — DropValidationIssue dicts
+        #   _drop_fallback_used  — bool
+        # Does NOT drive live rendering (shadow mode only).
+        # ====================================================================
+        if settings.feature_drop_engine_shadow:
+            _drop_source_quality = "stereo_fallback"
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _drop_source_quality = str(
+                    stem_metadata.get("source_quality") or "true_stems"
+                )
+            elif loaded_stems and len(loaded_stems) > 1:
+                _drop_source_quality = "true_stems"
+            elif loaded_stems:
+                _drop_source_quality = "ai_separated"
+
+            _drop_roles: list[str] = []
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _drop_roles = _ordered_unique_roles(
+                    stem_metadata.get("roles_detected")
+                    or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+                )
+            elif loaded_stems:
+                _drop_roles = _ordered_unique_roles(list(loaded_stems.keys()))
+
+            _drop_result = _run_drop_engine_shadow(
+                render_plan=render_plan,
+                available_roles=_drop_roles,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+                source_quality=_drop_source_quality,
+            )
+            render_plan["_drop_plan"] = _drop_result.get("plan")
+            render_plan["_drop_scores"] = _drop_result.get("scores")
+            render_plan["_drop_warnings"] = _drop_result.get("warnings", [])
+            render_plan["_drop_fallback_used"] = _drop_result.get("fallback_used", False)
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
