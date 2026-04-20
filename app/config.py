@@ -186,6 +186,17 @@ class Settings(BaseSettings):
         validation_alias="ARRANGER_V2",
     )
 
+    # Timeline Engine Shadow Mode — runs TimelinePlanner + TimelineValidator as a
+    # parallel planner during arrangement jobs for observability and plan comparison.
+    # Does NOT replace the live render path.  Serialised plan is stored inside
+    # render_plan_json under the ``_timeline_plan`` key.
+    # Enabled by default so every job emits timeline observability data.
+    # Disable with TIMELINE_ENGINE_SHADOW=false to suppress the extra planning pass.
+    feature_timeline_engine_shadow: bool = Field(
+        default=True,
+        validation_alias="TIMELINE_ENGINE_SHADOW",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
@@ -249,6 +260,7 @@ class Settings(BaseSettings):
         "feature_arrangement_truth_observability_v2",
         "feature_track_quality_analysis",
         "feature_arranger_v2",
+        "feature_timeline_engine_shadow",
         mode="before",
     )
     @classmethod
