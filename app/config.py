@@ -208,6 +208,18 @@ class Settings(BaseSettings):
         validation_alias="PATTERN_VARIATION_SHADOW",
     )
 
+    # Groove Engine Shadow Mode — runs GrooveEngine as a parallel planner during
+    # arrangement jobs for observability.  Builds a GroovePlan per section covering
+    # microtiming, accent behaviour, swing, and bounce scoring.
+    # Does NOT modify rendered audio.  Serialised plans are stored inside
+    # render_plan_json under the ``_groove_plans`` key.
+    # Enabled by default so every job emits groove observability data.
+    # Disable with GROOVE_ENGINE_SHADOW=false to suppress the extra planning pass.
+    feature_groove_engine_shadow: bool = Field(
+        default=True,
+        validation_alias="GROOVE_ENGINE_SHADOW",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
