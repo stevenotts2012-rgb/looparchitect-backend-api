@@ -673,9 +673,17 @@ class ProducerMovesEngine:
             new_energy = _clamp01(base_energy + energy_delta)
             section["energy"] = new_energy
 
-            # Density modifier expressed as fractional layer delta
+            # Density modifier expressed as fractional layer delta.
+            # Use math.ceil for positive deltas and math.floor for negative so
+            # that even a small non-zero modifier (e.g. 0.1 on 2 layers)
+            # produces at least ±1 observable layer change.
             if density_delta != 0.0 and base_layers > 0:
-                layer_delta = round(base_layers * density_delta)
+                import math
+                raw_delta = base_layers * density_delta
+                if raw_delta > 0:
+                    layer_delta = max(1, math.ceil(raw_delta))
+                else:
+                    layer_delta = min(-1, math.floor(raw_delta))
                 section.setdefault("_intent_layer_delta", 0)
                 section["_intent_layer_delta"] = int(layer_delta)
 

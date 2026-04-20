@@ -47,14 +47,23 @@ class PlanningIntent:
 
     Attributes:
         move_name: Canonical move name (e.g. ``"hook_drop"``).
-        section_intent: What this move does to section-level planning.
-        timeline_intent: The kind of timeline event this move implies.
-        pattern_intent: The pattern-level action this move implies.
-        transition_intent: The transition type this move suggests.
-        target_sections: Which section types this move affects.
-        energy_modifier: Energy adjustment for target sections in [−1, +1].
-        density_modifier: Density adjustment for target sections in [−1, +1].
-        parameters: Additional move-specific parameters for downstream engines.
+        section_intent: Human-readable description of the section-level planning
+            goal, e.g. ``"pre_hook_tension_plus_controlled_hook_reentry"``.
+        timeline_intent: The kind of timeline event this move implies, drawn from
+            the set of :class:`~app.services.timeline_engine.types.TimelineEvent`
+            action strings (e.g. ``"riser_to_crash"``, ``"drum_fill"``).
+        pattern_intent: The pattern-level action this move implies, corresponding
+            to :class:`~app.services.pattern_variation_engine.types.PatternAction`
+            values (e.g. ``"hat_density_up"``, ``"bass_dropout"``).
+        transition_intent: The transition type this move suggests, e.g.
+            ``"fx_hit"``, ``"mute_drop"``, ``"crossfade"``, ``"none"``.
+        target_sections: Section types this move affects, e.g.
+            ``["hook", "pre_hook"]``.
+        energy_modifier: Signed fractional energy adjustment for target sections,
+            clamped to [−1, +1].  Positive values raise energy; negative reduce it.
+        density_modifier: Signed fractional layer-density adjustment, clamped to
+            [−1, +1].  Applied as a multiplier against the current layer count.
+        parameters: Move-specific key/value pairs for downstream engine use.
     """
 
     move_name: str

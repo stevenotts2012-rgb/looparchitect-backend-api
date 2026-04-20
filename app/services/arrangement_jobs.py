@@ -622,12 +622,18 @@ def _parse_seed_from_json(raw_json: str | None) -> int | None:
 
 
 def _parse_producer_moves_from_json(raw_json: str | None) -> list[str] | None:
-    """Extract selected_producer_moves list from arrangement_json if present."""
+    """Extract selected producer moves from arrangement_json if present.
+
+    Checks for ``"selected_producer_moves"`` first (the canonical key written by
+    the arrangements route), then falls back to ``"producer_moves"`` for payloads
+    produced by older clients that used the legacy field name.
+    """
     if not raw_json:
         return None
     try:
         payload = json.loads(raw_json)
         if isinstance(payload, dict):
+            # Prefer the canonical key; fall back to legacy key for backward compat
             moves = payload.get("selected_producer_moves") or payload.get("producer_moves")
             if isinstance(moves, list):
                 return [str(m) for m in moves if m]
