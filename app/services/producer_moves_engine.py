@@ -1,9 +1,23 @@
-"""Producer Moves Engine: injects producer-style musical events into render plans."""
+"""Producer Moves Engine: injects producer-style musical events into render plans.
+
+When a :class:`~app.services.producer_moves_translator.MoveTranslationResult` is
+supplied the engine operates in *guided mode*: the planning intents from the
+translator modulate section energy, density, and event choices before any bar-level
+events are generated.  This converts producer moves from coarse direct-action toggles
+into high-level preference inputs that shape the deeper planning system.
+"""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from statistics import mean
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.producer_moves_translator import MoveTranslationResult
+
+logger = logging.getLogger(__name__)
 
 
 _HOOK_TYPES = {"hook", "chorus", "drop"}
@@ -201,10 +215,21 @@ def _compute_scorecard(sections: list[dict], events: list[dict]) -> dict:
 
 
 class ProducerMovesEngine:
-    """Generate reusable move events from section layout."""
+    """Generate reusable move events from section layout.
+
+    When *move_translation* is supplied (from
+    :func:`~app.services.producer_moves_translator.translate_producer_moves`),
+    the engine operates in *guided mode*: planning intents are applied to each
+    section before bar-level event generation so that user-selected producer
+    moves genuinely shape the arrangement rather than being ignored or only
+    appended as cosmetic toggles.
+    """
 
     @staticmethod
-    def inject(render_plan: dict) -> dict:
+    def inject(
+        render_plan: dict,
+        move_translation: "MoveTranslationResult | None" = None,
+    ) -> dict:
         sections = list(render_plan.get("sections") or [])
         if not sections:
             return render_plan
@@ -218,6 +243,14 @@ class ProducerMovesEngine:
         ]
         final_hook_idx = hook_indices[-1] if hook_indices else None
         type_occurrence: dict[str, int] = {}
+
+        # ------------------------------------------------------------------
+        # Guided-mode pre-pass: apply intent modifiers before event generation
+        # ------------------------------------------------------------------
+        if move_translation is not None:
+            sections = ProducerMovesEngine._apply_intent_modifiers(
+                sections, move_translation, hook_indices
+            )
 
         for idx, section in enumerate(sections):
             section_name = str(section.get("name") or f"Section {idx + 1}")
@@ -240,7 +273,11 @@ class ProducerMovesEngine:
             section["evolution_index"] = occurrence
 
             if section_type == "hook":
-                section["active_layers_target"] = max(_safe_layers(section), 5 + min(2, occurrence - 1))
+                base_layers = 5 + min(2, occurrence - 1)
+                if move_translation and move_translation.has_move("final_hook_expansion") and idx == final_hook_idx:
+                    # Final hook expansion: push layers higher to reflect the move intent
+                    base_layers += 1
+                section["active_layers_target"] = max(_safe_layers(section), base_layers)
             elif section_type == "verse":
                 section["active_layers_target"] = max(2, _safe_layers(section) - 1)
             elif section_type == "bridge":
@@ -560,4 +597,92 @@ class ProducerMovesEngine:
         render_plan["render_profile"]["producer_scorecard_verdict"] = scorecard.get("verdict", "warn")
         if scorecard.get("warnings"):
             render_plan["render_profile"]["producer_score_warnings"] = list(scorecard.get("warnings", []))
+
+        # ------------------------------------------------------------------
+        # Observability fields (required by problem statement)
+        # ------------------------------------------------------------------
+        if move_translation is not None:
+            obs = move_translation.to_dict()
+        else:
+            obs = {
+                "selected_producer_moves": [],
+                "translated_planning_intents": [],
+                "timeline_events_from_moves": [],
+                "pattern_events_from_moves": [],
+                "conflicting_moves_resolved": [],
+            }
+
+        render_plan["selected_producer_moves"] = obs["selected_producer_moves"]
+        render_plan["translated_planning_intents"] = obs["translated_planning_intents"]
+        render_plan["timeline_events_from_moves"] = obs["timeline_events_from_moves"]
+        render_plan["pattern_events_from_moves"] = obs["pattern_events_from_moves"]
+        render_plan["conflicting_moves_resolved"] = obs["conflicting_moves_resolved"]
+
         return render_plan
+
+    # ------------------------------------------------------------------
+    # Intent modifiers (guided-mode helpers)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_intent_modifiers(
+        sections: list[dict],
+        move_translation: "MoveTranslationResult",
+        hook_indices: list[int],
+    ) -> list[dict]:
+        """Apply energy/density modifiers from planning intents to *sections*.
+
+        Modifiers are summed across all intents that target a section type,
+        then clamped to valid ranges.  This happens *before* per-section event
+        generation so that the rest of the engine naturally reflects the moves.
+
+        Hook-focused moves (``final_hook_expansion``, ``hook_drop``) apply their
+        highest energy modifiers only to the final hook to preserve build-up
+        payoff across repeated sections.
+        """
+        final_hook_idx = hook_indices[-1] if hook_indices else None
+
+        for idx, section in enumerate(sections):
+            section_type = _norm_section_type(str(section.get("type") or "verse"))
+            intents = move_translation.intents_for_section(section_type)
+            if not intents:
+                continue
+
+            base_energy = float(section.get("energy", 0.6) or 0.6)
+            base_layers = _safe_layers(section)
+
+            # Accumulate energy and density deltas from all intents
+            energy_delta = 0.0
+            density_delta = 0.0
+
+            for intent_dict in intents:
+                move_name = intent_dict.get("move_name", "")
+                e_mod = float(intent_dict.get("energy_modifier", 0.0))
+                d_mod = float(intent_dict.get("density_modifier", 0.0))
+
+                # final_hook_expansion: full boost only on the final hook
+                if move_name == "final_hook_expansion" and section_type == "hook":
+                    if idx != final_hook_idx:
+                        e_mod *= 0.4  # reduced boost on non-final hooks
+                        d_mod *= 0.4
+
+                energy_delta += e_mod
+                density_delta += d_mod
+
+            # Apply deltas and clamp
+            new_energy = _clamp01(base_energy + energy_delta)
+            section["energy"] = new_energy
+
+            # Density modifier expressed as fractional layer delta
+            if density_delta != 0.0 and base_layers > 0:
+                layer_delta = round(base_layers * density_delta)
+                section.setdefault("_intent_layer_delta", 0)
+                section["_intent_layer_delta"] = int(layer_delta)
+
+            # Tag the section so downstream observers can see which intents fired
+            section["applied_move_intents"] = [
+                i.get("move_name") for i in intents if i.get("move_name")
+            ]
+
+        return sections
+

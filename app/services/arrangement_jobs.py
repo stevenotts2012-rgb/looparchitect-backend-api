@@ -32,6 +32,7 @@ from app.services.loop_variation_engine import (
 )
 from app.services.arrangement_scorer import score_and_reject
 from app.services.producer_moves_engine import ProducerMovesEngine
+from app.services.producer_moves_translator import translate_producer_moves
 from app.services.render_executor import render_from_plan
 from app.services.storage import storage
 from app.services.transition_engine import build_transition_plan
@@ -617,6 +618,21 @@ def _parse_seed_from_json(raw_json: str | None) -> int | None:
     except Exception:
         pass
 
+    return None
+
+
+def _parse_producer_moves_from_json(raw_json: str | None) -> list[str] | None:
+    """Extract selected_producer_moves list from arrangement_json if present."""
+    if not raw_json:
+        return None
+    try:
+        payload = json.loads(raw_json)
+        if isinstance(payload, dict):
+            moves = payload.get("selected_producer_moves") or payload.get("producer_moves")
+            if isinstance(moves, list):
+                return [str(m) for m in moves if m]
+    except Exception:
+        pass
     return None
 
 
@@ -2762,6 +2778,7 @@ def _build_pre_render_plan(
     loop_variation_manifest: dict | None = None,
     arrangement_preset: str | None = None,
     available_stem_keys: list[str] | None = None,
+    selected_producer_moves: list[str] | None = None,
 ) -> dict:
     """Build render_plan_json before rendering begins so all render paths consume the same plan."""
 
@@ -2938,7 +2955,10 @@ def _build_pre_render_plan(
         },
     }
 
-    return ProducerMovesEngine.inject(render_plan)
+    return ProducerMovesEngine.inject(
+        render_plan,
+        move_translation=translate_producer_moves(selected_producer_moves),
+    )
 
 
 def _build_dev_fallback_plan(arrangement_id: int, bpm: float, target_seconds: int) -> dict:
@@ -3506,6 +3526,15 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             if seed is not None:
                 logger.info("Using seed %s for pattern generation in arrangement %s", seed, arrangement_id)
 
+        # Parse producer moves from arrangement_json so they can guide the engine
+        selected_producer_moves = _parse_producer_moves_from_json(arrangement.arrangement_json)
+        if selected_producer_moves:
+            logger.info(
+                "Producer moves for arrangement %s: %s",
+                arrangement_id,
+                selected_producer_moves,
+            )
+
         # V3: Check for ProducerArrangement (most advanced)
         producer_arrangement = None
         if arrangement.producer_arrangement_json:
@@ -3631,6 +3660,7 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 loop_variation_manifest=loop_variation_manifest,
                 arrangement_preset=arrangement_preset,
                 available_stem_keys=list(loaded_stems.keys()) if loaded_stems else None,
+                selected_producer_moves=selected_producer_moves,
             )
 
         # Ensure every section has loop_variations before persisting or validating.
