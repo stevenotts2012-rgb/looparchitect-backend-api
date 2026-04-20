@@ -1,7 +1,7 @@
 """
 Comprehensive tests for the Drop Engine.
 
-Coverage (63 tests):
+Coverage (107 tests):
 1.  DropEvent type contract and validation.
 2.  DropBoundaryPlan construction and properties.
 3.  DropPlan construction and serialisation.
@@ -735,7 +735,6 @@ class TestDropValidator:
             payoff_score=0.7,
         )
         plan = DropPlan(boundaries=[bp], total_drop_count=1)
-        issues = v.validate(plan) if (v := self._validator()) else []
         issues = self._validator().validate(plan)
         rules = [i.rule for i in issues]
         assert "strong_event_stacking" in rules
