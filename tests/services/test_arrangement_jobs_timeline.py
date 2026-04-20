@@ -57,21 +57,21 @@ def db():
 
 def _minimal_wav_bytes() -> bytes:
     """Return a minimal valid WAV byte string for mock HTTP responses."""
-    buf = bytearray()
-    buf += b"RIFF"
-    buf += b"\x24\x00\x00\x00"
-    buf += b"WAVE"
-    buf += b"fmt "
-    buf += b"\x10\x00\x00\x00"
-    buf += b"\x01\x00"
-    buf += b"\x02\x00"
-    buf += b"\x44\xac\x00\x00"
-    buf += b"\x10\xb1\x02\x00"
-    buf += b"\x04\x00"
-    buf += b"\x10\x00"
-    buf += b"data"
-    buf += b"\x00\x00\x00\x00"
-    return bytes(buf)
+    return (
+        b"RIFF"
+        b"\x24\x00\x00\x00"
+        b"WAVE"
+        b"fmt "
+        b"\x10\x00\x00\x00"
+        b"\x01\x00"
+        b"\x02\x00"
+        b"\x44\xac\x00\x00"
+        b"\x10\xb1\x02\x00"
+        b"\x04\x00"
+        b"\x10\x00"
+        b"data"
+        b"\x00\x00\x00\x00"
+    )
 
 
 def _fake_export(self, out_f, format="wav"):

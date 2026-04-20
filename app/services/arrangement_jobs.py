@@ -3163,7 +3163,7 @@ def attach_loops_to_sections(render_plan: dict, loop_variation_manifest: dict | 
 # Timeline Engine Shadow Planner helpers
 # ---------------------------------------------------------------------------
 
-def _serialize_timeline_plan(plan) -> dict:
+def _serialize_timeline_plan(plan: "TimelinePlan") -> dict:
     """Convert a :class:`TimelinePlan` instance to a JSON-safe dict."""
     return {
         "total_bars": plan.total_bars,
@@ -3193,7 +3193,7 @@ def _serialize_timeline_plan(plan) -> dict:
     }
 
 
-def _serialize_timeline_validation(issues) -> list:
+def _serialize_timeline_validation(issues: list) -> list:
     """Convert a list of :class:`ValidationIssue` objects to JSON-safe dicts."""
     return [
         {
