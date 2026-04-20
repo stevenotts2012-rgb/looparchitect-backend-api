@@ -819,6 +819,7 @@ async def generate_arrangement(
                 "seed": seed_used,
                 "sections": structure_preview,
                 "correlation_id": correlation_id,
+                "selected_producer_moves": list(request.producer_moves) if request.producer_moves else [],
             })
             
             logger.info(f"Style profile parsed: preset={style_preset}, confidence={style_profile.intent.confidence}")
@@ -867,6 +868,7 @@ async def generate_arrangement(
                 "seed": seed_used,
                 "sections": structure_preview,
                 "correlation_id": correlation_id,
+                "selected_producer_moves": list(request.producer_moves) if request.producer_moves else [],
             })
         except Exception as style_error:
             logger.warning("Style preview generation skipped: %s", style_error)
@@ -1323,8 +1325,15 @@ async def generate_arrangement(
                     "sections": structure_preview,
                     "correlation_id": correlation_id,
                     "variation_index": variation_index,
+                    "selected_producer_moves": list(request.producer_moves) if request.producer_moves else [],
                 }
             )
+        # Ensure producer_moves are persisted even when structure_json is None
+        elif request.producer_moves and not candidate_structure_json:
+            candidate_structure_json = json.dumps({
+                "correlation_id": correlation_id,
+                "selected_producer_moves": list(request.producer_moves),
+            })
 
         # Generate a per-candidate ProducerArrangement using a distinct structure
         # template so each option presented to the user is structurally different
