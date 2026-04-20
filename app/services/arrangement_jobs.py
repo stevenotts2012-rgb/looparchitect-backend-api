@@ -4045,6 +4045,142 @@ def _run_drop_engine_shadow(
     return result
 
 
+def _run_motif_engine_shadow(
+    render_plan: dict,
+    available_roles: list[str],
+    arrangement_id: int,
+    correlation_id: str,
+    source_quality: str = "stereo_fallback",
+) -> dict:
+    """Run the Motif Engine as a shadow planner (non-blocking).
+
+    Builds a :class:`~app.services.motif_engine.types.MotifPlan` by running
+    :class:`~app.services.motif_engine.planner.MotifPlanner` followed by
+    :class:`~app.services.motif_engine.validator.MotifValidator` against the
+    finalised render-plan sections.
+
+    Results are stored in render_plan under ``_motif_plan`` etc. for inspection
+    via render_plan_json.  Never raises — any exception is caught and recorded
+    so the live render path is completely unaffected.
+
+    Parameters
+    ----------
+    render_plan:
+        The already-built render plan dict.
+    available_roles:
+        Resolved stem roles for the source material.
+    arrangement_id:
+        Arrangement ID used in log messages.
+    correlation_id:
+        Correlation ID used for structured log events.
+    source_quality:
+        Source quality mode string.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``plan``          – serialised MotifPlan or ``None``
+    * ``scores``        – list of per-occurrence score dicts
+    * ``warnings``      – list of serialised MotifValidationIssue dicts
+    * ``fallback_used`` – bool
+    * ``error``         – error message on failure, ``None`` on success
+    """
+    from app.services.motif_engine.planner import MotifPlanner
+    from app.services.motif_engine.validator import MotifValidator
+
+    result: dict = {
+        "plan": None,
+        "scores": [],
+        "warnings": [],
+        "fallback_used": False,
+        "error": None,
+    }
+
+    try:
+        sections_raw = render_plan.get("sections") or []
+        if not sections_raw:
+            logger.info(
+                "MOTIF_ENGINE_SHADOW [arr=%d] no sections in render plan — skipping",
+                arrangement_id,
+            )
+            return result
+
+        planner = MotifPlanner(
+            source_quality=source_quality,
+            available_roles=available_roles,
+        )
+
+        motif_plan = planner.build(sections=sections_raw)
+
+        validator = MotifValidator()
+        issues = validator.validate(motif_plan)
+
+        scores = [
+            {
+                "section_name": o.section_name,
+                "occurrence_index": o.occurrence_index,
+                "source_role": o.source_role,
+                "transformation_types": o.transformation_types,
+                "target_intensity": round(o.target_intensity, 4),
+                "is_strong": o.is_strong,
+            }
+            for o in motif_plan.occurrences
+        ]
+
+        result.update(
+            {
+                "plan": motif_plan.to_dict(),
+                "scores": scores,
+                "warnings": [i.to_dict() for i in issues],
+                "fallback_used": motif_plan.fallback_used,
+            }
+        )
+
+        log_feature_event(
+            logger,
+            event="motif_engine_shadow_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            motif_source_role=(
+                motif_plan.motif.source_role if motif_plan.motif else None
+            ),
+            motif_type=(
+                motif_plan.motif.motif_type if motif_plan.motif else None
+            ),
+            occurrence_count=len(motif_plan.occurrences),
+            motif_reuse_score=round(motif_plan.motif_reuse_score, 4),
+            motif_variation_score=round(motif_plan.motif_variation_score, 4),
+            fallback_used=motif_plan.fallback_used,
+            warning_count=len(issues),
+        )
+
+        # Structured per-occurrence log for inspection.
+        for occurrence in motif_plan.occurrences:
+            log_feature_event(
+                logger,
+                event="motif_occurrence_plan",
+                correlation_id=correlation_id,
+                arrangement_id=arrangement_id,
+                section_name=occurrence.section_name,
+                occurrence_index=occurrence.occurrence_index,
+                source_role=occurrence.source_role,
+                transformation_types=occurrence.transformation_types,
+                target_intensity=round(occurrence.target_intensity, 4),
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "MOTIF_ENGINE_SHADOW [arr=%d] planning failed (non-blocking): %s",
+            arrangement_id,
+            exc,
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+
+    return result
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -4502,6 +4638,48 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_drop_scores"] = _drop_result.get("scores")
             render_plan["_drop_warnings"] = _drop_result.get("warnings", [])
             render_plan["_drop_fallback_used"] = _drop_result.get("fallback_used", False)
+
+        # ====================================================================
+        # MOTIF ENGINE SHADOW: motif identity planning for observability.
+        # Runs MotifPlanner + MotifValidator against the finalised render-plan
+        # sections.  Results are stored in render_plan under:
+        #   _motif_plan           — serialised MotifPlan
+        #   _motif_scores         — per-occurrence role/transformation scores
+        #   _motif_warnings       — MotifValidationIssue dicts
+        #   _motif_fallback_used  — bool
+        # Does NOT drive live rendering (shadow mode only).
+        # ====================================================================
+        if settings.feature_motif_engine_shadow:
+            _motif_source_quality = "stereo_fallback"
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _motif_source_quality = str(
+                    stem_metadata.get("source_quality") or "true_stems"
+                )
+            elif loaded_stems and len(loaded_stems) > 1:
+                _motif_source_quality = "true_stems"
+            elif loaded_stems:
+                _motif_source_quality = "ai_separated"
+
+            _motif_roles: list[str] = []
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _motif_roles = _ordered_unique_roles(
+                    stem_metadata.get("roles_detected")
+                    or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+                )
+            elif loaded_stems:
+                _motif_roles = _ordered_unique_roles(list(loaded_stems.keys()))
+
+            _motif_result = _run_motif_engine_shadow(
+                render_plan=render_plan,
+                available_roles=_motif_roles,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+                source_quality=_motif_source_quality,
+            )
+            render_plan["_motif_plan"] = _motif_result.get("plan")
+            render_plan["_motif_scores"] = _motif_result.get("scores")
+            render_plan["_motif_warnings"] = _motif_result.get("warnings", [])
+            render_plan["_motif_fallback_used"] = _motif_result.get("fallback_used", False)
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
