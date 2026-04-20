@@ -232,6 +232,20 @@ class Settings(BaseSettings):
         validation_alias="AI_PRODUCER_SYSTEM_SHADOW",
     )
 
+    # Drop Engine Shadow Mode — runs the Drop Engine as a shadow planner during
+    # arrangement jobs for observability and drop design inspection.
+    # Designs pre-hook tension, fakeouts, delayed drops, re-entry accents, and
+    # hook payoff moments at every meaningful section boundary.
+    # Does NOT drive live rendering.  Results are stored inside render_plan_json
+    # under the ``_drop_plan``, ``_drop_scores``, ``_drop_warnings``, and
+    # ``_drop_fallback_used`` keys.
+    # Enabled by default so every job emits drop design observability data.
+    # Disable with DROP_ENGINE_SHADOW=false to suppress the extra planning pass.
+    feature_drop_engine_shadow: bool = Field(
+        default=True,
+        validation_alias="DROP_ENGINE_SHADOW",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
@@ -297,6 +311,7 @@ class Settings(BaseSettings):
         "feature_arranger_v2",
         "feature_timeline_engine_shadow",
         "feature_pattern_variation_shadow",
+        "feature_drop_engine_shadow",
         mode="before",
     )
     @classmethod
