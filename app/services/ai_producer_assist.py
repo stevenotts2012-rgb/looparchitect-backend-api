@@ -1,5 +1,5 @@
 """
-AI Co-Producer Assist Layer — Phase 4.
+AI Co-Producer Assist Layer — Phase 4 + 5.
 
 Architecture: AI proposes → rules validate → engine executes → QA verifies.
 
@@ -35,6 +35,9 @@ _MIN_JACCARD_CONTRAST: float = 0.20
 # Minimum novelty score (0.0–1.0) for a plan to be accepted; plans scoring below
 # this threshold are considered too generic and trigger deterministic fallback.
 _MIN_NOVELTY_SCORE: float = 0.30
+
+# Critic pass threshold: individual score dimensions must meet this minimum.
+_MIN_CRITIC_DIMENSION: float = 0.25
 
 # Phrases that indicate the AI is producing vague, non-actionable planning notes.
 _VAGUE_PHRASES: frozenset[str] = frozenset([
@@ -113,6 +116,9 @@ class AIProducerSuggestion:
     ai_novelty_score: float = 0.0                   # 0.0–1.0 plan novelty/contrast score
     ai_plan_vs_actual_match: Optional[float] = None  # Fraction of sections where plan == actual
 
+    # Structured critic scores (populated by score_ai_plan_full)
+    critic_scores: Optional[dict] = None
+
     def to_dict(self) -> dict:
         return {
             "suggested_sections": [
@@ -144,6 +150,7 @@ class AIProducerSuggestion:
             "ai_section_deltas": self.ai_section_deltas,
             "ai_novelty_score": self.ai_novelty_score,
             "ai_plan_vs_actual_match": self.ai_plan_vs_actual_match,
+            "critic_scores": self.critic_scores,
         }
 
 
@@ -279,6 +286,160 @@ def score_ai_plan(
     total_weight = sum(weights)
     final_score = sum(w * v for w, v in zip(weights, values)) / total_weight
     return round(final_score, 3), section_deltas
+
+
+# ---------------------------------------------------------------------------
+# Full critic pass (returns AICriticScores)
+# ---------------------------------------------------------------------------
+
+
+def score_ai_plan_full(suggestion: AIProducerSuggestion) -> "dict":
+    """Run all critic dimensions and return a dict matching ``AICriticScores`` fields.
+
+    Dimensions scored
+    -----------------
+    1. repeated_section_contrast (0.0–1.0)
+       Mean sufficient-contrast fraction across repeated-section pairs.
+
+    2. hook_payoff (0.0–1.0)
+       Hook energy advantage over verse energy.
+
+    3. timeline_movement (0.0–1.0)
+       Fraction of consecutive section transitions with meaningful energy change.
+
+    4. tension_release (0.0–1.0)
+       Quality of pre-hook tension + hook release (energy rise after pre-hook).
+
+    5. novelty_score (0.0–1.0)
+       Composite from score_ai_plan().
+
+    Returns
+    -------
+    dict
+        Compatible with ``AICriticScores`` — use ``AICriticScores(**result)`` to
+        construct the Pydantic model.
+    """
+    sections = suggestion.suggested_sections
+
+    # Fast-path: empty plan
+    if not sections:
+        return {
+            "repeated_section_contrast": 0.0,
+            "hook_payoff": 0.0,
+            "timeline_movement": 0.0,
+            "tension_release": 0.0,
+            "novelty_score": 0.0,
+            "plan_vs_actual_match": suggestion.ai_plan_vs_actual_match,
+            "passed": False,
+            "failure_reasons": ["No sections in plan"],
+        }
+
+    # --- 1. Repeated section contrast (re-use score_ai_plan internals) --------
+    novelty_score, section_deltas = score_ai_plan(suggestion)
+    # re-compute contrast fraction from deltas
+    if section_deltas:
+        sufficient = sum(1 for d in section_deltas if d.get("sufficient_contrast", False))
+        repeated_section_contrast = round(sufficient / len(section_deltas), 3)
+    else:
+        repeated_section_contrast = 1.0  # No repeated sections → no contrast issue
+
+    # --- 2. Hook payoff -------------------------------------------------------
+    hooks = [s for s in sections if s.section_type == "hook"]
+    verses = [s for s in sections if s.section_type == "verse"]
+    if hooks and verses:
+        max_verse_e = max(s.energy for s in verses)
+        min_hook_e = min(h.energy for h in hooks)
+        # Payoff = how far hooks exceed verses, normalised to 1-5 scale
+        advantage = min_hook_e - max_verse_e
+        hook_payoff = round(max(0.0, min(1.0, advantage / 4.0)), 3)
+    elif hooks:
+        # No verses — hooks alone score neutrally
+        hook_payoff = 0.5
+    else:
+        hook_payoff = 0.0
+
+    # --- 3. Timeline movement -------------------------------------------------
+    energies = [s.energy for s in sections]
+    if len(energies) >= 2:
+        transitions_with_movement = sum(
+            1 for i in range(1, len(energies)) if abs(energies[i] - energies[i - 1]) >= 1
+        )
+        timeline_movement = round(transitions_with_movement / (len(energies) - 1), 3)
+    else:
+        timeline_movement = 0.5
+
+    # --- 4. Tension/release ---------------------------------------------------
+    # Find pre-hook → hook pairs; pre-hook should be lower energy than hook
+    pre_hooks = [s for s in sections if s.section_type == "pre_hook"]
+    tension_release_scores: list[float] = []
+    for ph in pre_hooks:
+        ph_idx = sections.index(ph)
+        # Look for the next hook after this pre-hook
+        following_hooks = [
+            s for s in sections[ph_idx + 1 :] if s.section_type == "hook"
+        ]
+        if following_hooks:
+            hook = following_hooks[0]
+            rise = hook.energy - ph.energy
+            # Also check density reduction in pre-hook vs verse before it
+            preceding_verse = next(
+                (s for s in reversed(sections[:ph_idx]) if s.section_type == "verse"),
+                None,
+            )
+            density_tension = 0.5
+            if preceding_verse:
+                density_order = {"sparse": 0, "medium": 1, "full": 2}
+                pv_d = density_order.get(preceding_verse.target_density, 1)
+                ph_d = density_order.get(ph.target_density, 1)
+                # Pre-hook that reduces density (tension) scores better
+                density_tension = 0.7 if ph_d <= pv_d else 0.3
+            tr_score = round(min(1.0, max(0.0, (rise / 4.0) * 0.6 + density_tension * 0.4)), 3)
+            tension_release_scores.append(tr_score)
+
+    tension_release: float
+    if tension_release_scores:
+        tension_release = round(sum(tension_release_scores) / len(tension_release_scores), 3)
+    elif not pre_hooks and hooks:
+        # No pre-hooks — partial credit for hooks existing
+        tension_release = 0.3
+    else:
+        tension_release = 0.0
+
+    # --- Failure reasons -------------------------------------------------------
+    failure_reasons: list[str] = []
+    dim_threshold = _MIN_CRITIC_DIMENSION
+
+    if repeated_section_contrast < dim_threshold:
+        failure_reasons.append(
+            f"repeated_section_contrast={repeated_section_contrast:.2f} < {dim_threshold} "
+            "— repeated sections are too similar"
+        )
+    if hook_payoff < dim_threshold:
+        failure_reasons.append(
+            f"hook_payoff={hook_payoff:.2f} < {dim_threshold} — hooks do not elevate above verses"
+        )
+    if timeline_movement < dim_threshold:
+        failure_reasons.append(
+            f"timeline_movement={timeline_movement:.2f} < {dim_threshold} "
+            "— energy is too flat across the timeline"
+        )
+    if novelty_score < _MIN_NOVELTY_SCORE:
+        failure_reasons.append(
+            f"novelty_score={novelty_score:.3f} < {_MIN_NOVELTY_SCORE} — plan is too generic"
+        )
+
+    passed = len(failure_reasons) == 0
+
+    return {
+        "repeated_section_contrast": repeated_section_contrast,
+        "hook_payoff": hook_payoff,
+        "timeline_movement": timeline_movement,
+        "tension_release": tension_release,
+        "novelty_score": novelty_score,
+        "plan_vs_actual_match": suggestion.ai_plan_vs_actual_match,
+        "passed": passed,
+        "failure_reasons": failure_reasons,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -539,10 +700,14 @@ class AIProducerAssistService:
                 ai_plan_rejected_reason=rejected_reason,
             )
 
-        # Score the plan — reject plans that are too generic
+        # Score the plan — compute full critic scores
         novelty_score, section_deltas = score_ai_plan(raw_suggestion)
         raw_suggestion.ai_novelty_score = novelty_score
         raw_suggestion.ai_section_deltas = section_deltas
+
+        # Run full critic pass and attach structured scores
+        critic_scores = score_ai_plan_full(raw_suggestion)
+        raw_suggestion.critic_scores = critic_scores
 
         if novelty_score < _MIN_NOVELTY_SCORE:
             rejected_reason = (
@@ -558,6 +723,7 @@ class AIProducerAssistService:
                 ai_plan_rejected_reason=rejected_reason,
                 ai_novelty_score=novelty_score,
                 ai_section_deltas=section_deltas,
+                critic_scores=critic_scores,
             )
 
         raw_suggestion.model_used = self.model
