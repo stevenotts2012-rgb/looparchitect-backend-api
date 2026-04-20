@@ -3,7 +3,29 @@ Pattern Variation Engine — public package API.
 
 This module exposes the key symbols needed by callers.
 
-Usage example::
+Usage example (high-level engine)::
+
+    from app.services.pattern_variation_engine import (
+        PatternVariationEngine,
+        VariationContext,
+        VariationPlan,
+        PatternVariationEvent,
+    )
+
+    engine = PatternVariationEngine()
+    ctx = VariationContext(
+        section_name="Hook 2",
+        section_index=6,
+        section_occurrence_index=1,
+        total_occurrences=3,
+        bars=16,
+        energy=0.9,
+        density=0.8,
+        active_roles=["drums", "bass", "melody"],
+    )
+    plan = engine.build_variation_plan(ctx)
+
+Usage example (low-level planner)::
 
     from app.services.pattern_variation_engine import (
         PatternVariationPlanner,
@@ -27,7 +49,7 @@ Usage example::
     issues = validator.validate_and_repair(plan)
 
 NOTE: This module does NOT wire into the live renderer.  It is a standalone
-foundation layer intended for future integration.
+foundation layer integrated into arrangement jobs in shadow mode.
 """
 
 from app.services.pattern_variation_engine.bass_patterns import build_bass_plan
@@ -39,14 +61,32 @@ from app.services.pattern_variation_engine.types import (
     PatternAction,
     PatternEvent,
     PatternSectionPlan,
+    PatternVariationEvent,
     PatternVariationPlan,
+    VariationContext,
+    VariationPlan,
 )
 from app.services.pattern_variation_engine.validator import (
     PatternValidationIssue,
     PatternVariationValidator,
 )
+from app.services.pattern_variation_engine.variation_engine import (
+    PatternVariationEngine,
+)
+from app.services.pattern_variation_engine.variation_rules import score_repetition
+from app.services.pattern_variation_engine.variation_state import (
+    PatternVariationState as _VariationState,  # noqa: F401 — canonical import alias
+)
 
 __all__ = [
+    # High-level engine
+    "PatternVariationEngine",
+    # High-level types
+    "VariationContext",
+    "VariationPlan",
+    "PatternVariationEvent",
+    # Rules
+    "score_repetition",
     # Planner
     "PatternVariationPlanner",
     # State

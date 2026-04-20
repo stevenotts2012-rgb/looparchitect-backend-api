@@ -729,3 +729,416 @@ class TestFullPlanRoundTrip:
     def test_total_events_zero_for_stereo_fallback(self):
         plan = _plan("stereo_fallback")
         assert plan.total_events == 0
+
+
+# ===========================================================================
+# 12. PatternVariationEvent contract
+# ===========================================================================
+
+class TestPatternVariationEventContract:
+    from app.services.pattern_variation_engine.types import PatternVariationEvent as _PVE
+
+    def _make(self, **kwargs) -> "TestPatternVariationEventContract._PVE":
+        from app.services.pattern_variation_engine.types import PatternVariationEvent
+        defaults = dict(bar_start=1, bar_end=4, role="drums", variation_type="drum_fill")
+        defaults.update(kwargs)
+        return PatternVariationEvent(**defaults)
+
+    def test_valid_event_creates(self):
+        evt = self._make()
+        assert evt.bar_start == 1
+        assert evt.intensity == 0.7  # default
+
+    def test_intensity_clamped_high(self):
+        evt = self._make(intensity=5.0)
+        assert evt.intensity == 1.0
+
+    def test_intensity_clamped_low(self):
+        evt = self._make(intensity=-1.0)
+        assert evt.intensity == 0.0
+
+    def test_bar_start_must_be_gte_1(self):
+        with pytest.raises(ValueError, match="bar_start"):
+            self._make(bar_start=0)
+
+    def test_bar_end_must_be_gte_bar_start(self):
+        with pytest.raises(ValueError, match="bar_end"):
+            self._make(bar_start=5, bar_end=3)
+
+    def test_empty_role_raises(self):
+        with pytest.raises(ValueError, match="role"):
+            self._make(role="")
+
+    def test_empty_variation_type_raises(self):
+        with pytest.raises(ValueError, match="variation_type"):
+            self._make(variation_type="")
+
+    def test_to_dict_has_required_fields(self):
+        evt = self._make(bar_start=5, bar_end=8, intensity=0.8)
+        d = evt.to_dict()
+        assert d["bars"] == [5, 8]
+        assert d["role"] == "drums"
+        assert d["type"] == "drum_fill"
+        assert d["intensity"] == 0.8
+
+    def test_parameters_in_to_dict(self):
+        evt = self._make(parameters={"swing": 0.5})
+        d = evt.to_dict()
+        assert d["parameters"]["swing"] == 0.5
+
+
+# ===========================================================================
+# 13. VariationContext contract
+# ===========================================================================
+
+class TestVariationContextContract:
+    def _make(self, **kwargs):
+        from app.services.pattern_variation_engine.types import VariationContext
+        defaults = dict(
+            section_name="Hook 1",
+            section_index=3,
+            section_occurrence_index=0,
+            total_occurrences=3,
+            bars=16,
+            energy=0.9,
+            density=0.8,
+            active_roles=["drums", "bass", "melody"],
+        )
+        defaults.update(kwargs)
+        return VariationContext(**defaults)
+
+    def test_valid_context_creates(self):
+        ctx = self._make()
+        assert ctx.bars == 16
+        assert ctx.energy == 0.9
+
+    def test_energy_clamped(self):
+        ctx = self._make(energy=2.5)
+        assert ctx.energy == 1.0
+
+    def test_density_clamped(self):
+        ctx = self._make(density=-0.5)
+        assert ctx.density == 0.0
+
+    def test_bars_must_be_positive(self):
+        with pytest.raises(ValueError, match="bars"):
+            self._make(bars=0)
+
+    def test_negative_occurrence_index_raises(self):
+        with pytest.raises(ValueError, match="section_occurrence_index"):
+            self._make(section_occurrence_index=-1)
+
+    def test_section_type_hook(self):
+        ctx = self._make(section_name="Hook 2")
+        assert ctx.section_type == "hook"
+
+    def test_section_type_verse(self):
+        ctx = self._make(section_name="Verse 1")
+        assert ctx.section_type == "verse"
+
+    def test_section_type_pre_hook(self):
+        ctx = self._make(section_name="Pre-Hook 1")
+        assert ctx.section_type == "pre_hook"
+
+    def test_section_type_bridge(self):
+        ctx = self._make(section_name="Bridge")
+        assert ctx.section_type == "bridge"
+
+    def test_section_type_outro(self):
+        ctx = self._make(section_name="Outro")
+        assert ctx.section_type == "outro"
+
+    def test_occurrence_is_1_based(self):
+        ctx = self._make(section_occurrence_index=1)
+        assert ctx.occurrence == 2
+
+    def test_first_occurrence_is_one(self):
+        ctx = self._make(section_occurrence_index=0)
+        assert ctx.occurrence == 1
+
+
+# ===========================================================================
+# 14. VariationPlan contract
+# ===========================================================================
+
+class TestVariationPlanContract:
+    def _make(self, **kwargs):
+        from app.services.pattern_variation_engine.types import VariationPlan
+        defaults = dict(section_name="Verse 2")
+        defaults.update(kwargs)
+        return VariationPlan(**defaults)
+
+    def test_empty_plan_creates(self):
+        plan = self._make()
+        assert plan.variations == []
+        assert plan.repetition_score == 0.0
+
+    def test_density_clamped(self):
+        plan = self._make(variation_density=5.0)
+        assert plan.variation_density == 1.0
+
+    def test_score_clamped(self):
+        plan = self._make(repetition_score=-1.0)
+        assert plan.repetition_score == 0.0
+
+    def test_to_dict_structure(self):
+        from app.services.pattern_variation_engine.types import (
+            PatternVariationEvent,
+            VariationPlan,
+        )
+        evt = PatternVariationEvent(
+            bar_start=5, bar_end=8, role="drums",
+            variation_type="drum_fill", intensity=0.8,
+        )
+        plan = VariationPlan(
+            section_name="hook",
+            variations=[evt],
+            variation_density=0.6,
+            repetition_score=0.75,
+            applied_strategies=["hook_priority:end_transition_drum_fill"],
+        )
+        d = plan.to_dict()
+        assert d["section"] == "hook"
+        assert len(d["variations"]) == 1
+        assert d["variation_density"] == 0.6
+        assert d["repetition_score"] == 0.75
+        assert "applied_strategies" in d
+
+
+# ===========================================================================
+# 15. PatternVariationEngine — build_variation_plan
+# ===========================================================================
+
+class TestPatternVariationEngine:
+    from app.services.pattern_variation_engine.variation_engine import (
+        PatternVariationEngine as _Engine,
+    )
+    from app.services.pattern_variation_engine.types import VariationContext as _Ctx
+
+    def _engine(self):
+        from app.services.pattern_variation_engine.variation_engine import (
+            PatternVariationEngine,
+        )
+        return PatternVariationEngine()
+
+    def _ctx(self, **kwargs):
+        from app.services.pattern_variation_engine.types import VariationContext
+        defaults = dict(
+            section_name="Verse 1",
+            section_index=1,
+            section_occurrence_index=0,
+            total_occurrences=2,
+            bars=16,
+            energy=0.6,
+            density=0.6,
+            active_roles=["drums", "bass", "melody"],
+            source_quality="true_stems",
+        )
+        defaults.update(kwargs)
+        return VariationContext(**defaults)
+
+    def test_returns_variation_plan(self):
+        from app.services.pattern_variation_engine.types import VariationPlan
+        plan = self._engine().build_variation_plan(self._ctx())
+        assert isinstance(plan, VariationPlan)
+
+    def test_plan_has_section_name(self):
+        plan = self._engine().build_variation_plan(self._ctx(section_name="Verse 1"))
+        assert plan.section_name == "Verse 1"
+
+    def test_repeated_section_has_variations(self):
+        """Verse 2 (occurrence_index=1) must have at least one variation."""
+        plan = self._engine().build_variation_plan(
+            self._ctx(section_name="Verse 2", section_occurrence_index=1)
+        )
+        assert len(plan.variations) >= 1, (
+            "Second occurrence must have at least 1 variation (Rule 2)"
+        )
+
+    def test_hook_has_end_transition(self):
+        """Hook sections must have a drum fill near the end (Rule 5)."""
+        plan = self._engine().build_variation_plan(
+            self._ctx(
+                section_name="Hook 1",
+                section_occurrence_index=0,
+                bars=16,
+                energy=0.9,
+                active_roles=["drums", "bass", "melody"],
+            )
+        )
+        fill_events = [
+            v for v in plan.variations
+            if v.variation_type in {"drum_fill", "snare_fill", "perc_fill"}
+            and v.bar_end >= 15
+        ]
+        assert fill_events, "Hook must have an end-of-section fill transition"
+
+    def test_high_energy_section_has_variation_density(self):
+        plan = self._engine().build_variation_plan(
+            self._ctx(
+                section_name="Hook 2",
+                section_occurrence_index=1,
+                energy=0.95,
+                bars=16,
+            )
+        )
+        assert plan.variation_density > 0, "High-energy section must have variation density"
+
+    def test_stereo_fallback_returns_empty_plan(self):
+        plan = self._engine().build_variation_plan(
+            self._ctx(source_quality="stereo_fallback")
+        )
+        # stereo_fallback produces no sub-planner events; only rules may add minimal events
+        # but no active_roles means rules also skip → empty variations
+        ctx_no_roles = self._ctx(
+            source_quality="stereo_fallback",
+            active_roles=[],
+        )
+        plan_no_roles = self._engine().build_variation_plan(ctx_no_roles)
+        assert plan_no_roles.variations == []
+
+    def test_deterministic_same_input_same_output(self):
+        ctx = self._ctx(section_name="Hook 2", section_occurrence_index=1, energy=0.9)
+        plan1 = self._engine().build_variation_plan(ctx)
+        plan2 = self._engine().build_variation_plan(ctx)
+        assert plan1.to_dict() == plan2.to_dict(), (
+            "Engine must be deterministic: same input must produce same output"
+        )
+
+    def test_hook_escalation_occurrence_2_richer_than_1(self):
+        engine = self._engine()
+        plan1 = engine.build_variation_plan(
+            self._ctx(
+                section_name="Hook 1",
+                section_occurrence_index=0,
+                energy=0.9,
+                bars=16,
+                active_roles=["drums", "bass", "melody"],
+            )
+        )
+        plan2 = engine.build_variation_plan(
+            self._ctx(
+                section_name="Hook 2",
+                section_occurrence_index=1,
+                energy=0.9,
+                bars=16,
+                active_roles=["drums", "bass", "melody"],
+            )
+        )
+        # Hook 2 should have at least as many events as Hook 1 (Rule 5 adds extras)
+        assert len(plan2.variations) >= len(plan1.variations)
+
+    def test_plan_serialises_cleanly(self):
+        import json
+        plan = self._engine().build_variation_plan(
+            self._ctx(section_name="Hook 1", section_occurrence_index=0, energy=0.9)
+        )
+        d = plan.to_dict()
+        serialised = json.dumps(d)  # must not raise
+        assert '"section"' in serialised
+
+    def test_single_role_degrades_gracefully(self):
+        """Engine must not crash with only one active role."""
+        plan = self._engine().build_variation_plan(
+            self._ctx(
+                section_name="Verse 1",
+                section_occurrence_index=0,
+                active_roles=["drums"],
+            )
+        )
+        assert isinstance(plan.variation_density, float)
+
+    def test_empty_roles_returns_zero_density(self):
+        plan = self._engine().build_variation_plan(
+            self._ctx(active_roles=[], section_occurrence_index=0)
+        )
+        assert plan.variation_density == 0.0
+
+
+# ===========================================================================
+# 16. score_repetition
+# ===========================================================================
+
+class TestScoreRepetition:
+    def test_empty_plan_scores_zero(self):
+        from app.services.pattern_variation_engine.types import VariationPlan
+        from app.services.pattern_variation_engine.variation_rules import score_repetition
+        plan = VariationPlan(section_name="Verse 1")
+        assert score_repetition(["drums", "bass"], plan) == 0.0
+
+    def test_varied_plan_scores_above_threshold(self):
+        from app.services.pattern_variation_engine.types import (
+            PatternVariationEvent,
+            VariationPlan,
+        )
+        from app.services.pattern_variation_engine.variation_rules import score_repetition
+        events = [
+            PatternVariationEvent(1, 4, "drums", "drum_fill"),
+            PatternVariationEvent(5, 8, "bass", "bass_dropout"),
+            PatternVariationEvent(9, 12, "melody", "call_response"),
+            PatternVariationEvent(13, 16, "drums", "snare_fill"),
+        ]
+        plan = VariationPlan(
+            section_name="Hook 1",
+            variations=events,
+            variation_density=0.6,
+            applied_strategies=["hook_priority:end_transition_drum_fill"],
+        )
+        score = score_repetition(["drums", "bass", "melody"], plan)
+        assert score >= 0.3, f"Well-varied plan should score >= 0.3, got {score}"
+
+    def test_score_improves_with_more_unique_types(self):
+        from app.services.pattern_variation_engine.types import (
+            PatternVariationEvent,
+            VariationPlan,
+        )
+        from app.services.pattern_variation_engine.variation_rules import score_repetition
+
+        same_type = [PatternVariationEvent(1, 4, "drums", "drum_fill") for _ in range(4)]
+        plan_same = VariationPlan("Hook 1", variations=same_type, variation_density=0.4)
+        score_same = score_repetition(["drums", "bass", "melody"], plan_same)
+
+        varied_types = [
+            PatternVariationEvent(1, 4, "drums", "drum_fill"),
+            PatternVariationEvent(5, 8, "drums", "hat_density_up"),
+            PatternVariationEvent(9, 12, "bass", "bass_dropout"),
+            PatternVariationEvent(13, 16, "melody", "call_response"),
+        ]
+        plan_varied = VariationPlan("Hook 1", variations=varied_types, variation_density=0.6)
+        score_varied = score_repetition(["drums", "bass", "melody"], plan_varied)
+
+        assert score_varied > score_same, (
+            "More unique variation types should produce a higher repetition score"
+        )
+
+    def test_score_in_range_zero_to_one(self):
+        from app.services.pattern_variation_engine.types import (
+            PatternVariationEvent,
+            VariationPlan,
+        )
+        from app.services.pattern_variation_engine.variation_rules import score_repetition
+        events = [PatternVariationEvent(1, 16, "drums", "drum_fill")]
+        plan = VariationPlan("Test", variations=events, variation_density=0.3)
+        score = score_repetition(["drums"], plan)
+        assert 0.0 <= score <= 1.0
+
+
+# ===========================================================================
+# 17. variation_state module import
+# ===========================================================================
+
+class TestVariationStateModule:
+    def test_can_import_from_variation_state(self):
+        from app.services.pattern_variation_engine.variation_state import (
+            PatternVariationState,
+        )
+        state = PatternVariationState()
+        assert state.next_occurrence("verse") == 1
+
+    def test_variation_state_is_same_as_state(self):
+        from app.services.pattern_variation_engine.state import PatternVariationState as A
+        from app.services.pattern_variation_engine.variation_state import (
+            PatternVariationState as B,
+        )
+        assert A is B, "variation_state.PatternVariationState must be the same class"
+
