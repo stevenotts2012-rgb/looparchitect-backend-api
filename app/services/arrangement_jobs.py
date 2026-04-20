@@ -3159,6 +3159,216 @@ def attach_loops_to_sections(render_plan: dict, loop_variation_manifest: dict | 
     )
 
 
+# ---------------------------------------------------------------------------
+# Timeline Engine Shadow Planner helpers
+# ---------------------------------------------------------------------------
+
+def _serialize_timeline_plan(plan) -> dict:
+    """Convert a :class:`TimelinePlan` instance to a JSON-safe dict."""
+    return {
+        "total_bars": plan.total_bars,
+        "energy_curve": list(plan.energy_curve),
+        "variation_log": list(plan.variation_log),
+        "state_snapshot": dict(plan.state_snapshot),
+        "sections": [
+            {
+                "name": s.name,
+                "bars": s.bars,
+                "target_energy": s.target_energy,
+                "target_density": s.target_density,
+                "active_roles": list(s.active_roles),
+                "events": [
+                    {
+                        "bar_start": e.bar_start,
+                        "bar_end": e.bar_end,
+                        "action": e.action,
+                        "target_role": e.target_role,
+                        "parameters": dict(e.parameters),
+                    }
+                    for e in s.events
+                ],
+            }
+            for s in plan.sections
+        ],
+    }
+
+
+def _serialize_timeline_validation(issues) -> list:
+    """Convert a list of :class:`ValidationIssue` objects to JSON-safe dicts."""
+    return [
+        {
+            "rule": i.rule,
+            "severity": i.severity,
+            "message": i.message,
+            "section_name": i.section_name,
+        }
+        for i in issues
+    ]
+
+
+def _run_timeline_planner_shadow(
+    render_plan: dict,
+    available_roles: list[str],
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Run the timeline engine as a shadow planner (parallel, non-blocking).
+
+    The shadow planner builds a :class:`TimelinePlan` from the *render_plan*
+    sections, validates it with :class:`TimelineValidator`, logs all findings,
+    and returns a JSON-safe result dict.  It never raises — any exception is
+    caught and recorded in the ``error`` key so the live render path is
+    completely unaffected.
+
+    Parameters
+    ----------
+    render_plan:
+        The already-built render plan dict (post-``attach_loops_to_sections``).
+    available_roles:
+        Resolved stem roles for the source material.
+    arrangement_id:
+        Arrangement ID used in log messages.
+    correlation_id:
+        Correlation ID used for structured log events.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``plan``               – serialised :class:`TimelinePlan` or ``None``
+    * ``validation_issues``  – list of serialised :class:`ValidationIssue` dicts
+    * ``section_count``      – number of sections planned
+    * ``event_count``        – total intra-section timeline events
+    * ``error``              – error message string on failure, ``None`` on success
+    """
+    from app.services.timeline_engine import TimelinePlanner, TimelineValidator
+
+    result: dict = {
+        "plan": None,
+        "validation_issues": [],
+        "section_count": 0,
+        "event_count": 0,
+        "error": None,
+    }
+
+    try:
+        sections_raw = render_plan.get("sections") or []
+        if not sections_raw:
+            logger.info(
+                "TIMELINE_SHADOW [arr=%d] no sections in render plan — skipping shadow pass",
+                arrangement_id,
+            )
+            return result
+
+        # Build spec from the normalised render-plan sections.
+        section_spec: list[dict] = []
+        for s in sections_raw:
+            name = str(s.get("type") or s.get("name") or "verse").strip().lower()
+            bars = int(s.get("bars") or 8)
+            roles: list[str] = list(s.get("active_stem_roles") or s.get("instruments") or [])
+            section_spec.append({"name": name, "bars": bars, "roles": roles})
+
+        # Plan.
+        planner = TimelinePlanner(available_roles=available_roles)
+        plan = planner.build_plan(section_spec)
+
+        # Log per-section details.
+        for section in plan.sections:
+            logger.info(
+                "TIMELINE_SHADOW [arr=%d] section=%r bars=%d energy=%.2f density=%.2f "
+                "roles=%s events=%d",
+                arrangement_id,
+                section.name,
+                section.bars,
+                section.target_energy,
+                section.target_density,
+                section.active_roles,
+                len(section.events),
+            )
+            for event in section.events:
+                logger.debug(
+                    "TIMELINE_SHADOW [arr=%d] section=%r event=%s target_role=%s "
+                    "bars=%d-%d params=%s",
+                    arrangement_id,
+                    section.name,
+                    event.action,
+                    event.target_role,
+                    event.bar_start,
+                    event.bar_end,
+                    event.parameters,
+                )
+
+        # Log variation history.
+        for entry in plan.variation_log:
+            logger.info(
+                "TIMELINE_SHADOW [arr=%d] variation_log: %s",
+                arrangement_id,
+                entry,
+            )
+
+        # Validate.
+        validator = TimelineValidator()
+        issues = validator.validate(plan)
+
+        errors = [i for i in issues if i.severity == "error"]
+        warnings = [i for i in issues if i.severity == "warning"]
+
+        for issue in errors:
+            logger.warning(
+                "TIMELINE_SHADOW [arr=%d] VALIDATION_ERROR rule=%s section=%r: %s",
+                arrangement_id,
+                issue.rule,
+                issue.section_name,
+                issue.message,
+            )
+        for issue in warnings:
+            logger.info(
+                "TIMELINE_SHADOW [arr=%d] VALIDATION_WARNING rule=%s section=%r: %s",
+                arrangement_id,
+                issue.rule,
+                issue.section_name,
+                issue.message,
+            )
+        if not issues:
+            logger.info(
+                "TIMELINE_SHADOW [arr=%d] validation passed — no issues found",
+                arrangement_id,
+            )
+
+        total_events = sum(len(s.events) for s in plan.sections)
+
+        result.update(
+            {
+                "plan": _serialize_timeline_plan(plan),
+                "validation_issues": _serialize_timeline_validation(issues),
+                "section_count": len(plan.sections),
+                "event_count": total_events,
+            }
+        )
+
+        log_feature_event(
+            logger,
+            event="timeline_shadow_plan_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            section_count=len(plan.sections),
+            event_count=total_events,
+            validation_error_count=len(errors),
+            validation_warning_count=len(warnings),
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "TIMELINE_SHADOW [arr=%d] planning failed (non-blocking): %s",
+            arrangement_id,
+            exc,
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+
+    return result
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -3427,6 +3637,30 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
         # This is required for both the arranger_v2 path (which does not call
         # assign_section_variants) and as a safety net for the pre-render-plan path.
         attach_loops_to_sections(render_plan, loop_variation_manifest)
+
+        # ====================================================================
+        # TIMELINE ENGINE SHADOW: parallel planning for observability.
+        # Runs TimelinePlanner + TimelineValidator against the finalised
+        # render-plan sections.  Result is stored in render_plan["_timeline_plan"]
+        # for inspection via render_plan_json.
+        # Does NOT alter section data or replace the live render path.
+        # ====================================================================
+        if settings.feature_timeline_engine_shadow:
+            _tl_roles: list[str] = []
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _tl_roles = _ordered_unique_roles(
+                    stem_metadata.get("roles_detected")
+                    or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+                )
+            elif loaded_stems:
+                _tl_roles = _ordered_unique_roles(list(loaded_stems.keys()))
+
+            render_plan["_timeline_plan"] = _run_timeline_planner_shadow(
+                render_plan=render_plan,
+                available_roles=_tl_roles,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+            )
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
