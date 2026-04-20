@@ -1,7 +1,7 @@
 """
 Comprehensive tests for the Motif Engine.
 
-Coverage (77 tests):
+Coverage (120 tests):
 1.  Motif type contract and validation.
 2.  MotifTransformation type contract.
 3.  MotifOccurrence properties.
@@ -739,8 +739,9 @@ class TestMotifPlannerRepeatedHooks:
         if len(hook_occs) >= 2:
             set1 = frozenset(hook_occs[0].transformation_types)
             set2 = frozenset(hook_occs[1].transformation_types)
-            # At least one should differ from the other.
-            assert set1 != set2 or True  # planner makes best effort; not a hard crash
+            # The planner assigns occurrence_index 0 and 1 to the two hooks,
+            # which map to different table entries — sets should not be equal.
+            assert set1 != set2
 
     def test_three_hooks_all_present(self):
         plan = _planner().build(_sections("hook", "verse", "hook", "bridge", "hook"))
