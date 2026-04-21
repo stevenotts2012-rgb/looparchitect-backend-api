@@ -155,8 +155,6 @@ class TestAudioShakeProvider:
 
         # _poll_job returns completed job with output assets
         poll_resp = MagicMock()
-        stem_wav = io.BytesIO()
-        _silent_audio(500).export(stem_wav, format="wav")
         poll_resp.json.return_value = {
             "job": {
                 "status": "completed",

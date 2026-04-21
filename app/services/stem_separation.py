@@ -219,6 +219,55 @@ def separate_stems_with_fallback(
     return stems, "builtin"
 
 
+def _run_separation(
+    source_audio: AudioSegment,
+    configured_backend: str,
+    loop_id: int,
+) -> tuple[dict[str, AudioSegment], str, str, bool, int | None]:
+    """Execute separation and return (stems, used_backend, provider_name, fallback_used, duration_ms).
+
+    Handles the mock path and the multi-provider path in one place so that
+    ``separate_and_store_stems`` only needs to deal with the result.
+    """
+    from app.services.stem_separation_providers import (
+        get_provider,
+        separate_with_provider,
+    )
+
+    if configured_backend == "mock":
+        stems = _builtin_stems(source_audio)
+        return stems, "mock", "mock", False, None
+
+    provider = get_provider()
+    logger.info(
+        "separate_and_store_stems: loop_id=%s provider_requested=%s",
+        loop_id,
+        provider.name,
+    )
+    provider_result = separate_with_provider(source_audio, provider=provider)
+    if provider_result.fallback_used:
+        logger.info(
+            "separate_and_store_stems: loop_id=%s fallback_used=True provider_used=%s duration_ms=%s",
+            loop_id,
+            provider_result.provider_name,
+            provider_result.duration_ms,
+        )
+    else:
+        logger.info(
+            "separate_and_store_stems: loop_id=%s provider_used=%s duration_ms=%s",
+            loop_id,
+            provider_result.provider_name,
+            provider_result.duration_ms,
+        )
+    return (
+        provider_result.stems,
+        provider_result.provider_name,
+        provider_result.provider_name,
+        provider_result.fallback_used,
+        provider_result.duration_ms,
+    )
+
+
 def separate_and_store_stems(
     source_audio: AudioSegment,
     *,
@@ -235,11 +284,6 @@ def separate_and_store_stems(
     Legacy ``STEM_SEPARATION_BACKEND`` is still honoured for callers that
     bypass the provider system (e.g. mock mode in tests).
     """
-    from app.services.stem_separation_providers import (
-        get_provider,
-        separate_with_provider,
-    )
-
     configured_backend = (settings.stem_separation_backend or "builtin").strip().lower()
     enabled = bool(settings.feature_stem_separation)
     if not enabled:
@@ -253,40 +297,9 @@ def separate_and_store_stems(
         )
 
     try:
-        if configured_backend == "mock":
-            # Mock backend is a test alias for the builtin splitter
-            stems, used_backend = _builtin_stems(source_audio), "mock"
-            provider_result_name = "mock"
-            provider_fallback = False
-            provider_duration_ms: int | None = None
-        else:
-            provider = get_provider()
-            logger.info(
-                "separate_and_store_stems: loop_id=%s provider_requested=%s",
-                loop_id,
-                provider.name,
-            )
-            provider_result = separate_with_provider(source_audio, provider=provider)
-            stems = provider_result.stems
-            used_backend = provider_result.provider_name
-            provider_result_name = provider_result.provider_name
-            provider_fallback = provider_result.fallback_used
-            provider_duration_ms = provider_result.duration_ms
-
-            if provider_fallback:
-                logger.info(
-                    "separate_and_store_stems: loop_id=%s fallback_used=True provider_used=%s duration_ms=%s",
-                    loop_id,
-                    used_backend,
-                    provider_duration_ms,
-                )
-            else:
-                logger.info(
-                    "separate_and_store_stems: loop_id=%s provider_used=%s duration_ms=%s",
-                    loop_id,
-                    used_backend,
-                    provider_duration_ms,
-                )
+        stems, used_backend, provider_name, provider_fallback, provider_duration_ms = (
+            _run_separation(source_audio, configured_backend, loop_id)
+        )
 
         stem_s3_keys: dict[str, str] = {}
         for stem_name, stem_audio in stems.items():
@@ -306,7 +319,7 @@ def separate_and_store_stems(
             stems_generated=list(stem_s3_keys.keys()),
             stem_s3_keys=stem_s3_keys,
             error=None,
-            stem_separator_provider_used=provider_result_name,
+            stem_separator_provider_used=provider_name,
             stem_separator_fallback_used=provider_fallback,
             stem_separator_duration_ms=provider_duration_ms,
         )

@@ -318,11 +318,16 @@ class AudioShakeProvider(StemSeparatorProvider):
             # overlay them (additive mix with -3 dB attenuation each to avoid clipping).
             else:
                 normalised[internal] = normalised[internal].overlay(audio - 3)
-        # Ensure all four internal stems are always present (use silence as fallback)
-        duration_ms = max((a.duration_seconds * 1000 for a in normalised.values()), default=0)
+        # Ensure all four internal stems are always present (use silence as fallback).
+        # When normalised is empty (AudioShake returned no recognisable stems),
+        # fall back to the original audio duration so silence stems match the source.
+        if normalised:
+            duration_ms = max(int(a.duration_seconds * 1000) for a in normalised.values())
+        else:
+            duration_ms = int(next(iter(raw_stems.values())).duration_seconds * 1000) if raw_stems else 0
         for stem in STEM_NAMES_4:
             if stem not in normalised:
-                normalised[stem] = AudioSegment.silent(duration=int(duration_ms))
+                normalised[stem] = AudioSegment.silent(duration=duration_ms)
         return normalised
 
 
