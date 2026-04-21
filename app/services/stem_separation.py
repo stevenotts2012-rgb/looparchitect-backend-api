@@ -89,7 +89,7 @@ def _builtin_stems(audio: AudioSegment) -> dict[str, AudioSegment]:
 
 def _demucs_stems(
     audio: AudioSegment,
-    model_name: str = DEMUCS_MODEL_HTDEMUCS,
+    model_name: str | None = None,
 ) -> dict[str, AudioSegment]:
     """Separate *audio* using the Demucs ML library.
 
@@ -99,6 +99,8 @@ def _demucs_stems(
         Full mix to separate.
     model_name:
         Demucs model identifier (e.g. ``htdemucs_6s``, ``htdemucs``).
+        When *None* (default), the value of the ``DEMUCS_MODEL`` environment
+        variable is used (``settings.demucs_model``; default ``"htdemucs"``).
 
     Returns
     -------
@@ -121,11 +123,16 @@ def _demucs_stems(
     To enable real Demucs inference, install the package and replace the body of
     this function with the appropriate ``demucs.api`` or ``demucs.apply`` call.
     """
+    # Resolve model: explicit argument takes precedence over the env-var default.
+    # Explicit None-check (rather than `model_name or …`) preserves any empty-string
+    # passthrough in case callers ever need to defer resolution to the demucs library.
+    resolved_model = model_name if model_name is not None else settings.demucs_model
+
     try:
         import demucs  # noqa: F401 — availability check only
     except ImportError as exc:
         raise DemucsUnavailableError(
-            f"demucs package is not installed (model={model_name!r}). "
+            f"demucs package is not installed (model={resolved_model!r}). "
             "Install it with: pip install demucs"
         ) from exc
 
@@ -133,13 +140,15 @@ def _demucs_stems(
     # Example (requires demucs>=4.0):
     #
     #   from demucs.api import Separator
-    #   separator = Separator(model=model_name)
-    #   origin, separated = separator.separate_audio_segment(audio)
+    #   separator = Separator(model=resolved_model)
+    #   origin, separated = separator.separate_audio_segment(
+    #       audio, timeout=settings.demucs_timeout
+    #   )
     #   return {name: seg for name, seg in separated.items()}
     #
     # The stub below raises so that callers fall back to _builtin_stems.
     raise DemucsUnavailableError(
-        f"Demucs package found but inference is not configured (model={model_name!r}). "
+        f"Demucs package found but inference is not configured (model={resolved_model!r}). "
         "Implement the separator call in _demucs_stems() to enable ML-based separation."
     )
 

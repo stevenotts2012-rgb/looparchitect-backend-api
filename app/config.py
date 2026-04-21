@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     feature_stem_separation: bool = Field(default=False, validation_alias="FEATURE_STEM_SEPARATION")
     feature_mastering_stage: bool = Field(default=True, validation_alias="FEATURE_MASTERING_STAGE")
     stem_separation_backend: str = Field(default="builtin", validation_alias="STEM_SEPARATION_BACKEND")
+
+    # Demucs model and execution settings
+    # DEMUCS_MODEL — Demucs model identifier used when running separation.
+    #   Valid values: htdemucs | htdemucs_6s (or any model supported by the installed demucs version)
+    #   Default: htdemucs (4-stem model; safe fallback for all environments)
+    demucs_model: str = Field(default="htdemucs", validation_alias="DEMUCS_MODEL")
+    # DEMUCS_TIMEOUT — maximum seconds to wait for a Demucs separation run.
+    #   Used when invoking the Demucs API (e.g. separator.separate_audio_segment timeout).
+    #   Default: 300 (5 minutes; adjust upward for large files or slow hardware)
+    demucs_timeout: int = Field(default=300, validation_alias="DEMUCS_TIMEOUT")
     mastering_profile_default: str = Field(default="transparent", validation_alias="MASTERING_PROFILE_DEFAULT")
     dev_fallback_loop_only: bool = Field(default=False, validation_alias="DEV_FALLBACK_LOOP_ONLY")
     
