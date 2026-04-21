@@ -3757,6 +3757,195 @@ def _run_pattern_variation_shadow(
     return result
 
 
+def _build_pattern_variation_summary(pv_shadow_result: dict) -> dict:
+    """Build a compact, JSON-safe summary of pattern variation plans for metadata storage."""
+    plans = pv_shadow_result.get("plans") or []
+    sections_summary = [
+        {
+            "section": p.get("section", ""),
+            "variation_density": p.get("variation_density", 0.0),
+            "repetition_score": p.get("repetition_score", 0.0),
+            "event_count": len(p.get("variations") or []),
+            "applied_strategies": list(p.get("applied_strategies") or []),
+        }
+        for p in plans
+    ]
+    return {
+        "section_count": pv_shadow_result.get("section_count", 0),
+        "total_events": pv_shadow_result.get("total_events", 0),
+        "low_score_sections": list(pv_shadow_result.get("low_score_sections") or []),
+        "sections": sections_summary,
+    }
+
+
+def _apply_pattern_variation_primary(
+    render_plan: dict,
+    pv_shadow_result: dict,
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Promote Pattern Variation Engine as the primary source of section-internal variation.
+
+    When :data:`settings.feature_pattern_variation_primary` is ``True`` this
+    function overlays the :class:`~app.services.pattern_variation_engine.VariationPlan`
+    outputs — variation events, density, repetition score, and applied strategies —
+    onto the already-built *render_plan* sections so the render path can consume
+    them as authoritative variation instructions.
+
+    Falls back safely to the current live behaviour (no variation events injected)
+    in any of the following conditions:
+
+    * The shadow planner encountered an exception (``error`` key is set).
+    * The resulting plans list is empty when render-plan sections exist.
+
+    In all cases the following observability keys are written into *render_plan*:
+
+    * ``pattern_primary_used``              – ``True`` when the plan was applied.
+    * ``pattern_primary_fallback_used``     – ``True`` when the fallback path ran.
+    * ``pattern_primary_fallback_reason``   – Human-readable reason for fallback.
+    * ``pattern_variation_summary``         – Compact per-section summary dict.
+    * ``pattern_variation_validation_warnings`` – Low-score section names (warnings).
+
+    Parameters
+    ----------
+    render_plan:
+        The live render plan dict (already built by arranger_v2 or legacy).
+    pv_shadow_result:
+        The dict returned by :func:`_run_pattern_variation_shadow`.
+    arrangement_id:
+        Used in log messages.
+    correlation_id:
+        Used for structured log events.
+
+    Returns
+    -------
+    dict
+        The (potentially mutated) *render_plan* with observability keys set.
+    """
+    # Initialise observability fields — written regardless of outcome.
+    render_plan["pattern_primary_used"] = False
+    render_plan["pattern_primary_fallback_used"] = False
+    render_plan["pattern_primary_fallback_reason"] = ""
+    render_plan["pattern_variation_summary"] = {}
+    render_plan["pattern_variation_validation_warnings"] = []
+
+    def _record_fallback(reason: str) -> dict:
+        logger.warning(
+            "PATTERN_VARIATION_PRIMARY [arr=%d] fallback to no-variation — %s",
+            arrangement_id,
+            reason,
+        )
+        render_plan["pattern_primary_fallback_used"] = True
+        render_plan["pattern_primary_fallback_reason"] = reason
+        log_feature_event(
+            logger,
+            event="pattern_variation_primary_fallback",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            reason=reason,
+        )
+        return render_plan
+
+    # ------------------------------------------------------------------ #
+    # Guard 1: build error                                                 #
+    # ------------------------------------------------------------------ #
+    if pv_shadow_result.get("error"):
+        return _record_fallback(
+            f"Pattern variation plan build failed: {pv_shadow_result['error']}"
+        )
+
+    pv_plans = list(pv_shadow_result.get("plans") or [])
+    render_sections = list(render_plan.get("sections") or [])
+
+    # ------------------------------------------------------------------ #
+    # Guard 2: empty plans when sections exist                             #
+    # ------------------------------------------------------------------ #
+    if not pv_plans and render_sections:
+        return _record_fallback(
+            "Pattern variation plans list is empty but render plan has sections"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Warnings: low-repetition-score sections                             #
+    # ------------------------------------------------------------------ #
+    low_score_sections = list(pv_shadow_result.get("low_score_sections") or [])
+    if low_score_sections:
+        render_plan["pattern_variation_validation_warnings"] = low_score_sections
+        logger.warning(
+            "PATTERN_VARIATION_PRIMARY [arr=%d] %d section(s) have low repetition "
+            "score (< 0.3): %s",
+            arrangement_id,
+            len(low_score_sections),
+            low_score_sections,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Apply: inject variation events into render_plan sections             #
+    # ------------------------------------------------------------------ #
+    if len(render_sections) != len(pv_plans):
+        logger.warning(
+            "PATTERN_VARIATION_PRIMARY [arr=%d] section count mismatch: "
+            "render_plan has %d sections, variation plans has %d — "
+            "applying to min(%d) sections",
+            arrangement_id,
+            len(render_sections),
+            len(pv_plans),
+            min(len(render_sections), len(pv_plans)),
+        )
+
+    applied_count = 0
+    for render_sec, pv_plan in zip(render_sections, pv_plans):
+        render_sec["pattern_variation_events"] = list(pv_plan.get("variations") or [])
+        render_sec["pattern_variation_density"] = float(
+            pv_plan.get("variation_density") or 0.0
+        )
+        render_sec["pattern_variation_score"] = float(
+            pv_plan.get("repetition_score") or 0.0
+        )
+        render_sec["pattern_variation_strategies"] = list(
+            pv_plan.get("applied_strategies") or []
+        )
+        applied_count += 1
+        logger.info(
+            "PATTERN_VARIATION_PRIMARY [arr=%d] applied section=%r events=%d "
+            "density=%.2f score=%.3f",
+            arrangement_id,
+            pv_plan.get("section", render_sec.get("type") or render_sec.get("name")),
+            len(render_sec["pattern_variation_events"]),
+            render_sec["pattern_variation_density"],
+            render_sec["pattern_variation_score"],
+        )
+
+    # ------------------------------------------------------------------ #
+    # Metadata                                                             #
+    # ------------------------------------------------------------------ #
+    render_plan["pattern_variation_summary"] = _build_pattern_variation_summary(
+        pv_shadow_result
+    )
+    render_plan["pattern_primary_used"] = True
+
+    log_feature_event(
+        logger,
+        event="pattern_variation_primary_applied",
+        correlation_id=correlation_id,
+        arrangement_id=arrangement_id,
+        sections_applied=applied_count,
+        total_events=pv_shadow_result.get("total_events", 0),
+        low_score_count=len(low_score_sections),
+    )
+
+    logger.info(
+        "PATTERN_VARIATION_PRIMARY [arr=%d] promoted — %d sections updated, "
+        "%d variation events injected, %d low-score warnings",
+        arrangement_id,
+        applied_count,
+        pv_shadow_result.get("total_events", 0),
+        len(low_score_sections),
+    )
+
+    return render_plan
+
+
 def _run_groove_engine_shadow(
     render_plan: dict,
     available_roles: list[str],
@@ -4708,13 +4897,25 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             )
 
         # ====================================================================
-        # PATTERN VARIATION ENGINE SHADOW: variation planning for observability.
-        # Runs PatternVariationEngine for each section in the finalised
-        # render-plan.  Results are stored in render_plan["_pattern_variation_plans"]
-        # for inspection via render_plan_json.
-        # Does NOT apply variations to audio (shadow mode only).
+        # PATTERN VARIATION ENGINE: shadow planning + optional primary promotion.
+        #
+        # The shadow pass always runs when PATTERN_VARIATION_SHADOW=true OR when
+        # PATTERN_VARIATION_PRIMARY=true (primary requires the plan).  The result
+        # is stored in render_plan["_pattern_variation_plans"] for observability
+        # and, when primary mode is enabled, to drive section-internal variation.
+        #
+        # Primary promotion (PATTERN_VARIATION_PRIMARY=true):
+        #   - per-section variation events, density, score, and strategies from
+        #     the PatternVariationEngine are injected into the render_plan sections
+        #     as pattern_variation_events and related fields.
+        #   - Falls back to no-variation behaviour if the plan build fails or the
+        #     plans list is empty when sections exist.
         # ====================================================================
-        if settings.feature_pattern_variation_shadow:
+        _run_pv_shadow = (
+            settings.feature_pattern_variation_shadow
+            or settings.feature_pattern_variation_primary
+        )
+        if _run_pv_shadow:
             _pv_source_quality = "stereo_fallback"
             if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
                 # Infer source quality from stem metadata when available
@@ -4741,6 +4942,17 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 arrangement_id=arrangement_id,
                 correlation_id=correlation_id,
                 source_quality=_pv_source_quality,
+            )
+
+        # Promote Pattern Variation Engine to primary variation planner when enabled.
+        # This must run after the shadow pass (which builds the plans) and before
+        # the render plan is persisted to the database.
+        if settings.feature_pattern_variation_primary:
+            render_plan = _apply_pattern_variation_primary(
+                render_plan=render_plan,
+                pv_shadow_result=render_plan.get("_pattern_variation_plans") or {},
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
             )
 
         # ====================================================================
