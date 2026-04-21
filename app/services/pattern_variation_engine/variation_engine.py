@@ -4,9 +4,9 @@ Pattern Variation Engine.
 Transforms static loop repetition into musically evolving patterns.
 
 The engine operates AFTER the Timeline Engine and BEFORE final rendering.
-It runs entirely in shadow mode — results are stored in
-``job.render_metadata["pattern_variations"]`` and do NOT alter the live
-audio render path.
+When ``PATTERN_VARIATION_PRIMARY=true`` it drives live section-internal
+variation behaviour; results are also always stored in
+``job.render_metadata["_pattern_variation_plans"]`` for observability.
 
 Design goals:
 - Prevent repetition fatigue

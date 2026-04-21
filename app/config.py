@@ -338,6 +338,24 @@ class Settings(BaseSettings):
         validation_alias="TIMELINE_ENGINE_PRIMARY",
     )
 
+    # Pattern Variation Engine Primary Mode — promotes the Pattern Variation Engine
+    # from shadow mode to the primary source of section-internal variation behaviour.
+    # When enabled, PatternVariationEngine outputs (per-section variation events,
+    # density, repetition score, and applied strategies) are injected into each
+    # render-plan section as ``pattern_variation_events`` and related fields so the
+    # render path can consume them as authoritative variation instructions.
+    # The shadow pass (PATTERN_VARIATION_SHADOW) is automatically enabled when this
+    # flag is set, so both can share the same planning pass.
+    # Falls back to the current live behaviour (no variation events injected) if:
+    #   - the shadow planner raised an exception
+    #   - the resulting plans list is empty when sections exist
+    # Rollback: set PATTERN_VARIATION_PRIMARY=false — no code deployment required.
+    # Enable with PATTERN_VARIATION_PRIMARY=true.
+    feature_pattern_variation_primary: bool = Field(
+        default=False,
+        validation_alias="PATTERN_VARIATION_PRIMARY",
+    )
+
     # AI Producer System Live Mode — replaces the arranger_v2 top-level planner
     # with the multi-agent (PlannerAgent → CriticAgent → RepairAgent → Validator)
     # pipeline produced by the shadow run.  Highest impact; promote last.
@@ -421,6 +439,7 @@ class Settings(BaseSettings):
         "feature_motif_engine_live",
         "feature_timeline_engine_live",
         "feature_timeline_engine_primary",
+        "feature_pattern_variation_primary",
         "feature_ai_producer_system_live",
         mode="before",
     )

@@ -48,8 +48,12 @@ Usage example (low-level planner)::
     validator = PatternVariationValidator()
     issues = validator.validate_and_repair(plan)
 
-NOTE: This module does NOT wire into the live renderer.  It is a standalone
-foundation layer integrated into arrangement jobs in shadow mode.
+NOTE: This module is integrated into arrangement jobs.  When
+``PATTERN_VARIATION_PRIMARY=true`` the engine drives live section-internal
+variation behaviour.  When ``PATTERN_VARIATION_PRIMARY=false`` (the default)
+it continues to run in shadow mode — results are stored in
+``job.render_metadata["_pattern_variation_plans"]`` and do NOT alter the live
+audio render path.
 """
 
 from app.services.pattern_variation_engine.bass_patterns import build_bass_plan
