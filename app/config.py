@@ -260,6 +260,80 @@ class Settings(BaseSettings):
         validation_alias="MOTIF_ENGINE_SHADOW",
     )
 
+    # -----------------------------------------------------------------------
+    # Shadow-engine live-mode cutover flags
+    #
+    # Each flag promotes the corresponding shadow engine from observe-only
+    # mode into the live render path.  All default to False so cutover is
+    # always an explicit opt-in.
+    #
+    # Recommended promotion order (see shadow_readiness.RECOMMENDED_CUTOVER_ORDER):
+    #   1. GROOVE_ENGINE_LIVE          — microtiming / accent (lowest risk)
+    #   2. PATTERN_VARIATION_LIVE      — intra-section pattern variation
+    #   3. DROP_ENGINE_LIVE            — section-boundary tension & payoffs
+    #   4. MOTIF_ENGINE_LIVE           — cross-section motif identity
+    #   5. TIMELINE_ENGINE_LIVE        — full energy/density target system
+    #   6. AI_PRODUCER_SYSTEM_LIVE     — multi-agent top-level planner (highest risk)
+    #
+    # Set the env var to "true" to promote; revert to "false" to roll back
+    # without a code deployment.
+    # -----------------------------------------------------------------------
+
+    # Groove Engine Live Mode — applies groove microtiming, accent patterns,
+    # and swing settings produced by the shadow planner to the rendered audio.
+    # Requires GROOVE_ENGINE_SHADOW=true (shadow must also be running).
+    # Enable with GROOVE_ENGINE_LIVE=true.
+    feature_groove_engine_live: bool = Field(
+        default=False,
+        validation_alias="GROOVE_ENGINE_LIVE",
+    )
+
+    # Pattern Variation Engine Live Mode — applies intra-section drum/melodic/
+    # bass pattern variations produced by the shadow planner to the rendered
+    # audio.  Requires PATTERN_VARIATION_SHADOW=true.
+    # Enable with PATTERN_VARIATION_LIVE=true.
+    feature_pattern_variation_live: bool = Field(
+        default=False,
+        validation_alias="PATTERN_VARIATION_LIVE",
+    )
+
+    # Drop Engine Live Mode — applies pre-hook tension, fakeouts, delayed drops,
+    # re-entry accents, and hook payoff events produced by the shadow planner
+    # at section boundaries.  Requires DROP_ENGINE_SHADOW=true.
+    # Enable with DROP_ENGINE_LIVE=true.
+    feature_drop_engine_live: bool = Field(
+        default=False,
+        validation_alias="DROP_ENGINE_LIVE",
+    )
+
+    # Motif Engine Live Mode — uses the motif plan produced by the shadow planner
+    # to guide cross-section melodic identity and variation in the renderer.
+    # Requires MOTIF_ENGINE_SHADOW=true.
+    # Enable with MOTIF_ENGINE_LIVE=true.
+    feature_motif_engine_live: bool = Field(
+        default=False,
+        validation_alias="MOTIF_ENGINE_LIVE",
+    )
+
+    # Timeline Engine Live Mode — uses energy/density targets and intra-section
+    # timeline events produced by the shadow planner to drive section rendering.
+    # Requires TIMELINE_ENGINE_SHADOW=true.
+    # Enable with TIMELINE_ENGINE_LIVE=true.
+    feature_timeline_engine_live: bool = Field(
+        default=False,
+        validation_alias="TIMELINE_ENGINE_LIVE",
+    )
+
+    # AI Producer System Live Mode — replaces the arranger_v2 top-level planner
+    # with the multi-agent (PlannerAgent → CriticAgent → RepairAgent → Validator)
+    # pipeline produced by the shadow run.  Highest impact; promote last.
+    # Requires AI_PRODUCER_SYSTEM_SHADOW=true.
+    # Enable with AI_PRODUCER_SYSTEM_LIVE=true.
+    feature_ai_producer_system_live: bool = Field(
+        default=False,
+        validation_alias="AI_PRODUCER_SYSTEM_LIVE",
+    )
+
     # Track Quality Analysis — DSP-based technical quality report for uploaded audio.
     # Measures sample rate, bit depth, clipping, mono compatibility, integrated
     # loudness (simplified BS.1770-3 LUFS), true peak, phase issues, stereo field
@@ -327,6 +401,12 @@ class Settings(BaseSettings):
         "feature_pattern_variation_shadow",
         "feature_drop_engine_shadow",
         "feature_motif_engine_shadow",
+        "feature_groove_engine_live",
+        "feature_pattern_variation_live",
+        "feature_drop_engine_live",
+        "feature_motif_engine_live",
+        "feature_timeline_engine_live",
+        "feature_ai_producer_system_live",
         mode="before",
     )
     @classmethod
