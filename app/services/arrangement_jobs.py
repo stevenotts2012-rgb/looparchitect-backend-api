@@ -4151,6 +4151,202 @@ def _run_groove_engine_shadow(
     return result
 
 
+def _build_groove_plan_summary(ge_shadow_result: dict) -> dict:
+    """Build a compact, JSON-safe summary of groove plans for metadata storage."""
+    plans = ge_shadow_result.get("plans") or []
+    sections_summary = [
+        {
+            "section_name": p.get("section_name", ""),
+            "groove_profile_name": p.get("groove_profile_name", ""),
+            "groove_intensity": p.get("groove_intensity", 0.0),
+            "bounce_score": p.get("bounce_score", 0.0),
+            "event_count": len(p.get("groove_events") or []),
+            "applied_heuristics": list(p.get("applied_heuristics") or []),
+        }
+        for p in plans
+    ]
+    return {
+        "section_count": ge_shadow_result.get("section_count", 0),
+        "total_events": ge_shadow_result.get("total_events", 0),
+        "low_bounce_sections": list(ge_shadow_result.get("low_bounce_sections") or []),
+        "sections": sections_summary,
+    }
+
+
+def _apply_groove_engine_primary(
+    render_plan: dict,
+    ge_shadow_result: dict,
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Promote Groove Engine as the primary source of per-section groove behaviour.
+
+    When :data:`settings.feature_groove_engine_primary` is ``True`` this
+    function overlays the :class:`~app.services.groove_engine.GroovePlan`
+    outputs — groove profile, groove events, groove intensity, bounce score,
+    and applied heuristics — onto the already-built *render_plan* sections so
+    the render path can consume them as authoritative groove instructions.
+
+    Compatible with Timeline Engine (primary) and Pattern Variation Engine
+    (primary): groove fields are additive overlays; they do not modify section
+    structure, energy targets, or variation events set by those engines.
+
+    Falls back safely to the current live behaviour (no groove fields injected)
+    in any of the following conditions:
+
+    * The shadow planner encountered an exception (``error`` key is set).
+    * The resulting plans list is empty when render-plan sections exist.
+    * The :class:`~app.services.groove_engine.GrooveValidator` reported at
+      least one ``"error"``-severity issue.
+
+    In all cases the following observability keys are written into *render_plan*:
+
+    * ``groove_primary_used``              – ``True`` when the plan was applied.
+    * ``groove_primary_fallback_used``     – ``True`` when the fallback path ran.
+    * ``groove_primary_fallback_reason``   – Human-readable reason for fallback.
+    * ``groove_plan_summary``              – Compact plan summary dict.
+    * ``groove_validation_warnings``       – Serialised warning-level issues.
+
+    Parameters
+    ----------
+    render_plan:
+        The live render plan dict (already built by arranger_v2 or legacy,
+        with Timeline and Pattern Variation promotions already applied).
+    ge_shadow_result:
+        The dict returned by :func:`_run_groove_engine_shadow`.
+    arrangement_id:
+        Used in log messages.
+    correlation_id:
+        Used for structured log events.
+
+    Returns
+    -------
+    dict
+        The (potentially mutated) *render_plan* with observability keys set.
+    """
+    # Initialise observability fields — written regardless of outcome.
+    render_plan["groove_primary_used"] = False
+    render_plan["groove_primary_fallback_used"] = False
+    render_plan["groove_primary_fallback_reason"] = ""
+    render_plan["groove_plan_summary"] = {}
+    render_plan["groove_validation_warnings"] = []
+
+    def _record_fallback(reason: str) -> dict:
+        logger.warning(
+            "GROOVE_PRIMARY [arr=%d] fallback to no-groove behaviour — %s",
+            arrangement_id,
+            reason,
+        )
+        render_plan["groove_primary_fallback_used"] = True
+        render_plan["groove_primary_fallback_reason"] = reason
+        log_feature_event(
+            logger,
+            event="groove_primary_fallback",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            reason=reason,
+        )
+        return render_plan
+
+    # ------------------------------------------------------------------ #
+    # Guard 1: build error                                                 #
+    # ------------------------------------------------------------------ #
+    if ge_shadow_result.get("error"):
+        return _record_fallback(
+            f"Groove plan build failed: {ge_shadow_result['error']}"
+        )
+
+    ge_plans = list(ge_shadow_result.get("plans") or [])
+    render_sections = list(render_plan.get("sections") or [])
+
+    # ------------------------------------------------------------------ #
+    # Guard 2: empty plans when sections exist                             #
+    # ------------------------------------------------------------------ #
+    if not ge_plans and render_sections:
+        return _record_fallback(
+            "Groove plans list is empty but render plan has sections"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Guard 3: critical validation errors                                  #
+    # ------------------------------------------------------------------ #
+    all_issues = list(ge_shadow_result.get("validation_issues") or [])
+    critical_errors = [i for i in all_issues if i.get("severity") == "error"]
+    warnings = [i for i in all_issues if i.get("severity") == "warning"]
+
+    if critical_errors:
+        error_summary = "; ".join(
+            e.get("message") or e.get("rule") or "unknown" for e in critical_errors
+        )
+        render_plan["groove_plan_summary"] = _build_groove_plan_summary(ge_shadow_result)
+        render_plan["groove_validation_warnings"] = all_issues
+        return _record_fallback(
+            f"Groove plan failed validation ({len(critical_errors)} error(s)): {error_summary}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Apply: inject groove fields into render_plan sections                #
+    # ------------------------------------------------------------------ #
+    if len(render_sections) != len(ge_plans):
+        logger.warning(
+            "GROOVE_PRIMARY [arr=%d] section count mismatch: "
+            "render_plan has %d sections, groove plans has %d — "
+            "applying to min(%d) sections",
+            arrangement_id,
+            len(render_sections),
+            len(ge_plans),
+            min(len(render_sections), len(ge_plans)),
+        )
+
+    applied_count = 0
+    for render_sec, ge_plan in zip(render_sections, ge_plans):
+        render_sec["groove_profile_name"] = ge_plan.get("groove_profile_name", "")
+        render_sec["groove_events"] = list(ge_plan.get("groove_events") or [])
+        render_sec["groove_intensity"] = float(ge_plan.get("groove_intensity") or 0.0)
+        render_sec["bounce_score"] = float(ge_plan.get("bounce_score") or 0.0)
+        render_sec["applied_heuristics"] = list(ge_plan.get("applied_heuristics") or [])
+        applied_count += 1
+        logger.info(
+            "GROOVE_PRIMARY [arr=%d] applied section=%r profile=%r "
+            "intensity=%.2f bounce=%.3f events=%d",
+            arrangement_id,
+            ge_plan.get("section_name", render_sec.get("type") or render_sec.get("name")),
+            render_sec["groove_profile_name"],
+            render_sec["groove_intensity"],
+            render_sec["bounce_score"],
+            len(render_sec["groove_events"]),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Metadata                                                             #
+    # ------------------------------------------------------------------ #
+    render_plan["groove_plan_summary"] = _build_groove_plan_summary(ge_shadow_result)
+    render_plan["groove_validation_warnings"] = warnings
+    render_plan["groove_primary_used"] = True
+
+    log_feature_event(
+        logger,
+        event="groove_primary_applied",
+        correlation_id=correlation_id,
+        arrangement_id=arrangement_id,
+        sections_applied=applied_count,
+        total_events=ge_shadow_result.get("total_events", 0),
+        low_bounce_count=len(ge_shadow_result.get("low_bounce_sections") or []),
+        validation_warning_count=len(warnings),
+    )
+
+    logger.info(
+        "GROOVE_PRIMARY [arr=%d] promoted — %d sections updated, "
+        "%d groove events injected, %d validation warnings",
+        arrangement_id,
+        applied_count,
+        ge_shadow_result.get("total_events", 0),
+        len(warnings),
+    )
+
+    return render_plan
+
+
 def _run_ai_producer_system_shadow(
     render_plan: dict,
     available_roles: list[str],
@@ -4956,13 +5152,28 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             )
 
         # ====================================================================
-        # GROOVE ENGINE SHADOW: groove planning for observability.
-        # Runs GrooveEngine for each section in the finalised render-plan.
-        # Results are stored in render_plan["_groove_plans"] for inspection
-        # via render_plan_json.
-        # Does NOT modify rendered audio (shadow mode only).
+        # GROOVE ENGINE: shadow planning + optional primary promotion.
+        #
+        # The shadow pass always runs when GROOVE_ENGINE_SHADOW=true OR when
+        # GROOVE_ENGINE_PRIMARY=true (primary requires the plan).  The result
+        # is stored in render_plan["_groove_plans"] for observability and, when
+        # primary mode is enabled, to drive per-section groove behaviour.
+        #
+        # Primary promotion (GROOVE_ENGINE_PRIMARY=true):
+        #   - groove_profile_name, groove_events, groove_intensity,
+        #     bounce_score, and applied_heuristics from the GroovePlan are
+        #     overlaid onto the render_plan sections.
+        #   - Compatible with Timeline Engine and Pattern Variation Engine
+        #     primary outputs (additive overlay, no structural changes).
+        #   - Falls back to no-groove behaviour if the plan build fails, the
+        #     plans list is empty when sections exist, or the GrooveValidator
+        #     reports critical errors.
         # ====================================================================
-        if settings.feature_groove_engine_shadow:
+        _run_ge_shadow = (
+            settings.feature_groove_engine_shadow
+            or settings.feature_groove_engine_primary
+        )
+        if _run_ge_shadow:
             _ge_source_quality = "stereo_fallback"
             if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
                 _ge_source_quality = str(
@@ -4988,6 +5199,17 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 arrangement_id=arrangement_id,
                 correlation_id=correlation_id,
                 source_quality=_ge_source_quality,
+            )
+
+        # Promote Groove Engine to primary groove planner when enabled.
+        # This must run after the shadow pass (which builds the plans) and before
+        # the render plan is persisted to the database.
+        if settings.feature_groove_engine_primary:
+            render_plan = _apply_groove_engine_primary(
+                render_plan=render_plan,
+                ge_shadow_result=render_plan.get("_groove_plans") or {},
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
             )
 
         # ====================================================================

@@ -356,6 +356,26 @@ class Settings(BaseSettings):
         validation_alias="PATTERN_VARIATION_PRIMARY",
     )
 
+    # Groove Engine Primary Mode — promotes the Groove Engine from shadow mode to
+    # the primary source of groove behaviour (microtiming, accent patterns, swing,
+    # bounce scoring) in the arrangement render plan.
+    # When enabled, GrooveEngine outputs (per-section groove_profile_name,
+    # groove_events, groove_intensity, bounce_score, applied_heuristics) are
+    # injected into each render-plan section so the render path can consume them
+    # as authoritative groove instructions.
+    # The shadow pass (GROOVE_ENGINE_SHADOW) is automatically enabled when this
+    # flag is set so both can share the same planning pass.
+    # Falls back to the current live behaviour (no groove fields injected) if:
+    #   - the shadow planner raised an exception
+    #   - the resulting plans list is empty when sections exist
+    #   - the GrooveValidator reports any error-severity issues
+    # Rollback: set GROOVE_ENGINE_PRIMARY=false — no code deployment required.
+    # Enable with GROOVE_ENGINE_PRIMARY=true.
+    feature_groove_engine_primary: bool = Field(
+        default=False,
+        validation_alias="GROOVE_ENGINE_PRIMARY",
+    )
+
     # AI Producer System Live Mode — replaces the arranger_v2 top-level planner
     # with the multi-agent (PlannerAgent → CriticAgent → RepairAgent → Validator)
     # pipeline produced by the shadow run.  Highest impact; promote last.
@@ -440,6 +460,7 @@ class Settings(BaseSettings):
         "feature_timeline_engine_live",
         "feature_timeline_engine_primary",
         "feature_pattern_variation_primary",
+        "feature_groove_engine_primary",
         "feature_ai_producer_system_live",
         mode="before",
     )
