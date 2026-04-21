@@ -324,6 +324,20 @@ class Settings(BaseSettings):
         validation_alias="TIMELINE_ENGINE_LIVE",
     )
 
+    # Timeline Engine Primary Mode — promotes the Timeline Engine from shadow mode
+    # to the primary section planner.  When enabled, TimelinePlan drives:
+    #   - section energy targets  (energy field per section)
+    #   - active roles / instruments per section
+    #   - intra-section timeline events stored for downstream consumers
+    # Falls back to the legacy arranger automatically if the plan build fails, the
+    # TimelineValidator reports critical errors, or the plan is empty/invalid.
+    # Rollback: set TIMELINE_ENGINE_PRIMARY=false — no code deployment required.
+    # Enable with TIMELINE_ENGINE_PRIMARY=true.
+    feature_timeline_engine_primary: bool = Field(
+        default=False,
+        validation_alias="TIMELINE_ENGINE_PRIMARY",
+    )
+
     # AI Producer System Live Mode — replaces the arranger_v2 top-level planner
     # with the multi-agent (PlannerAgent → CriticAgent → RepairAgent → Validator)
     # pipeline produced by the shadow run.  Highest impact; promote last.
@@ -406,6 +420,7 @@ class Settings(BaseSettings):
         "feature_drop_engine_live",
         "feature_motif_engine_live",
         "feature_timeline_engine_live",
+        "feature_timeline_engine_primary",
         "feature_ai_producer_system_live",
         mode="before",
     )

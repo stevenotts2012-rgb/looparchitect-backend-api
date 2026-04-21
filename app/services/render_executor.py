@@ -151,6 +151,10 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
             "hook_evolution": raw_section.get("hook_evolution"),
             # Preserve active_stem_roles for diagnostics / debug_render_report.
             "active_stem_roles": raw_section.get("active_stem_roles") or raw_section.get("instruments") or [],
+            # Preserve timeline events injected by the Timeline Engine primary pass so
+            # downstream planners (pattern variation, groove engine) can reference them
+            # without running a separate planner pass.
+            "timeline_events": list(raw_section.get("timeline_events") or []),
         }
         normalized_sections.append(normalized)
 

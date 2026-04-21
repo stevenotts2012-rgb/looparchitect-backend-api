@@ -3395,6 +3395,207 @@ def _run_timeline_planner_shadow(
     return result
 
 
+def _build_timeline_plan_summary(tl_plan: dict, timeline_shadow_result: dict) -> dict:
+    """Build a compact, JSON-safe summary of a timeline plan for metadata storage."""
+    sections_summary = [
+        {
+            "name": s.get("name", ""),
+            "bars": s.get("bars", 0),
+            "target_energy": s.get("target_energy", 0.0),
+            "active_roles": list(s.get("active_roles") or []),
+            "event_count": len(s.get("events") or []),
+        }
+        for s in (tl_plan.get("sections") or [])
+    ]
+    return {
+        "total_bars": tl_plan.get("total_bars", 0),
+        "section_count": timeline_shadow_result.get("section_count", 0),
+        "event_count": timeline_shadow_result.get("event_count", 0),
+        "energy_curve": list(tl_plan.get("energy_curve") or []),
+        "sections": sections_summary,
+    }
+
+
+def _apply_timeline_engine_primary(
+    render_plan: dict,
+    timeline_shadow_result: dict,
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Promote TimelinePlan as the primary source of section parameters.
+
+    When :data:`settings.feature_timeline_engine_primary` is ``True`` this
+    function overlays the :class:`~app.services.timeline_engine.TimelinePlan`
+    outputs — energy targets, active roles, and intra-section timeline events —
+    onto the already-built *render_plan* sections.  The underlying section
+    structure (section names, bar counts) comes from the existing arranger so
+    the legacy arranger is still responsible for that structure.
+
+    Falls back safely to the legacy arranger (i.e. leaves *render_plan*
+    unchanged) in any of the following conditions:
+
+    * The shadow planner encountered an exception (``error`` key is set).
+    * The resulting :class:`TimelinePlan` is empty or has no sections.
+    * The :class:`~app.services.timeline_engine.TimelineValidator` reported
+      at least one ``"error"``-severity issue.
+
+    In all cases the following observability keys are written into *render_plan*:
+
+    * ``timeline_primary_used``        – ``True`` when the plan was applied.
+    * ``timeline_primary_fallback_used`` – ``True`` when the fallback path ran.
+    * ``timeline_primary_fallback_reason`` – Human-readable reason for fallback.
+    * ``timeline_plan_summary``        – Compact plan summary dict.
+    * ``timeline_plan_validation_warnings`` – Serialised warning-level issues.
+
+    Parameters
+    ----------
+    render_plan:
+        The live render plan dict (already built by arranger_v2 or legacy).
+    timeline_shadow_result:
+        The dict returned by :func:`_run_timeline_planner_shadow`.
+    arrangement_id:
+        Used in log messages.
+    correlation_id:
+        Used for structured log events.
+
+    Returns
+    -------
+    dict
+        The (potentially mutated) *render_plan* with observability keys set.
+    """
+    # Initialise observability fields — these are written regardless of outcome.
+    render_plan["timeline_primary_used"] = False
+    render_plan["timeline_primary_fallback_used"] = False
+    render_plan["timeline_primary_fallback_reason"] = ""
+    render_plan["timeline_plan_summary"] = {}
+    render_plan["timeline_plan_validation_warnings"] = []
+
+    def _record_fallback(reason: str) -> dict:
+        logger.warning(
+            "TIMELINE_PRIMARY [arr=%d] fallback to legacy arranger — %s",
+            arrangement_id,
+            reason,
+        )
+        render_plan["timeline_primary_fallback_used"] = True
+        render_plan["timeline_primary_fallback_reason"] = reason
+        log_feature_event(
+            logger,
+            event="timeline_primary_fallback",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            reason=reason,
+        )
+        return render_plan
+
+    # ------------------------------------------------------------------ #
+    # Guard 1: build error                                                 #
+    # ------------------------------------------------------------------ #
+    if timeline_shadow_result.get("error"):
+        return _record_fallback(
+            f"Timeline plan build failed: {timeline_shadow_result['error']}"
+        )
+
+    tl_plan = timeline_shadow_result.get("plan")
+
+    # ------------------------------------------------------------------ #
+    # Guard 2: empty / missing plan                                        #
+    # ------------------------------------------------------------------ #
+    if not tl_plan or not tl_plan.get("sections"):
+        return _record_fallback("TimelinePlan is empty or contains no sections")
+
+    # ------------------------------------------------------------------ #
+    # Guard 3: critical validation errors                                  #
+    # ------------------------------------------------------------------ #
+    all_issues = list(timeline_shadow_result.get("validation_issues") or [])
+    critical_errors = [i for i in all_issues if i.get("severity") == "error"]
+    warnings = [i for i in all_issues if i.get("severity") == "warning"]
+
+    if critical_errors:
+        error_summary = "; ".join(
+            e.get("message", e.get("rule", "unknown")) for e in critical_errors
+        )
+        render_plan["timeline_plan_validation_warnings"] = all_issues
+        return _record_fallback(
+            f"TimelinePlan failed validation ({len(critical_errors)} error(s)): {error_summary}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Apply: overlay TimelinePlan data onto render_plan sections           #
+    # ------------------------------------------------------------------ #
+    render_sections = list(render_plan.get("sections") or [])
+    tl_sections = list(tl_plan.get("sections") or [])
+
+    if len(render_sections) != len(tl_sections):
+        logger.warning(
+            "TIMELINE_PRIMARY [arr=%d] section count mismatch: "
+            "render_plan has %d sections, TimelinePlan has %d — "
+            "applying to min(%d) sections",
+            arrangement_id,
+            len(render_sections),
+            len(tl_sections),
+            min(len(render_sections), len(tl_sections)),
+        )
+
+    applied_count = 0
+    for render_sec, tl_sec in zip(render_sections, tl_sections):
+        # Energy target — the key render_executor expects is ``energy``.
+        tl_energy = tl_sec.get("target_energy")
+        if tl_energy is not None:
+            render_sec["energy"] = float(tl_energy)
+
+        # Active roles — update both ``active_stem_roles`` (diagnostics) and
+        # ``instruments`` (the key that drives actual stem selection).
+        tl_roles = list(tl_sec.get("active_roles") or [])
+        if tl_roles:
+            render_sec["active_stem_roles"] = tl_roles
+            render_sec["instruments"] = tl_roles
+
+        # Timeline events — stored for downstream consumers (pattern variation,
+        # groove engine, etc.) to reference without another planner pass.
+        render_sec["timeline_events"] = list(tl_sec.get("events") or [])
+
+        applied_count += 1
+        logger.info(
+            "TIMELINE_PRIMARY [arr=%d] applied section=%r energy=%.2f "
+            "roles=%s events=%d",
+            arrangement_id,
+            render_sec.get("type") or render_sec.get("name"),
+            render_sec.get("energy", 0.0),
+            render_sec.get("active_stem_roles", []),
+            len(render_sec.get("timeline_events", [])),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Metadata                                                             #
+    # ------------------------------------------------------------------ #
+    render_plan["timeline_plan_summary"] = _build_timeline_plan_summary(
+        tl_plan, timeline_shadow_result
+    )
+    render_plan["timeline_plan_validation_warnings"] = warnings
+    render_plan["timeline_primary_used"] = True
+
+    log_feature_event(
+        logger,
+        event="timeline_primary_applied",
+        correlation_id=correlation_id,
+        arrangement_id=arrangement_id,
+        sections_applied=applied_count,
+        event_count=timeline_shadow_result.get("event_count", 0),
+        validation_warning_count=len(warnings),
+    )
+
+    logger.info(
+        "TIMELINE_PRIMARY [arr=%d] promoted — %d sections updated, "
+        "%d timeline events injected, %d validation warnings",
+        arrangement_id,
+        applied_count,
+        timeline_shadow_result.get("event_count", 0),
+        len(warnings),
+    )
+
+    return render_plan
+
+
 def _run_pattern_variation_shadow(
     render_plan: dict,
     available_roles: list[str],
@@ -4461,13 +4662,24 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
         attach_loops_to_sections(render_plan, loop_variation_manifest)
 
         # ====================================================================
-        # TIMELINE ENGINE SHADOW: parallel planning for observability.
-        # Runs TimelinePlanner + TimelineValidator against the finalised
-        # render-plan sections.  Result is stored in render_plan["_timeline_plan"]
-        # for inspection via render_plan_json.
-        # Does NOT alter section data or replace the live render path.
+        # TIMELINE ENGINE: shadow planning + optional primary promotion.
+        #
+        # The shadow pass always runs when TIMELINE_ENGINE_SHADOW=true OR when
+        # TIMELINE_ENGINE_PRIMARY=true (primary requires the plan).  The result
+        # is stored in render_plan["_timeline_plan"] for observability and, when
+        # primary mode is enabled, to drive section parameters.
+        #
+        # Primary promotion (TIMELINE_ENGINE_PRIMARY=true):
+        #   - energy targets, active roles, and timeline events from the
+        #     TimelinePlan are overlaid onto the render_plan sections.
+        #   - Falls back to legacy arranger if the plan build fails, the
+        #     TimelineValidator reports critical errors, or the plan is empty.
         # ====================================================================
-        if settings.feature_timeline_engine_shadow:
+        _run_tl_shadow = (
+            settings.feature_timeline_engine_shadow
+            or settings.feature_timeline_engine_primary
+        )
+        if _run_tl_shadow:
             _tl_roles: list[str] = []
             if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
                 _tl_roles = _ordered_unique_roles(
@@ -4480,6 +4692,17 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_timeline_plan"] = _run_timeline_planner_shadow(
                 render_plan=render_plan,
                 available_roles=_tl_roles,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+            )
+
+        # Promote Timeline Engine to primary section planner when enabled.
+        # This must run after the shadow pass (which builds the plan) and before
+        # the render plan is persisted to the database.
+        if settings.feature_timeline_engine_primary:
+            render_plan = _apply_timeline_engine_primary(
+                render_plan=render_plan,
+                timeline_shadow_result=render_plan.get("_timeline_plan") or {},
                 arrangement_id=arrangement_id,
                 correlation_id=correlation_id,
             )
