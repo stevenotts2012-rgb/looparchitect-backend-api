@@ -341,7 +341,7 @@ CUTOVER_PREREQUISITES: dict[str, List[str]] = {
 }
 
 
-def describe_cutover_strategy(report: ShadowReadinessReport) -> str:
+def describe_cutover_strategy(report: ShadowReadinessReport, live_section_count: int = 0) -> str:
     """Return a human-readable cutover strategy summary for *report*.
 
     The summary covers:
@@ -349,11 +349,19 @@ def describe_cutover_strategy(report: ShadowReadinessReport) -> str:
     - Which require further observation.
     - The recommended promotion sequence with prerequisite checks.
     - The environment variable to flip for each promotion.
+
+    Parameters
+    ----------
+    report:
+        :class:`ShadowReadinessReport` from ``score_shadow_readiness``.
+    live_section_count:
+        Number of sections in the live render plan (optional — used for
+        display purposes only).
     """
     lines: List[str] = [
         "# Shadow Stack Cutover Strategy",
         "",
-        f"Live-plan section count: {report.engine_scores[next(iter(report.engine_scores))].engine if report.engine_scores else 'n/a'}",
+        f"Live-plan section count: {live_section_count}",
         "",
         "## Per-Engine Readiness",
         "",

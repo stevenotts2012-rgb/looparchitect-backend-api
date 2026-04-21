@@ -1,7 +1,7 @@
 """
 Tests for app/services/shadow_comparison.py.
 
-Coverage (40 tests):
+Coverage (48 tests):
 1.  compare_shadow_vs_live — empty render plan.
 2.  compare_shadow_vs_live — only live sections, no shadow data.
 3.  Timeline engine — plan produced, section alignment, validation issues.

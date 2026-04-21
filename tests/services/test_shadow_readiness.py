@@ -1,7 +1,7 @@
 """
 Tests for app/services/shadow_readiness.py.
 
-Coverage (40 tests):
+Coverage (43 tests):
 1.  score_engine — full score when plan is perfect.
 2.  score_engine — zero when plan not produced.
 3.  score_engine — completeness zero when error set.
