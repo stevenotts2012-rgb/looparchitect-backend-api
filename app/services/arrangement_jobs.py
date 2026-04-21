@@ -3512,7 +3512,7 @@ def _apply_timeline_engine_primary(
 
     if critical_errors:
         error_summary = "; ".join(
-            e.get("message", e.get("rule", "unknown")) for e in critical_errors
+            e.get("message") or e.get("rule") or "unknown" for e in critical_errors
         )
         render_plan["timeline_plan_validation_warnings"] = all_issues
         return _record_fallback(
