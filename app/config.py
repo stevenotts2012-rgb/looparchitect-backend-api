@@ -34,8 +34,10 @@ class Settings(BaseSettings):
 
     # Demucs model and execution settings
     # DEMUCS_MODEL — Demucs model identifier used when running separation.
-    #   Valid values: htdemucs | htdemucs_6s (or any model supported by the installed demucs version)
+    #   Valid values: auto | htdemucs | htdemucs_ft | htdemucs_6s
     #   Default: htdemucs (4-stem model; safe fallback for all environments)
+    #   When set to "auto", the policy layer selects the model based on source complexity
+    #   and STEM_SEPARATOR_PREFERENCE.
     demucs_model: str = Field(default="htdemucs", validation_alias="DEMUCS_MODEL")
     # DEMUCS_TIMEOUT — maximum seconds to wait for a Demucs separation run.
     #   Used when invoking the Demucs API (e.g. separator.separate_audio_segment timeout).
@@ -43,14 +45,31 @@ class Settings(BaseSettings):
     demucs_timeout: int = Field(default=300, validation_alias="DEMUCS_TIMEOUT")
 
     # Stem Separator Provider — selects the primary stem separation provider.
-    #   Valid values: audioshake | demucs
+    #   Valid values: auto | audioshake | demucs
     #   Default: demucs
     #   When set to "audioshake" and AUDIOSHAKE_API_KEY is present, AudioShake is used
     #   with automatic fallback to Demucs on failure.
+    #   When set to "auto", the policy layer selects the best provider/model automatically
+    #   based on source complexity and STEM_SEPARATOR_PREFERENCE.
     stem_separator_provider: str = Field(default="demucs", validation_alias="STEM_SEPARATOR_PROVIDER")
     # AUDIOSHAKE_API_KEY — API key for the AudioShake stem separation service.
-    #   Required when STEM_SEPARATOR_PROVIDER=audioshake.
+    #   Required when STEM_SEPARATOR_PROVIDER=audioshake or auto (quality mode).
     audioshake_api_key: str = Field(default="", validation_alias="AUDIOSHAKE_API_KEY")
+
+    # STEM_SEPARATOR_PREFERENCE — controls the quality/speed trade-off for model selection.
+    #   Valid values: quality | balanced | speed
+    #   Default: balanced
+    #   quality   → prefer AudioShake (if key present) else htdemucs_ft
+    #   balanced  → use htdemucs (fast, good quality)
+    #   speed     → use htdemucs (avoid heavy models)
+    stem_separator_preference: str = Field(default="balanced", validation_alias="STEM_SEPARATOR_PREFERENCE")
+
+    # STEM_SEPARATOR_MAX_COMPLEXITY_MODE — when true, allows htdemucs_6s for dense/rich sources.
+    #   Default: false
+    stem_separator_max_complexity_mode: bool = Field(
+        default=False,
+        validation_alias="STEM_SEPARATOR_MAX_COMPLEXITY_MODE",
+    )
     mastering_profile_default: str = Field(default="transparent", validation_alias="MASTERING_PROFILE_DEFAULT")
     dev_fallback_loop_only: bool = Field(default=False, validation_alias="DEV_FALLBACK_LOOP_ONLY")
     

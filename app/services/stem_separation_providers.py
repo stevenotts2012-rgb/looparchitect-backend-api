@@ -3,13 +3,20 @@
 Provider priority
 -----------------
 1. AudioShake  — commercial API; highest quality (when configured)
-2. Demucs      — local ML model (htdemucs / htdemucs_6s)
+2. Demucs      — local ML model (htdemucs / htdemucs_ft / htdemucs_6s)
 3. Builtin     — frequency-based spectral split; always available
 
 Selection logic
 ---------------
+The policy layer (``stem_separation_policy.select_policy``) is consulted
+whenever STEM_SEPARATOR_PROVIDER is "auto" or when the preference/complexity
+env vars are set.  For explicit "audioshake" or "demucs" configurations the
+behaviour matches the previous version.
+
 if STEM_SEPARATOR_PROVIDER == "audioshake" AND AUDIOSHAKE_API_KEY is set:
     try AudioShake → on failure fall back to Demucs
+elif STEM_SEPARATOR_PROVIDER == "auto":
+    policy selects provider/model based on preference + complexity
 else:
     use Demucs (with builtin fallback when the package is absent)
 """
@@ -49,6 +56,14 @@ class ProviderResult:
     fallback_used: bool
     duration_ms: int
     error: str | None = None
+
+    # Observability fields
+    provider_requested: str | None = None
+    model_requested: str | None = None
+    model_used: str | None = None
+    policy_reason: str | None = None
+    complexity_class: str | None = None
+    fallback_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -335,40 +350,78 @@ class AudioShakeProvider(StemSeparatorProvider):
 # Provider factory & selection
 # ---------------------------------------------------------------------------
 
-def get_provider() -> StemSeparatorProvider:
+def get_provider(
+    source_metadata: dict[str, Any] | None = None,
+) -> StemSeparatorProvider:
     """Return the appropriate provider based on environment configuration.
+
+    When ``STEM_SEPARATOR_PROVIDER=auto`` (or when the policy layer is needed
+    to resolve the Demucs model), the policy router is consulted.
 
     Selection rules
     ---------------
     * ``STEM_SEPARATOR_PROVIDER=audioshake`` **and** ``AUDIOSHAKE_API_KEY``
       is non-empty → :class:`AudioShakeProvider`.
-    * Otherwise → :class:`DemucsProvider`.
+    * ``STEM_SEPARATOR_PROVIDER=auto`` → policy layer decides.
+    * Otherwise → :class:`DemucsProvider` with the configured/resolved model.
+
+    Parameters
+    ----------
+    source_metadata:
+        Optional source complexity hints passed through to
+        :func:`~app.services.stem_separation_policy.select_policy`.
     """
     from app.config import settings
+    from app.services.stem_separation_policy import select_policy
 
     requested = (settings.stem_separator_provider or "demucs").strip().lower()
     logger.info("StemSeparatorProvider: provider requested=%s", requested)
 
+    # Explicit AudioShake (legacy path — unchanged behaviour)
     if requested == "audioshake":
         api_key = (settings.audioshake_api_key or "").strip()
         if api_key:
-            logger.info("StemSeparatorProvider: using AudioShake provider")
+            logger.info("StemSeparatorProvider: using AudioShake provider (explicit)")
             return AudioShakeProvider(api_key=api_key)
         logger.warning(
             "StemSeparatorProvider: STEM_SEPARATOR_PROVIDER=audioshake but "
             "AUDIOSHAKE_API_KEY is not set — falling back to Demucs"
         )
+        return DemucsProvider(
+            model=getattr(settings, "demucs_model", "htdemucs"),
+            timeout=getattr(settings, "demucs_timeout", 300),
+        )
 
-    logger.info("StemSeparatorProvider: using Demucs provider")
-    return DemucsProvider(
-        model=getattr(settings, "demucs_model", "htdemucs"),
-        timeout=getattr(settings, "demucs_timeout", 300),
+    # Auto or demucs — consult policy layer
+    policy = select_policy(source_metadata=source_metadata)
+
+    if policy.provider == "audioshake":
+        api_key = (settings.audioshake_api_key or "").strip()
+        if api_key:
+            logger.info(
+                "StemSeparatorProvider: using AudioShake provider (policy=%s)",
+                policy.policy_reason,
+            )
+            return AudioShakeProvider(api_key=api_key)
+        logger.warning(
+            "StemSeparatorProvider: policy selected AudioShake but key missing "
+            "— falling back to Demucs (model=%s)",
+            policy.fallback_model,
+        )
+        return DemucsProvider(model=policy.fallback_model, timeout=policy.timeout)
+
+    logger.info(
+        "StemSeparatorProvider: using Demucs provider (model=%s policy=%s)",
+        policy.model,
+        policy.policy_reason,
     )
+    return DemucsProvider(model=policy.model, timeout=policy.timeout)
 
 
 def separate_with_provider(
     audio: AudioSegment,
     provider: StemSeparatorProvider | None = None,
+    source_metadata: dict[str, Any] | None = None,
 ) -> ProviderResult:
     """Run separation using *provider* (or the configured provider).
 
@@ -382,32 +435,48 @@ def separate_with_provider(
     provider:
         Provider to use.  When *None*, :func:`get_provider` is called to
         select the appropriate provider from the environment configuration.
+    source_metadata:
+        Optional source complexity hints forwarded to the policy layer.
 
     Returns
     -------
     ProviderResult
         Contains the stems dict, provider name actually used, fallback flag,
-        wall-clock duration (ms), and any error message.
+        wall-clock duration (ms), observability fields, and any error message.
     """
+    from app.services.stem_separation_policy import select_policy
+
+    # Resolve policy for observability metadata even when provider is given
+    policy = select_policy(source_metadata=source_metadata)
+
     if provider is None:
-        provider = get_provider()
+        provider = get_provider(source_metadata=source_metadata)
 
     t0 = time.monotonic()
-    fallback_used = False
 
     try:
         stems = provider.separate(audio)
         duration_ms = int((time.monotonic() - t0) * 1000)
         logger.info(
-            "StemSeparatorProvider: provider_used=%s fallback=False duration_ms=%d",
+            "StemSeparatorProvider: provider_used=%s model_used=%s fallback=False "
+            "policy=%s complexity=%s duration_ms=%d",
             provider.name,
+            policy.model if provider.name == "demucs" else "n/a",
+            policy.policy_reason,
+            policy.complexity_class.value,
             duration_ms,
         )
+        model_used = policy.model if provider.name == "demucs" else None
         return ProviderResult(
             stems=stems,
             provider_name=provider.name,
             fallback_used=False,
             duration_ms=duration_ms,
+            provider_requested=policy.provider,
+            model_requested=policy.model if policy.provider == "demucs" else None,
+            model_used=model_used,
+            policy_reason=policy.policy_reason,
+            complexity_class=policy.complexity_class.value,
         )
 
     except Exception as primary_exc:
@@ -423,23 +492,26 @@ def separate_with_provider(
             )
             raise
 
+        fallback_reason = str(primary_exc)
         logger.warning(
-            "StemSeparatorProvider: AudioShake failed (%s) — falling back to Demucs",
+            "StemSeparatorProvider: AudioShake failed (%s) — falling back to Demucs "
+            "(model=%s)",
             primary_exc,
+            policy.fallback_model,
         )
-        fallback_used = True
-
-        from app.config import settings as _settings
 
         fallback_provider = DemucsProvider(
-            model=getattr(_settings, "demucs_model", "htdemucs"),
-            timeout=getattr(_settings, "demucs_timeout", 300),
+            model=policy.fallback_model,
+            timeout=policy.timeout,
         )
         stems = fallback_provider.separate(audio)
         duration_ms = int((time.monotonic() - t0) * 1000)
         logger.info(
-            "StemSeparatorProvider: provider_used=%s fallback=True (from audioshake) duration_ms=%d",
+            "StemSeparatorProvider: provider_used=%s model_used=%s fallback=True "
+            "(from audioshake) policy=%s duration_ms=%d",
             fallback_provider.name,
+            policy.fallback_model,
+            policy.policy_reason,
             duration_ms,
         )
         return ProviderResult(
@@ -448,4 +520,10 @@ def separate_with_provider(
             fallback_used=True,
             duration_ms=duration_ms,
             error=str(primary_exc),
+            provider_requested=policy.provider,
+            model_requested=policy.model if policy.provider == "demucs" else None,
+            model_used=policy.fallback_model,
+            policy_reason=policy.policy_reason,
+            complexity_class=policy.complexity_class.value,
+            fallback_reason=fallback_reason,
         )

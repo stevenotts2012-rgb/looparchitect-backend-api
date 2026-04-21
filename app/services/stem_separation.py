@@ -58,6 +58,13 @@ class StemSeparationResult:
     stem_separator_provider_used: str | None = None
     stem_separator_fallback_used: bool = False
     stem_separator_duration_ms: int | None = None
+    # Extended observability fields (from policy layer)
+    stem_separator_provider_requested: str | None = None
+    stem_separator_model_requested: str | None = None
+    stem_separator_model_used: str | None = None
+    stem_separator_policy_reason: str | None = None
+    stem_separator_complexity_class: str | None = None
+    stem_separator_fallback_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +77,12 @@ class StemSeparationResult:
             "stem_separator_provider_used": self.stem_separator_provider_used,
             "stem_separator_fallback_used": self.stem_separator_fallback_used,
             "stem_separator_duration_ms": self.stem_separator_duration_ms,
+            "stem_separator_provider_requested": self.stem_separator_provider_requested,
+            "stem_separator_model_requested": self.stem_separator_model_requested,
+            "stem_separator_model_used": self.stem_separator_model_used,
+            "stem_separator_policy_reason": self.stem_separator_policy_reason,
+            "stem_separator_complexity_class": self.stem_separator_complexity_class,
+            "stem_separator_fallback_reason": self.stem_separator_fallback_reason,
         }
 
 
@@ -223,11 +236,16 @@ def _run_separation(
     source_audio: AudioSegment,
     configured_backend: str,
     loop_id: int,
-) -> tuple[dict[str, AudioSegment], str, str, bool, int | None]:
-    """Execute separation and return (stems, used_backend, provider_name, fallback_used, duration_ms).
+    source_metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, AudioSegment], str, str, bool, int | None, dict[str, Any]]:
+    """Execute separation and return (stems, used_backend, provider_name, fallback_used, duration_ms, obs_meta).
 
     Handles the mock path and the multi-provider path in one place so that
     ``separate_and_store_stems`` only needs to deal with the result.
+
+    The ``obs_meta`` dict contains all extended observability fields from the
+    policy layer (provider_requested, model_requested, model_used, policy_reason,
+    complexity_class, fallback_reason).
     """
     from app.services.stem_separation_providers import (
         get_provider,
@@ -236,35 +254,50 @@ def _run_separation(
 
     if configured_backend == "mock":
         stems = _builtin_stems(source_audio)
-        return stems, "mock", "mock", False, None
+        return stems, "mock", "mock", False, None, {}
 
-    provider = get_provider()
+    provider = get_provider(source_metadata=source_metadata)
     logger.info(
         "separate_and_store_stems: loop_id=%s provider_requested=%s",
         loop_id,
         provider.name,
     )
-    provider_result = separate_with_provider(source_audio, provider=provider)
+    provider_result = separate_with_provider(source_audio, provider=provider, source_metadata=source_metadata)
     if provider_result.fallback_used:
         logger.info(
-            "separate_and_store_stems: loop_id=%s fallback_used=True provider_used=%s duration_ms=%s",
+            "separate_and_store_stems: loop_id=%s fallback_used=True provider_used=%s "
+            "model_used=%s policy=%s duration_ms=%s",
             loop_id,
             provider_result.provider_name,
+            provider_result.model_used,
+            provider_result.policy_reason,
             provider_result.duration_ms,
         )
     else:
         logger.info(
-            "separate_and_store_stems: loop_id=%s provider_used=%s duration_ms=%s",
+            "separate_and_store_stems: loop_id=%s provider_used=%s model_used=%s "
+            "policy=%s duration_ms=%s",
             loop_id,
             provider_result.provider_name,
+            provider_result.model_used,
+            provider_result.policy_reason,
             provider_result.duration_ms,
         )
+    obs_meta = {
+        "provider_requested": provider_result.provider_requested,
+        "model_requested": provider_result.model_requested,
+        "model_used": provider_result.model_used,
+        "policy_reason": provider_result.policy_reason,
+        "complexity_class": provider_result.complexity_class,
+        "fallback_reason": provider_result.fallback_reason,
+    }
     return (
         provider_result.stems,
         provider_result.provider_name,
         provider_result.provider_name,
         provider_result.fallback_used,
         provider_result.duration_ms,
+        obs_meta,
     )
 
 
@@ -273,6 +306,7 @@ def separate_and_store_stems(
     *,
     loop_id: int,
     source_key: str | None = None,
+    source_metadata: dict[str, Any] | None = None,
 ) -> StemSeparationResult:
     """Run stem separation (when enabled) and persist stems to storage.
 
@@ -283,6 +317,19 @@ def separate_and_store_stems(
 
     Legacy ``STEM_SEPARATION_BACKEND`` is still honoured for callers that
     bypass the provider system (e.g. mock mode in tests).
+
+    Parameters
+    ----------
+    source_audio:
+        Full-mix AudioSegment to separate.
+    loop_id:
+        Identifier used for naming stored stem files.
+    source_key:
+        Optional storage key of the source file (used in error logs only).
+    source_metadata:
+        Optional dict of source complexity hints forwarded to the policy layer
+        (``duration_seconds``, ``channels``, ``sample_rate``,
+        ``requested_stem_count``, ``is_stem_zip``, ``is_true_stems``, ``rms_db``).
     """
     configured_backend = (settings.stem_separation_backend or "builtin").strip().lower()
     enabled = bool(settings.feature_stem_separation)
@@ -297,8 +344,8 @@ def separate_and_store_stems(
         )
 
     try:
-        stems, used_backend, provider_name, provider_fallback, provider_duration_ms = (
-            _run_separation(source_audio, configured_backend, loop_id)
+        stems, used_backend, provider_name, provider_fallback, provider_duration_ms, obs_meta = (
+            _run_separation(source_audio, configured_backend, loop_id, source_metadata)
         )
 
         stem_s3_keys: dict[str, str] = {}
@@ -322,6 +369,12 @@ def separate_and_store_stems(
             stem_separator_provider_used=provider_name,
             stem_separator_fallback_used=provider_fallback,
             stem_separator_duration_ms=provider_duration_ms,
+            stem_separator_provider_requested=obs_meta.get("provider_requested"),
+            stem_separator_model_requested=obs_meta.get("model_requested"),
+            stem_separator_model_used=obs_meta.get("model_used"),
+            stem_separator_policy_reason=obs_meta.get("policy_reason"),
+            stem_separator_complexity_class=obs_meta.get("complexity_class"),
+            stem_separator_fallback_reason=obs_meta.get("fallback_reason"),
         )
     except Exception as e:
         logger.warning(
