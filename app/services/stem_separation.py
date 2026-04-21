@@ -54,6 +54,10 @@ class StemSeparationResult:
     stems_generated: list[str]
     stem_s3_keys: dict[str, str]
     error: str | None = None
+    # Provider-system metadata (populated when the multi-provider path is used)
+    stem_separator_provider_used: str | None = None
+    stem_separator_fallback_used: bool = False
+    stem_separator_duration_ms: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +67,9 @@ class StemSeparationResult:
             "stems_generated": self.stems_generated,
             "stem_s3_keys": self.stem_s3_keys,
             "error": self.error,
+            "stem_separator_provider_used": self.stem_separator_provider_used,
+            "stem_separator_fallback_used": self.stem_separator_fallback_used,
+            "stem_separator_duration_ms": self.stem_separator_duration_ms,
         }
 
 
@@ -220,10 +227,19 @@ def separate_and_store_stems(
 ) -> StemSeparationResult:
     """Run stem separation (when enabled) and persist stems to storage.
 
-    Uses the backend configured in ``settings.stem_separation_backend``.
-    Falls back to the builtin frequency-based separator when the preferred
-    backend (e.g. a Demucs model) is unavailable, rather than raising.
+    Uses the multi-provider system configured via ``STEM_SEPARATOR_PROVIDER``
+    and ``AUDIOSHAKE_API_KEY``.  When AudioShake is requested but fails it
+    automatically falls back to Demucs.  Demucs itself falls back to the
+    builtin frequency-based splitter when the package is unavailable.
+
+    Legacy ``STEM_SEPARATION_BACKEND`` is still honoured for callers that
+    bypass the provider system (e.g. mock mode in tests).
     """
+    from app.services.stem_separation_providers import (
+        get_provider,
+        separate_with_provider,
+    )
+
     configured_backend = (settings.stem_separation_backend or "builtin").strip().lower()
     enabled = bool(settings.feature_stem_separation)
     if not enabled:
@@ -240,8 +256,37 @@ def separate_and_store_stems(
         if configured_backend == "mock":
             # Mock backend is a test alias for the builtin splitter
             stems, used_backend = _builtin_stems(source_audio), "mock"
+            provider_result_name = "mock"
+            provider_fallback = False
+            provider_duration_ms: int | None = None
         else:
-            stems, used_backend = separate_stems_with_fallback(source_audio, configured_backend)
+            provider = get_provider()
+            logger.info(
+                "separate_and_store_stems: loop_id=%s provider_requested=%s",
+                loop_id,
+                provider.name,
+            )
+            provider_result = separate_with_provider(source_audio, provider=provider)
+            stems = provider_result.stems
+            used_backend = provider_result.provider_name
+            provider_result_name = provider_result.provider_name
+            provider_fallback = provider_result.fallback_used
+            provider_duration_ms = provider_result.duration_ms
+
+            if provider_fallback:
+                logger.info(
+                    "separate_and_store_stems: loop_id=%s fallback_used=True provider_used=%s duration_ms=%s",
+                    loop_id,
+                    used_backend,
+                    provider_duration_ms,
+                )
+            else:
+                logger.info(
+                    "separate_and_store_stems: loop_id=%s provider_used=%s duration_ms=%s",
+                    loop_id,
+                    used_backend,
+                    provider_duration_ms,
+                )
 
         stem_s3_keys: dict[str, str] = {}
         for stem_name, stem_audio in stems.items():
@@ -261,6 +306,9 @@ def separate_and_store_stems(
             stems_generated=list(stem_s3_keys.keys()),
             stem_s3_keys=stem_s3_keys,
             error=None,
+            stem_separator_provider_used=provider_result_name,
+            stem_separator_fallback_used=provider_fallback,
+            stem_separator_duration_ms=provider_duration_ms,
         )
     except Exception as e:
         logger.warning(
