@@ -34,8 +34,20 @@ Usage example (validator)::
     validator = GrooveValidator()
     issues = validator.validate(plans, source_quality="true_stems")
 
-NOTE: This module does NOT wire into the live renderer.  It is a standalone
-foundation layer integrated into arrangement jobs in shadow mode.
+NOTE: This module operates in two modes controlled by feature flags:
+
+* Shadow mode (GROOVE_ENGINE_SHADOW=true, default):
+  Builds groove plans for observability only.  Serialised plans are stored
+  inside render_plan_json under the ``_groove_plans`` key.  Audio is unaffected.
+
+* Primary mode (GROOVE_ENGINE_PRIMARY=true):
+  Groove Engine becomes the authoritative source of groove behaviour.
+  Per-section groove fields (groove_profile_name, groove_events,
+  groove_intensity, bounce_score, applied_heuristics) are injected into each
+  render-plan section for downstream render consumption.
+  Compatible with Timeline Engine (primary) and Pattern Variation Engine
+  (primary) — groove fields are additive overlays.
+  Falls back to no-groove behaviour on any build or validation failure.
 """
 
 from app.services.groove_engine.accent_engine import build_accent_events
