@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     #   Used when invoking the Demucs API (e.g. separator.separate_audio_segment timeout).
     #   Default: 300 (5 minutes; adjust upward for large files or slow hardware)
     demucs_timeout: int = Field(default=300, validation_alias="DEMUCS_TIMEOUT")
+
+    # Stem Separator Provider — selects the primary stem separation provider.
+    #   Valid values: audioshake | demucs
+    #   Default: demucs
+    #   When set to "audioshake" and AUDIOSHAKE_API_KEY is present, AudioShake is used
+    #   with automatic fallback to Demucs on failure.
+    stem_separator_provider: str = Field(default="demucs", validation_alias="STEM_SEPARATOR_PROVIDER")
+    # AUDIOSHAKE_API_KEY — API key for the AudioShake stem separation service.
+    #   Required when STEM_SEPARATOR_PROVIDER=audioshake.
+    audioshake_api_key: str = Field(default="", validation_alias="AUDIOSHAKE_API_KEY")
     mastering_profile_default: str = Field(default="transparent", validation_alias="MASTERING_PROFILE_DEFAULT")
     dev_fallback_loop_only: bool = Field(default=False, validation_alias="DEV_FALLBACK_LOOP_ONLY")
     

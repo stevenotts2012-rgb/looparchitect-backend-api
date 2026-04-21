@@ -875,7 +875,13 @@ class TestDemucsUnavailableError:
                 _demucs_stems(audio, model_name="htdemucs_6s")
 
     def test_separate_and_store_stems_falls_back_on_demucs_backend(self):
-        """separate_and_store_stems falls back to builtin when demucs backend is configured."""
+        """separate_and_store_stems succeeds when demucs backend is configured.
+
+        The provider system routes through DemucsProvider, which internally falls
+        back to the builtin frequency-based splitter when the demucs package is
+        absent.  The ``backend`` field now reflects the provider used (``"demucs"``)
+        rather than the internal splitter name (``"builtin"``).
+        """
         from app.services.stem_separation import separate_and_store_stems
         from unittest.mock import MagicMock, patch
         from pydub import AudioSegment
@@ -889,7 +895,9 @@ class TestDemucsUnavailableError:
                 result = separate_and_store_stems(audio, loop_id=1)
         assert result.enabled is True
         assert result.succeeded is True
-        assert result.backend == "builtin"  # fell back
+        # DemucsProvider handles the builtin fallback internally; the provider
+        # name reported is "demucs" (not "builtin").
+        assert result.backend == "demucs"
 
 
 # ===========================================================================
