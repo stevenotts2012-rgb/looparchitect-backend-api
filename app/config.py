@@ -299,6 +299,22 @@ class Settings(BaseSettings):
         validation_alias="MOTIF_ENGINE_SHADOW",
     )
 
+    # Decision Engine Shadow Mode — runs the Decision Engine as a shadow planner
+    # during arrangement jobs for observability and producer-decision inspection.
+    # Determines section-level hold-backs, removals, reintroductions, fullness
+    # targets, and contrast scores so the arrangement stops feeling like layered
+    # repetition.  Sits ABOVE Timeline, Pattern Variation, Groove, Drop, and
+    # Motif engines.
+    # Does NOT drive live rendering.  Results are stored inside render_plan_json
+    # under the ``_decision_plan``, ``_decision_scores``, ``_decision_warnings``,
+    # and ``_decision_fallback_used`` keys.
+    # Enabled by default so every job emits decision-engine observability data.
+    # Disable with DECISION_ENGINE_SHADOW=false to suppress the extra planning pass.
+    feature_decision_engine_shadow: bool = Field(
+        default=True,
+        validation_alias="DECISION_ENGINE_SHADOW",
+    )
+
     # -----------------------------------------------------------------------
     # Shadow-engine live-mode cutover flags
     #
@@ -492,6 +508,7 @@ class Settings(BaseSettings):
         "feature_pattern_variation_shadow",
         "feature_drop_engine_shadow",
         "feature_motif_engine_shadow",
+        "feature_decision_engine_shadow",
         "feature_groove_engine_live",
         "feature_pattern_variation_live",
         "feature_drop_engine_live",
