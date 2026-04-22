@@ -97,7 +97,7 @@ class DecisionAction:
     notes: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not self.section_name:
+        if not self.section_name or not self.section_name.strip():
             raise ValueError("section_name must be a non-empty string")
         if self.occurrence_index < 0:
             raise ValueError(
@@ -119,7 +119,7 @@ class DecisionAction:
             raise ValueError(
                 f"bar_end ({self.bar_end}) must be >= bar_start ({self.bar_start})"
             )
-        if not self.reason:
+        if not self.reason or not self.reason.strip():
             raise ValueError("reason must be a non-empty string")
 
     @property
@@ -185,7 +185,7 @@ class SectionDecision:
     rationale: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if not self.section_name:
+        if not self.section_name or not self.section_name.strip():
             raise ValueError("section_name must be a non-empty string")
         if self.occurrence_index < 0:
             raise ValueError(
@@ -300,9 +300,9 @@ class DecisionValidationIssue:
             raise ValueError(
                 f"severity must be 'warning' or 'critical', got {self.severity!r}"
             )
-        if not self.rule:
+        if not self.rule or not self.rule.strip():
             raise ValueError("rule must be a non-empty string")
-        if not self.message:
+        if not self.message or not self.message.strip():
             raise ValueError("message must be a non-empty string")
 
     @property

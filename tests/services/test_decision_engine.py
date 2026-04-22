@@ -1,7 +1,7 @@
 """
 Comprehensive tests for the Decision Engine.
 
-Coverage (80+ tests):
+Coverage (125 tests):
 1.  Types — DecisionAction contract and validation.
 2.  Types — SectionDecision contract.
 3.  Types — DecisionPlan construction and serialisation.
