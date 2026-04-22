@@ -41,7 +41,7 @@ class TestAnalyzeLoopRemote:
         return RenderPipeline("remote-test")
 
     def test_remote_url_returns_defaults(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.analyze_loop("https://example.com/track.wav")
         )
         assert result["bpm"] == 120.0
@@ -50,7 +50,7 @@ class TestAnalyzeLoopRemote:
         assert "note" in result
 
     def test_remote_url_http_also_handled(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.analyze_loop("http://example.com/track.wav")
         )
         assert result["bpm"] == 120.0
@@ -68,7 +68,7 @@ class TestAnalyzeLoopMissingFile:
         return RenderPipeline("missing-test")
 
     def test_missing_file_returns_defaults_with_error(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.analyze_loop("/nonexistent/path/to/file.wav")
         )
         assert result["bpm"] == 120.0
@@ -88,7 +88,7 @@ class TestSliceLoopRemote:
         return RenderPipeline("slice-remote")
 
     def test_remote_url_returns_mock_slices(self, pipeline):
-        slices = asyncio.get_event_loop().run_until_complete(
+        slices = asyncio.run(
             pipeline.slice_loop("https://example.com/track.wav", bpm=120.0)
         )
         assert isinstance(slices, list)
@@ -108,7 +108,7 @@ class TestGenerateArrangement:
         return RenderPipeline("arrange-test")
 
     def test_returns_sections_list(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.generate_arrangement(loop_id=1, bpm=120.0)
         )
         assert "sections" in result
@@ -116,7 +116,7 @@ class TestGenerateArrangement:
         assert len(result["sections"]) > 0
 
     def test_sections_have_required_fields(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.generate_arrangement(loop_id=1, bpm=120.0)
         )
         for section in result["sections"]:
@@ -126,27 +126,27 @@ class TestGenerateArrangement:
             assert "start_sec" in section
 
     def test_bpm_stored_in_result(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.generate_arrangement(loop_id=1, bpm=140.0)
         )
         assert result["bpm"] == 140.0
 
     def test_total_bars_and_seconds_positive(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.generate_arrangement(loop_id=1, bpm=120.0, duration_seconds=180)
         )
         assert result["total_bars"] > 0
         assert result["total_seconds"] > 0
 
     def test_section_bars_at_least_four(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.generate_arrangement(loop_id=1, bpm=120.0)
         )
         for section in result["sections"]:
             assert section["bars"] >= 4
 
     def test_loop_id_in_each_section(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.generate_arrangement(loop_id=7, bpm=120.0)
         )
         for section in result["sections"]:
@@ -166,14 +166,14 @@ class TestRenderStems:
 
     def test_renders_requested_num_stems(self, pipeline):
         arrangement = {"total_seconds": 30}
-        stems = asyncio.get_event_loop().run_until_complete(
+        stems = asyncio.run(
             pipeline.render_stems(loop_id=1, file_path="/any", arrangement=arrangement, num_stems=2)
         )
         assert len(stems) == 2
 
     def test_stem_files_created(self, pipeline, tmp_path):
         arrangement = {"total_seconds": 30}
-        stems = asyncio.get_event_loop().run_until_complete(
+        stems = asyncio.run(
             pipeline.render_stems(loop_id=1, file_path="/any", arrangement=arrangement, num_stems=3)
         )
         for stem_name, stem_path in stems.items():
@@ -182,14 +182,14 @@ class TestRenderStems:
     def test_stem_names_from_known_list(self, pipeline):
         known = {"drums", "bass", "melody", "harmony", "pad"}
         arrangement = {"total_seconds": 30}
-        stems = asyncio.get_event_loop().run_until_complete(
+        stems = asyncio.run(
             pipeline.render_stems(loop_id=1, file_path="/any", arrangement=arrangement, num_stems=5)
         )
         assert set(stems.keys()).issubset(known)
 
     def test_stems_stored_in_outputs(self, pipeline):
         arrangement = {"total_seconds": 10}
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             pipeline.render_stems(loop_id=1, file_path="/any", arrangement=arrangement, num_stems=2)
         )
         assert "stems" in pipeline.outputs
@@ -208,21 +208,21 @@ class TestExportMixdown:
 
     def test_empty_stems_creates_silence_file(self, pipeline):
         arrangement = {"total_seconds": 2}
-        output_path = asyncio.get_event_loop().run_until_complete(
+        output_path = asyncio.run(
             pipeline.export_mixdown(stems={}, arrangement=arrangement)
         )
         assert os.path.exists(output_path)
 
     def test_output_path_contains_render_id(self, pipeline):
         arrangement = {"total_seconds": 1}
-        output_path = asyncio.get_event_loop().run_until_complete(
+        output_path = asyncio.run(
             pipeline.export_mixdown(stems={}, arrangement=arrangement)
         )
         assert pipeline.render_id in output_path
 
     def test_mixdown_stored_in_outputs(self, pipeline):
         arrangement = {"total_seconds": 1}
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             pipeline.export_mixdown(stems={}, arrangement=arrangement)
         )
         assert "mixdown" in pipeline.outputs
@@ -240,7 +240,7 @@ class TestRenderFullPipeline:
         return RenderPipeline("full-pipeline")
 
     def test_remote_url_returns_completed_status(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.render_full_pipeline(
                 loop_id=1,
                 file_path="https://example.com/loop.wav",
@@ -252,7 +252,7 @@ class TestRenderFullPipeline:
         assert result["loop_id"] == 1
 
     def test_result_contains_download_url(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.render_full_pipeline(
                 loop_id=1,
                 file_path="https://example.com/loop.wav",
@@ -263,7 +263,7 @@ class TestRenderFullPipeline:
         assert result["download_url"].startswith("/renders/")
 
     def test_result_contains_analysis(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.render_full_pipeline(
                 loop_id=1,
                 file_path="https://example.com/loop.wav",
@@ -275,7 +275,7 @@ class TestRenderFullPipeline:
         assert "key" in analysis
 
     def test_bpm_override_respected(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.render_full_pipeline(
                 loop_id=1,
                 file_path="https://example.com/loop.wav",
@@ -285,7 +285,7 @@ class TestRenderFullPipeline:
         assert result["analysis"]["bpm"] == 140.0
 
     def test_key_override_respected(self, pipeline):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             pipeline.render_full_pipeline(
                 loop_id=1,
                 file_path="https://example.com/loop.wav",
@@ -303,7 +303,7 @@ class TestRenderFullPipeline:
 class TestRenderLoop:
     def test_render_loop_returns_dict(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             render_loop(loop_id=1, file_path="https://example.com/loop.wav")
         )
         assert isinstance(result, dict)
@@ -311,7 +311,7 @@ class TestRenderLoop:
 
     def test_render_loop_default_duration(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             render_loop(loop_id=2, file_path="https://example.com/loop.wav")
         )
         assert result.get("status") == "completed"
