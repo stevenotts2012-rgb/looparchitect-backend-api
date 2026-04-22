@@ -4767,6 +4767,153 @@ def _run_motif_engine_shadow(
     return result
 
 
+def _run_decision_engine_shadow(
+    render_plan: dict,
+    available_roles: list[str],
+    arrangement_id: int,
+    correlation_id: str,
+    source_quality: str = "stereo_fallback",
+) -> dict:
+    """Run the Decision Engine as a shadow planner (non-blocking).
+
+    Builds a :class:`~app.services.decision_engine.types.DecisionPlan` by running
+    :class:`~app.services.decision_engine.planner.DecisionPlanner` followed by
+    :class:`~app.services.decision_engine.validator.DecisionValidator` against the
+    finalised render-plan sections.
+
+    Results are stored in render_plan under ``_decision_plan`` etc. for
+    inspection via render_plan_json.  Never raises — any exception is caught
+    and recorded so the live render path is completely unaffected.
+
+    Parameters
+    ----------
+    render_plan:
+        The already-built render plan dict.
+    available_roles:
+        Resolved stem roles for the source material.
+    arrangement_id:
+        Arrangement ID used in log messages.
+    correlation_id:
+        Correlation ID used for structured log events.
+    source_quality:
+        Source quality mode string.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``plan``          – serialised DecisionPlan or ``None``
+    * ``scores``        – list of per-section decision score dicts
+    * ``warnings``      – list of serialised DecisionValidationIssue dicts
+    * ``fallback_used`` – bool
+    * ``error``         – error message on failure, ``None`` on success
+    """
+    from app.services.decision_engine.planner import DecisionPlanner
+    from app.services.decision_engine.validator import DecisionValidator
+
+    result: dict = {
+        "plan": None,
+        "scores": [],
+        "warnings": [],
+        "fallback_used": False,
+        "error": None,
+    }
+
+    try:
+        sections_raw = render_plan.get("sections") or []
+        if not sections_raw:
+            logger.info(
+                "DECISION_ENGINE_SHADOW [arr=%d] no sections in render plan — skipping",
+                arrangement_id,
+            )
+            return result
+
+        planner = DecisionPlanner(
+            source_quality=source_quality,
+            available_roles=available_roles,
+        )
+
+        decision_plan = planner.build(sections=sections_raw)
+
+        validator = DecisionValidator(
+            source_quality=source_quality,
+            available_roles=available_roles,
+        )
+        issues = validator.validate(decision_plan)
+
+        scores = [
+            {
+                "section_name": d.section_name,
+                "occurrence_index": d.occurrence_index,
+                "target_fullness": d.target_fullness,
+                "allow_full_stack": d.allow_full_stack,
+                "subtraction_count": d.subtraction_count,
+                "reentry_count": d.reentry_count,
+                "blocked_roles": list(d.blocked_roles),
+                "protected_roles": list(d.protected_roles),
+                "decision_score": round(d.decision_score, 4),
+            }
+            for d in decision_plan.section_decisions
+        ]
+
+        result.update(
+            {
+                "plan": decision_plan.to_dict(),
+                "scores": scores,
+                "warnings": [i.to_dict() for i in issues],
+                "fallback_used": decision_plan.fallback_used,
+            }
+        )
+
+        log_feature_event(
+            logger,
+            event="decision_engine_shadow_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            section_count=len(decision_plan.section_decisions),
+            global_contrast_score=round(decision_plan.global_contrast_score, 4),
+            payoff_readiness_score=round(decision_plan.payoff_readiness_score, 4),
+            fallback_used=decision_plan.fallback_used,
+            warning_count=len(issues),
+        )
+
+        # Structured per-section log for inspection.
+        for d in decision_plan.section_decisions:
+            log_feature_event(
+                logger,
+                event="decision_section_plan",
+                correlation_id=correlation_id,
+                arrangement_id=arrangement_id,
+                section_name=d.section_name,
+                occurrence_index=d.occurrence_index,
+                target_fullness=d.target_fullness,
+                allow_full_stack=d.allow_full_stack,
+                blocked_roles=list(d.blocked_roles),
+                held_back_roles=[
+                    a.target_role
+                    for a in d.required_subtractions
+                    if a.target_role and a.action_type == "hold_back_role"
+                ],
+                reintroduced_roles=[
+                    a.target_role
+                    for a in d.required_reentries
+                    if a.target_role and a.action_type == "reintroduce_role"
+                ],
+                decision_score=round(d.decision_score, 4),
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "DECISION_ENGINE_SHADOW [arr=%d] planning failed (non-blocking): %s",
+            arrangement_id,
+            exc,
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+
+    return result
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -5337,6 +5484,49 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_motif_scores"] = _motif_result.get("scores")
             render_plan["_motif_warnings"] = _motif_result.get("warnings", [])
             render_plan["_motif_fallback_used"] = _motif_result.get("fallback_used", False)
+
+        # ====================================================================
+        # DECISION ENGINE SHADOW: producer-brain decision planning for
+        # observability.  Sits ABOVE all other shadow engines and determines
+        # section-level hold-backs, removals, reintroductions, and fullness
+        # targets.  Results are stored in render_plan under:
+        #   _decision_plan          — serialised DecisionPlan
+        #   _decision_scores        — per-section fullness/role/score dicts
+        #   _decision_warnings      — DecisionValidationIssue dicts
+        #   _decision_fallback_used — bool
+        # Does NOT drive live rendering (shadow mode only).
+        # ====================================================================
+        if settings.feature_decision_engine_shadow:
+            _dec_source_quality = "stereo_fallback"
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _dec_source_quality = str(
+                    stem_metadata.get("source_quality") or "true_stems"
+                )
+            elif loaded_stems and len(loaded_stems) > 1:
+                _dec_source_quality = "true_stems"
+            elif loaded_stems:
+                _dec_source_quality = "ai_separated"
+
+            _dec_roles: list[str] = []
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _dec_roles = _ordered_unique_roles(
+                    stem_metadata.get("roles_detected")
+                    or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+                )
+            elif loaded_stems:
+                _dec_roles = _ordered_unique_roles(list(loaded_stems.keys()))
+
+            _dec_result = _run_decision_engine_shadow(
+                render_plan=render_plan,
+                available_roles=_dec_roles,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+                source_quality=_dec_source_quality,
+            )
+            render_plan["_decision_plan"] = _dec_result.get("plan")
+            render_plan["_decision_scores"] = _dec_result.get("scores")
+            render_plan["_decision_warnings"] = _dec_result.get("warnings", [])
+            render_plan["_decision_fallback_used"] = _dec_result.get("fallback_used", False)
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
