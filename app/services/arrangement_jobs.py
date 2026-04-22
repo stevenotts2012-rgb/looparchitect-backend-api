@@ -4914,6 +4914,296 @@ def _run_decision_engine_shadow(
     return result
 
 
+def _build_decision_plan_summary(dec_shadow_result: dict) -> dict:
+    """Build a compact, JSON-safe summary of a Decision Engine shadow result.
+
+    Parameters
+    ----------
+    dec_shadow_result:
+        The dict returned by :func:`_run_decision_engine_shadow`.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``section_count``     – number of section decisions produced
+    * ``global_contrast_score`` – aggregate contrast quality [0.0, 1.0]
+    * ``payoff_readiness_score`` – hook payoff readiness [0.0, 1.0]
+    * ``fallback_used``     – True when the planner fell back to safe defaults
+    * ``sections``          – list of compact per-section dicts
+    """
+    plan = dec_shadow_result.get("plan") or {}
+    scores = list(dec_shadow_result.get("scores") or [])
+
+    section_summaries = [
+        {
+            "section_name": s.get("section_name", ""),
+            "target_fullness": s.get("target_fullness", ""),
+            "allow_full_stack": bool(s.get("allow_full_stack", True)),
+            "blocked_roles": list(s.get("blocked_roles") or []),
+            "protected_roles": list(s.get("protected_roles") or []),
+            "subtraction_count": int(s.get("subtraction_count") or 0),
+            "reentry_count": int(s.get("reentry_count") or 0),
+            "decision_score": float(s.get("decision_score") or 0.0),
+        }
+        for s in scores
+    ]
+
+    return {
+        "section_count": len(scores),
+        "global_contrast_score": float(plan.get("global_contrast_score") or 0.0),
+        "payoff_readiness_score": float(plan.get("payoff_readiness_score") or 0.0),
+        "fallback_used": bool(plan.get("fallback_used", False)),
+        "sections": section_summaries,
+    }
+
+
+# ---------------------------------------------------------------------------
+# _FULLNESS_ROLE_FRACTION — maximum fraction of available roles that may be
+# active when target_fullness is "sparse" or "medium".  Full stack (1.0) is
+# only permitted when allow_full_stack is True.
+# ---------------------------------------------------------------------------
+_FULLNESS_MAX_ROLE_FRACTION: dict[str, float] = {
+    "sparse": 0.4,
+    "medium": 0.7,
+    "full": 1.0,
+}
+
+
+def _apply_decision_engine_primary(
+    render_plan: dict,
+    dec_shadow_result: dict,
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Apply Decision Engine outputs as a controller layer onto the live render plan.
+
+    When :data:`settings.feature_decision_engine_primary` is ``True`` this
+    function overlays the :class:`~app.services.decision_engine.types.DecisionPlan`
+    outputs — blocked roles, target fullness, allow_full_stack, and required
+    reintroductions — onto the already-built *render_plan* sections.  The
+    underlying section structure (names, bar counts, energy targets) produced by
+    Timeline/Pattern/Groove engines is preserved; only the active-role set and
+    density guidance are modified.
+
+    Integration rules enforced here:
+
+    * Verse 1: full stack suppressed unless ``allow_full_stack`` is True.
+    * Pre-hook: blocked roles are removed from the active role set.
+    * Hook: reintroduced roles are added back when present in available roles.
+    * Bridge: forced to sparse/medium (no full stack permitted).
+    * Outro: forced to reduction (no full stack permitted).
+
+    Falls back safely to the current live behaviour (render_plan returned
+    unchanged except for observability keys) in any of the following conditions:
+
+    * The shadow planner encountered an exception (``error`` key is set).
+    * The plan is empty or contains no section decisions.
+    * The DecisionValidator reported at least one ``"critical"``-severity issue.
+
+    In all cases the following observability keys are written into *render_plan*:
+
+    * ``decision_primary_used``              – True when the plan was applied.
+    * ``decision_primary_fallback_used``     – True when the fallback path ran.
+    * ``decision_primary_fallback_reason``   – Human-readable reason for fallback.
+    * ``decision_plan_summary``              – Compact plan summary dict.
+    * ``decision_validation_warnings``       – Serialised warning-level issues.
+
+    Parameters
+    ----------
+    render_plan:
+        The live render plan dict (already built by arranger_v2 or legacy,
+        with Timeline, Pattern Variation, and Groove promotions already applied).
+    dec_shadow_result:
+        The dict returned by :func:`_run_decision_engine_shadow`.
+    arrangement_id:
+        Used in log messages.
+    correlation_id:
+        Used for structured log events.
+
+    Returns
+    -------
+    dict
+        The (potentially mutated) *render_plan* with observability keys set.
+    """
+    # Initialise observability fields — written regardless of outcome.
+    render_plan["decision_primary_used"] = False
+    render_plan["decision_primary_fallback_used"] = False
+    render_plan["decision_primary_fallback_reason"] = ""
+    render_plan["decision_plan_summary"] = {}
+    render_plan["decision_validation_warnings"] = []
+
+    def _record_fallback(reason: str) -> dict:
+        logger.warning(
+            "DECISION_ENGINE_PRIMARY [arr=%d] fallback to live behaviour — %s",
+            arrangement_id,
+            reason,
+        )
+        render_plan["decision_primary_fallback_used"] = True
+        render_plan["decision_primary_fallback_reason"] = reason
+        log_feature_event(
+            logger,
+            event="decision_primary_fallback",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            reason=reason,
+        )
+        return render_plan
+
+    # ------------------------------------------------------------------ #
+    # Guard 1: build error                                                 #
+    # ------------------------------------------------------------------ #
+    if dec_shadow_result.get("error"):
+        return _record_fallback(
+            f"Decision plan build failed: {dec_shadow_result['error']}"
+        )
+
+    plan = dec_shadow_result.get("plan") or {}
+    section_decisions = list(plan.get("section_decisions") or [])
+    render_sections = list(render_plan.get("sections") or [])
+
+    # ------------------------------------------------------------------ #
+    # Guard 2: empty plan when sections exist                              #
+    # ------------------------------------------------------------------ #
+    if not section_decisions and render_sections:
+        return _record_fallback(
+            "Decision plan is empty but render plan has sections"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Guard 3: critical validation issues                                  #
+    # ------------------------------------------------------------------ #
+    all_issues = list(dec_shadow_result.get("warnings") or [])
+    critical_issues = [i for i in all_issues if i.get("severity") == "critical"]
+    warning_issues = [i for i in all_issues if i.get("severity") == "warning"]
+
+    if critical_issues:
+        critical_summary = "; ".join(
+            i.get("message") or i.get("rule") or "unknown" for i in critical_issues
+        )
+        render_plan["decision_plan_summary"] = _build_decision_plan_summary(
+            dec_shadow_result
+        )
+        render_plan["decision_validation_warnings"] = all_issues
+        return _record_fallback(
+            f"Decision plan failed validation ({len(critical_issues)} critical issue(s)): "
+            f"{critical_summary}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Apply: overlay Decision Engine outputs onto render_plan sections     #
+    # ------------------------------------------------------------------ #
+    if len(render_sections) != len(section_decisions):
+        logger.warning(
+            "DECISION_ENGINE_PRIMARY [arr=%d] section count mismatch: "
+            "render_plan has %d sections, decision plan has %d — "
+            "applying to min(%d) sections",
+            arrangement_id,
+            len(render_sections),
+            len(section_decisions),
+            min(len(render_sections), len(section_decisions)),
+        )
+
+    applied_count = 0
+    for render_sec, sec_dec in zip(render_sections, section_decisions):
+        blocked_roles: list[str] = list(sec_dec.get("blocked_roles") or [])
+        protected_roles: list[str] = list(sec_dec.get("protected_roles") or [])
+        allow_full_stack: bool = bool(sec_dec.get("allow_full_stack", True))
+        target_fullness: str = sec_dec.get("target_fullness") or "full"
+        reentries: list[dict] = list(sec_dec.get("required_reentries") or [])
+
+        # Current active roles — prefer the field Timeline/Pattern set, then
+        # fall back to the legacy ``instruments`` field, then ``active_stem_roles``.
+        current_roles: list[str] = list(
+            render_sec.get("instruments")
+            or render_sec.get("active_stem_roles")
+            or []
+        )
+
+        # Step 1: Remove blocked roles (respecting protected roles).
+        if blocked_roles and current_roles:
+            current_roles = [
+                r for r in current_roles
+                if r not in blocked_roles or r in protected_roles
+            ]
+
+        # Step 2: Enforce fullness cap when full stack is not allowed.
+        if not allow_full_stack and current_roles:
+            max_fraction = _FULLNESS_MAX_ROLE_FRACTION.get(target_fullness, 1.0)
+            max_roles = max(1, int(len(current_roles) * max_fraction))
+            if len(current_roles) > max_roles:
+                # Keep the first max_roles (highest priority / most structural).
+                current_roles = current_roles[:max_roles]
+
+        # Step 3: Reintroduce roles required by the decision plan (hook payoffs).
+        if reentries:
+            available_in_source = list(
+                render_sec.get("active_stem_roles")
+                or render_sec.get("instruments")
+                or []
+            )
+            for reentry in reentries:
+                role = reentry.get("target_role")
+                if (
+                    role
+                    and role not in current_roles
+                    and role in available_in_source
+                ):
+                    current_roles.append(role)
+
+        # Persist updated roles back to the section.
+        render_sec["instruments"] = current_roles
+        render_sec["active_stem_roles"] = current_roles
+
+        # Persist decision-engine metadata onto the section for observability.
+        render_sec["decision_target_fullness"] = target_fullness
+        render_sec["decision_allow_full_stack"] = allow_full_stack
+        render_sec["decision_blocked_roles"] = blocked_roles
+        render_sec["decision_protected_roles"] = protected_roles
+
+        applied_count += 1
+        logger.info(
+            "DECISION_ENGINE_PRIMARY [arr=%d] applied section=%r "
+            "fullness=%s allow_full_stack=%s roles=%s blocked=%s",
+            arrangement_id,
+            render_sec.get("type") or render_sec.get("name"),
+            target_fullness,
+            allow_full_stack,
+            current_roles,
+            blocked_roles,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Metadata                                                             #
+    # ------------------------------------------------------------------ #
+    render_plan["decision_plan_summary"] = _build_decision_plan_summary(
+        dec_shadow_result
+    )
+    render_plan["decision_validation_warnings"] = warning_issues
+    render_plan["decision_primary_used"] = True
+
+    log_feature_event(
+        logger,
+        event="decision_primary_applied",
+        correlation_id=correlation_id,
+        arrangement_id=arrangement_id,
+        sections_applied=applied_count,
+        global_contrast_score=float(plan.get("global_contrast_score") or 0.0),
+        payoff_readiness_score=float(plan.get("payoff_readiness_score") or 0.0),
+        validation_warning_count=len(warning_issues),
+    )
+
+    logger.info(
+        "DECISION_ENGINE_PRIMARY [arr=%d] promoted — %d sections updated, "
+        "%d validation warnings",
+        arrangement_id,
+        applied_count,
+        len(warning_issues),
+    )
+
+    return render_plan
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -5486,17 +5776,33 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_motif_fallback_used"] = _motif_result.get("fallback_used", False)
 
         # ====================================================================
-        # DECISION ENGINE SHADOW: producer-brain decision planning for
-        # observability.  Sits ABOVE all other shadow engines and determines
-        # section-level hold-backs, removals, reintroductions, and fullness
-        # targets.  Results are stored in render_plan under:
+        # DECISION ENGINE: shadow planning + optional primary promotion.
+        #
+        # The Decision Engine is the controller layer ABOVE Timeline, Pattern
+        # Variation, and Groove engines.  It determines section-level hold-backs,
+        # removals, reintroductions, and fullness targets.
+        #
+        # The shadow pass always runs when DECISION_ENGINE_SHADOW=true OR when
+        # DECISION_ENGINE_PRIMARY=true (primary requires the plan).  Results are
+        # stored in render_plan under:
         #   _decision_plan          — serialised DecisionPlan
         #   _decision_scores        — per-section fullness/role/score dicts
         #   _decision_warnings      — DecisionValidationIssue dicts
         #   _decision_fallback_used — bool
-        # Does NOT drive live rendering (shadow mode only).
+        #
+        # Primary promotion (DECISION_ENGINE_PRIMARY=true):
+        #   - blocked_roles, target_fullness, allow_full_stack, and required
+        #     reentries from each SectionDecision are applied to the live
+        #     render_plan sections (instruments / active_stem_roles).
+        #   - Does NOT replace Timeline Engine structural planner.
+        #   - Falls back to current live behaviour if the plan is empty, build
+        #     failed, or the validator reports critical issues.
         # ====================================================================
-        if settings.feature_decision_engine_shadow:
+        _run_dec_shadow = (
+            settings.feature_decision_engine_shadow
+            or settings.feature_decision_engine_primary
+        )
+        if _run_dec_shadow:
             _dec_source_quality = "stereo_fallback"
             if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
                 _dec_source_quality = str(
@@ -5527,6 +5833,21 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_decision_scores"] = _dec_result.get("scores")
             render_plan["_decision_warnings"] = _dec_result.get("warnings", [])
             render_plan["_decision_fallback_used"] = _dec_result.get("fallback_used", False)
+        else:
+            _dec_result = {}
+
+        # Promote Decision Engine to primary controller layer when enabled.
+        # This must run after the shadow pass (which builds the plan) and after
+        # all other primary promotions (Timeline, Pattern Variation, Groove) so
+        # it can override the role set they produced, but before the render plan
+        # is persisted to the database.
+        if settings.feature_decision_engine_primary:
+            render_plan = _apply_decision_engine_primary(
+                render_plan=render_plan,
+                dec_shadow_result=_dec_result,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+            )
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
