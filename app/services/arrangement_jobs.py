@@ -6681,6 +6681,46 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 exc_info=True,
             )
 
+        # ====================================================================
+        # RESOLVED ARRANGEMENT PLAN: genre-aware canonical plan.
+        # Shadow pass always runs when RESOLVED_PLAN_SHADOW=true.
+        # Results stored under _resolved_arrangement_plan key.
+        # ====================================================================
+        if settings.feature_resolved_plan_shadow:
+            try:
+                from app.services.plan_resolver import GenreAwarePlanResolver
+                _gap_resolver = GenreAwarePlanResolver(
+                    render_plan,
+                    available_roles=_available_roles_for_resolver,
+                    source_quality=_resolver_source_quality,
+                    arrangement_id=arrangement_id,
+                    loop_id=arrangement.loop_id,
+                    variation_seed=seed,
+                )
+                _gap_plan = _gap_resolver.resolve()
+                render_plan["_resolved_arrangement_plan"] = _gap_plan.to_dict()
+                log_feature_event(
+                    logger,
+                    event="resolved_arrangement_plan_built",
+                    correlation_id=correlation_id,
+                    arrangement_id=arrangement_id,
+                    genre=_gap_plan.selected_genre,
+                    vibe=_gap_plan.selected_vibe,
+                    style_profile=_gap_plan.style_profile,
+                    template_id=_gap_plan.template_id,
+                    section_count=_gap_plan.section_count,
+                    conflicts=len(_gap_plan.resolver_conflicts),
+                    skipped=len(_gap_plan.resolver_skipped_actions),
+                    fallback_used=_gap_plan.fallback_used,
+                )
+            except Exception as _gap_exc:
+                logger.warning(
+                    "RESOLVED_ARRANGEMENT_PLAN [arr=%d] shadow failed (non-blocking): %s",
+                    arrangement_id,
+                    _gap_exc,
+                    exc_info=True,
+                )
+
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
 

@@ -536,6 +536,25 @@ class Settings(BaseSettings):
         validation_alias="TRACK_QUALITY_ANALYSIS",
     )
 
+    # Resolved Arrangement Plan Shadow Mode — runs GenreAwarePlanResolver as a
+    # shadow pass during arrangement jobs. Produces a ResolvedArrangementPlan with
+    # genre/vibe/style context. Does NOT replace the live render path.
+    # Results stored in render_plan_json under _resolved_arrangement_plan key.
+    # Enable with RESOLVED_PLAN_SHADOW=true.
+    feature_resolved_plan_shadow: bool = Field(
+        default=True,
+        validation_alias="RESOLVED_PLAN_SHADOW",
+    )
+
+    # Resolved Arrangement Plan Primary Mode — when enabled, the renderer consumes
+    # the ResolvedArrangementPlan instead of scattered per-engine annotations.
+    # Requires RESOLVED_PLAN_SHADOW=true.
+    # Enable with RESOLVED_PLAN_PRIMARY=true.
+    feature_resolved_plan_primary: bool = Field(
+        default=False,
+        validation_alias="RESOLVED_PLAN_PRIMARY",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -606,6 +625,8 @@ class Settings(BaseSettings):
         "feature_decision_engine_primary",
         "feature_drop_engine_primary",
         "feature_motif_engine_primary",
+        "feature_resolved_plan_shadow",
+        "feature_resolved_plan_primary",
         mode="before",
     )
     @classmethod
