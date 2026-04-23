@@ -1,0 +1,329 @@
+{
+  "version": "1.0.0",
+  "description": "Instrument Activation Rules — centralized ruleset controlling which instruments play, how dense they are, and how musical behavior evolves per section.",
+  "role_aliases": {
+    "MELODY_MAIN": "melody",
+    "MELODY_COUNTER": "arp",
+    "CHORDS": "chords",
+    "BASS_808": "bass",
+    "DRUMS_MAIN": "drums",
+    "HIHATS": "percussion",
+    "PERCUSSION": "percussion",
+    "FX_TRANSITION": "fx"
+  },
+  "sections": {
+    "INTRO": {
+      "melody": {
+        "active": true,
+        "density": 0.25,
+        "complexity": 0.2,
+        "variation": "sparse",
+        "pattern": "minimal"
+      },
+      "arp": {
+        "active": false,
+        "density": 0.0,
+        "complexity": 0.0
+      },
+      "chords": {
+        "active": false,
+        "density": 0.0,
+        "complexity": 0.0
+      },
+      "bass": {
+        "active": false,
+        "density": 0.0,
+        "complexity": 0.0
+      },
+      "drums": {
+        "active": false,
+        "density": 0.0,
+        "complexity": 0.0
+      },
+      "percussion": {
+        "active": false,
+        "density": 0.0,
+        "complexity": 0.0
+      },
+      "fx": {
+        "active": true,
+        "density": 0.4,
+        "complexity": 0.2,
+        "type": "texture",
+        "intensity": 0.3
+      }
+    },
+    "VERSE": {
+      "melody": {
+        "active": true,
+        "density": 0.55,
+        "complexity": 0.5,
+        "variation": "call_response",
+        "pattern": "melodic"
+      },
+      "arp": {
+        "active": false,
+        "density": 0.2,
+        "complexity": 0.3,
+        "variation": "optional"
+      },
+      "chords": {
+        "active": true,
+        "density": 0.4,
+        "complexity": 0.3,
+        "variation": "block_chords"
+      },
+      "bass": {
+        "active": true,
+        "density": 0.6,
+        "complexity": 0.5,
+        "slides": true,
+        "pattern": "melodic_bass"
+      },
+      "drums": {
+        "active": true,
+        "density": 0.55,
+        "complexity": 0.5,
+        "pattern": "straight"
+      },
+      "percussion": {
+        "active": false,
+        "density": 0.3,
+        "complexity": 0.3,
+        "rolls": false,
+        "variation": "optional"
+      },
+      "fx": {
+        "active": false,
+        "density": 0.2,
+        "complexity": 0.2,
+        "type": "ambient",
+        "intensity": 0.2
+      }
+    },
+    "PRE_HOOK": {
+      "melody": {
+        "active": true,
+        "density": 0.65,
+        "complexity": 0.65,
+        "variation": "tension",
+        "pattern": "ascending"
+      },
+      "arp": {
+        "active": true,
+        "density": 0.4,
+        "complexity": 0.4,
+        "variation": "rhythmic"
+      },
+      "chords": {
+        "active": true,
+        "density": 0.55,
+        "complexity": 0.5,
+        "variation": "suspended",
+        "filter": "high_pass"
+      },
+      "bass": {
+        "active": true,
+        "density": 0.7,
+        "complexity": 0.6,
+        "slides": true,
+        "pattern": "driving"
+      },
+      "drums": {
+        "active": true,
+        "density": 0.75,
+        "complexity": 0.65,
+        "drop_kick": true,
+        "pattern": "build"
+      },
+      "percussion": {
+        "active": true,
+        "density": 0.65,
+        "complexity": 0.6,
+        "rolls": true,
+        "variation": "escalate"
+      },
+      "fx": {
+        "active": true,
+        "density": 0.5,
+        "complexity": 0.5,
+        "type": "riser",
+        "intensity": 0.7
+      }
+    },
+    "HOOK": {
+      "melody": {
+        "active": true,
+        "density": 0.85,
+        "complexity": 0.8,
+        "variation": "hook_lead",
+        "pattern": "melodic_peak"
+      },
+      "arp": {
+        "active": true,
+        "density": 0.6,
+        "complexity": 0.6,
+        "variation": "support"
+      },
+      "chords": {
+        "active": true,
+        "density": 0.8,
+        "complexity": 0.7,
+        "variation": "full_chords"
+      },
+      "bass": {
+        "active": true,
+        "density": 0.9,
+        "complexity": 0.75,
+        "slides": true,
+        "pattern": "hook_bass"
+      },
+      "drums": {
+        "active": true,
+        "density": 1.0,
+        "complexity": 0.85,
+        "pattern": "full_groove"
+      },
+      "percussion": {
+        "active": true,
+        "density": 0.85,
+        "complexity": 0.8,
+        "rolls": true,
+        "variation": "full_stack"
+      },
+      "fx": {
+        "active": true,
+        "density": 0.7,
+        "complexity": 0.7,
+        "type": "impact",
+        "intensity": 0.85
+      }
+    },
+    "BRIDGE": {
+      "melody": {
+        "active": true,
+        "density": 0.45,
+        "complexity": 0.5,
+        "variation": "contrast",
+        "pattern": "melodic_breakdown"
+      },
+      "arp": {
+        "active": true,
+        "density": 0.35,
+        "complexity": 0.35,
+        "variation": "ambient"
+      },
+      "chords": {
+        "active": true,
+        "density": 0.5,
+        "complexity": 0.4,
+        "variation": "sustained"
+      },
+      "bass": {
+        "active": false,
+        "density": 0.2,
+        "complexity": 0.2
+      },
+      "drums": {
+        "active": false,
+        "density": 0.2,
+        "complexity": 0.2
+      },
+      "percussion": {
+        "active": false,
+        "density": 0.2,
+        "complexity": 0.2
+      },
+      "fx": {
+        "active": true,
+        "density": 0.4,
+        "complexity": 0.4,
+        "type": "texture",
+        "intensity": 0.5
+      }
+    },
+    "OUTRO": {
+      "melody": {
+        "active": true,
+        "density": 0.3,
+        "complexity": 0.2,
+        "variation": "resolve",
+        "pattern": "sparse"
+      },
+      "arp": {
+        "active": false,
+        "density": 0.15,
+        "complexity": 0.15
+      },
+      "chords": {
+        "active": false,
+        "density": 0.2,
+        "complexity": 0.2
+      },
+      "bass": {
+        "active": false,
+        "density": 0.0,
+        "complexity": 0.0
+      },
+      "drums": {
+        "active": false,
+        "density": 0.2,
+        "complexity": 0.2
+      },
+      "percussion": {
+        "active": false,
+        "density": 0.15,
+        "complexity": 0.15
+      },
+      "fx": {
+        "active": true,
+        "density": 0.3,
+        "complexity": 0.2,
+        "type": "fade",
+        "intensity": 0.4
+      }
+    }
+  },
+  "genre_modifiers": {
+    "trap": {
+      "drums": {"complexity_delta": 0.1},
+      "bass": {"density_delta": 0.1, "slides": true},
+      "percussion": {"density_delta": 0.1, "rolls": true}
+    },
+    "rnb": {
+      "melody": {"density_delta": 0.05},
+      "chords": {"density_delta": 0.1},
+      "bass": {"slides": true}
+    },
+    "pop": {
+      "melody": {"density_delta": 0.1},
+      "chords": {"density_delta": 0.05}
+    },
+    "cinematic": {
+      "melody": {"density_delta": 0.05, "complexity_delta": 0.1},
+      "fx": {"density_delta": 0.15, "intensity_delta": 0.1}
+    }
+  },
+  "vibe_modifiers": {
+    "dark": {
+      "melody": {"density_delta": -0.1},
+      "fx": {"density_delta": 0.1}
+    },
+    "hype": {
+      "drums": {"complexity_delta": 0.15},
+      "percussion": {"density_delta": 0.1, "rolls": true}
+    },
+    "rage": {
+      "percussion": {"complexity_delta": 0.15, "rolls": true},
+      "drums": {"density_delta": 0.1}
+    },
+    "emotional": {
+      "chords": {"density_delta": 0.1},
+      "melody": {"density_delta": 0.1}
+    },
+    "chill": {
+      "drums": {"density_delta": -0.1},
+      "melody": {"density_delta": -0.05}
+    }
+  }
+}

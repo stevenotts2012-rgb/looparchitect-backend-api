@@ -82,6 +82,15 @@ _DROP_TO_BOUNDARY_TYPE: Dict[str, str] = {
     "silence_tease": "pre_hook_silence_drop",
 }
 
+# FX_TRANSITION rule type → boundary event type mapping.
+_FX_RULE_TO_BOUNDARY_TYPE: Dict[str, str] = {
+    "riser":   "riser_fx",
+    "impact":  "crash_hit",
+    "fade":    "outro_strip",
+    "texture": "bridge_strip",
+    "ambient": "pre_hook_silence_drop",
+}
+
 
 class FinalPlanResolver:
     """Merge all planning-engine outputs into one :class:`ResolvedRenderPlan`.
@@ -98,6 +107,13 @@ class FinalPlanResolver:
         ``"stereo_fallback"``).
     arrangement_id:
         Used only for log messages.
+    genre:
+        Genre hint passed to the Instrument Activation Rules engine for
+        genre-aware density/complexity modifiers.
+    vibe:
+        Vibe/mood hint passed to the Instrument Activation Rules engine.
+    variation_seed:
+        Optional integer seed for deterministic per-arrangement rule variation.
     """
 
     def __init__(
@@ -107,12 +123,21 @@ class FinalPlanResolver:
         available_roles: Optional[List[str]] = None,
         source_quality: str = "stereo_fallback",
         arrangement_id: int = 0,
+        genre: str = "generic",
+        vibe: str = "",
+        variation_seed: Optional[int] = None,
     ) -> None:
         self._plan = render_plan
         self._available_roles: List[str] = list(available_roles or [])
         self._source_quality = source_quality
         self._arrangement_id = arrangement_id
         self._noop_annotations: List[dict] = []
+        self._genre = str(genre or "generic").lower().strip()
+        self._vibe = str(vibe or "").lower().strip()
+        self._variation_seed = variation_seed
+
+        # Lazily import to avoid circular imports and allow test patching.
+        self._rules_engine = self._init_rules_engine()
 
     # ------------------------------------------------------------------
     # Public API
