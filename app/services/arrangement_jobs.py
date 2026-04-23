@@ -6616,6 +6616,71 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 correlation_id=correlation_id,
             )
 
+        # ====================================================================
+        # FINAL PLAN RESOLVER + RENDER TRUTH AUDIT
+        #
+        # After all engine primary promotions are complete, resolve the final
+        # canonical instruction set and record what each engine actually
+        # contributed.  Results are embedded in the render plan under:
+        #   _resolved_render_plan  — serialised ResolvedRenderPlan
+        #   _render_truth_audit    — serialised RenderTruthAudit
+        # ====================================================================
+        try:
+            _available_roles_for_resolver: list[str] = []
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _available_roles_for_resolver = _ordered_unique_roles(
+                    stem_metadata.get("roles_detected")
+                    or list((stem_metadata.get("stem_s3_keys") or {}).keys())
+                )
+            elif loaded_stems:
+                _available_roles_for_resolver = _ordered_unique_roles(list(loaded_stems.keys()))
+
+            _resolver_source_quality = "stereo_fallback"
+            if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                _resolver_source_quality = str(stem_metadata.get("source_quality") or "true_stems")
+            elif loaded_stems and len(loaded_stems) > 1:
+                _resolver_source_quality = "true_stems"
+            elif loaded_stems:
+                _resolver_source_quality = "ai_separated"
+
+            from app.services.final_plan_resolver import FinalPlanResolver
+            from app.services.render_truth_audit import RenderTruthAudit
+
+            _resolver = FinalPlanResolver(
+                render_plan,
+                available_roles=_available_roles_for_resolver,
+                source_quality=_resolver_source_quality,
+                arrangement_id=arrangement_id,
+            )
+            _resolved = _resolver.resolve()
+            render_plan["_resolved_render_plan"] = _resolved.to_dict()
+
+            _audit = RenderTruthAudit.build(
+                arrangement_id=arrangement_id,
+                raw_render_plan=render_plan,
+                resolved_plan=_resolved,
+            )
+            render_plan["_render_truth_audit"] = _audit.to_dict()
+
+            log_feature_event(
+                logger,
+                event="render_truth_audit_built",
+                correlation_id=correlation_id,
+                arrangement_id=arrangement_id,
+                section_count=_resolved.section_count,
+                noop_count=len(_resolved.noop_annotations),
+                safety_findings=len(_audit.transition_safety_findings),
+                applied_role_mutes=len(_audit.applied_role_mutes),
+                applied_reintroductions=len(_audit.applied_reintroductions),
+            )
+        except Exception as _audit_exc:
+            logger.warning(
+                "RENDER_TRUTH_AUDIT [arr=%d] failed (non-blocking): %s",
+                arrangement_id,
+                _audit_exc,
+                exc_info=True,
+            )
+
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
 

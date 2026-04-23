@@ -280,6 +280,40 @@ def render_from_plan(
     stem_sep = render_profile.get("stem_separation") or {}
     source_quality_mode_used = _derive_source_quality_mode(render_plan, stems, stem_sep)
 
+    # When a resolved render plan is present (produced by FinalPlanResolver)
+    # inject its section role information back into the raw sections so that
+    # _build_producer_arrangement_from_render_plan uses the authoritative roles
+    # rather than scattered per-engine annotations.  This is a lightweight merge:
+    # we only overwrite instruments/active_stem_roles; all structural fields
+    # (bar_start, bars, energy, variations, boundary_events) are preserved.
+    resolved_dict = render_plan.get("_resolved_render_plan")
+    if resolved_dict:
+        try:
+            resolved_sections = resolved_dict.get("resolved_sections") or []
+            raw_sections = render_plan.get("sections") or []
+            if len(resolved_sections) == len(raw_sections):
+                for raw_sec, res_sec in zip(raw_sections, resolved_sections):
+                    final_roles = res_sec.get("final_active_roles")
+                    if final_roles is not None:
+                        raw_sec["instruments"] = list(final_roles)
+                        raw_sec["active_stem_roles"] = list(final_roles)
+                logger.info(
+                    "render_executor: applied resolved_render_plan role map "
+                    "(%d sections)", len(raw_sections)
+                )
+            else:
+                logger.warning(
+                    "render_executor: resolved_sections length %d != raw_sections %d "
+                    "— skipping resolved plan role injection",
+                    len(resolved_sections),
+                    len(raw_sections),
+                )
+        except Exception as _merge_exc:
+            logger.warning(
+                "render_executor: resolved plan merge failed (non-blocking): %s",
+                _merge_exc,
+            )
+
     producer_payload, summary = _build_producer_arrangement_from_render_plan(
         render_plan=render_plan,
         fallback_bpm=float(render_plan.get("bpm") or 120.0),
