@@ -344,6 +344,30 @@ class Settings(BaseSettings):
         validation_alias="DECISION_ENGINE_PRIMARY",
     )
 
+    # Drop Engine Primary Mode — promotes the Drop Engine from shadow mode to
+    # the primary source of boundary/payoff behaviour at every meaningful section
+    # boundary in the arrangement.
+    # When enabled, DropPlan outputs (primary_drop_event, support_events,
+    # tension_score, payoff_score) are applied to the live render-plan sections
+    # at their entry boundaries, and repeated_hook_drop_variation_score is stored
+    # at the plan level.  The underlying section structure (names, bar counts,
+    # roles, energy targets) produced by Timeline/Pattern/Groove/Decision engines
+    # is preserved — only the per-boundary drop design fields are added.
+    #
+    # The shadow pass (DROP_ENGINE_SHADOW) is automatically enabled when this
+    # flag is set so both can share the same planning pass.
+    # Falls back to the current live behaviour (no drop fields injected) if:
+    #   - the Drop Engine raised an exception
+    #   - the resulting plan has no boundaries when sections have significant transitions
+    #   - the DropValidator reports any error-severity issues
+    #
+    # Rollback: set DROP_ENGINE_PRIMARY=false — no code deployment required.
+    # Enable with DROP_ENGINE_PRIMARY=true.
+    feature_drop_engine_primary: bool = Field(
+        default=False,
+        validation_alias="DROP_ENGINE_PRIMARY",
+    )
+
     # -----------------------------------------------------------------------
     # Shadow-engine live-mode cutover flags
     #
@@ -548,6 +572,7 @@ class Settings(BaseSettings):
         "feature_groove_engine_primary",
         "feature_ai_producer_system_live",
         "feature_decision_engine_primary",
+        "feature_drop_engine_primary",
         mode="before",
     )
     @classmethod

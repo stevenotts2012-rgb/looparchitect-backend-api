@@ -5226,6 +5226,278 @@ def _apply_decision_engine_primary(
     return render_plan
 
 
+def _build_drop_plan_summary(drop_shadow_result: dict) -> dict:
+    """Build a compact, JSON-safe summary of a Drop Engine shadow result.
+
+    Parameters
+    ----------
+    drop_shadow_result:
+        The dict returned by :func:`_run_drop_engine_shadow`.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``total_drop_count``                    – boundaries that received a primary event
+    * ``repeated_hook_drop_variation_score``  – aggregate hook-variation score [0.0, 1.0]
+    * ``fallback_used``                       – True when the planner fell back to weak-source treatment
+    * ``boundary_count``                      – total boundaries produced
+    * ``boundaries``                          – list of compact per-boundary dicts
+    """
+    plan = drop_shadow_result.get("plan") or {}
+    scores = list(drop_shadow_result.get("scores") or [])
+
+    boundary_summaries = [
+        {
+            "boundary_name": s.get("boundary_name", ""),
+            "from_section": s.get("from_section", ""),
+            "to_section": s.get("to_section", ""),
+            "primary_event_type": s.get("primary_event_type"),
+            "tension_score": float(s.get("tension_score") or 0.0),
+            "payoff_score": float(s.get("payoff_score") or 0.0),
+        }
+        for s in scores
+    ]
+
+    return {
+        "total_drop_count": int(plan.get("total_drop_count") or 0),
+        "repeated_hook_drop_variation_score": float(
+            plan.get("repeated_hook_drop_variation_score") or 0.0
+        ),
+        "fallback_used": bool(plan.get("fallback_used", False)),
+        "boundary_count": len(scores),
+        "boundaries": boundary_summaries,
+    }
+
+
+def _apply_drop_engine_primary(
+    render_plan: dict,
+    drop_shadow_result: dict,
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Apply Drop Engine outputs as the primary boundary/payoff planner onto the live render plan.
+
+    When :data:`settings.feature_drop_engine_primary` is ``True`` this function
+    annotates each render-plan section at its entry boundary with Drop Engine
+    design data — :attr:`~app.services.drop_engine.types.DropBoundaryPlan.primary_drop_event`,
+    ``support_events``, ``tension_score``, and ``payoff_score`` — so the render
+    path can use them as authoritative boundary/drop instructions.
+
+    The repeated_hook_drop_variation_score from the full plan is stored on
+    render_plan directly as ``drop_repeated_hook_variation_score``.
+
+    Integration rules enforced here:
+
+    * Drop event data is applied to the *entering* section of each boundary
+      (the ``to_section``).
+    * Section structure (names, bar counts, roles, energy targets) produced by
+      Timeline/Pattern/Groove/Decision engines is preserved.
+
+    Falls back safely to the current live behaviour (render_plan returned
+    unchanged except for observability keys) in any of the following conditions:
+
+    * The shadow planner encountered an exception (``error`` key is set).
+    * The plan has no boundaries when significant section transitions exist.
+    * The DropValidator reported at least one ``"error"``-severity issue.
+
+    In all cases the following observability keys are written into *render_plan*:
+
+    * ``drop_primary_used``              – True when the plan was applied.
+    * ``drop_primary_fallback_used``     – True when the fallback path ran.
+    * ``drop_primary_fallback_reason``   – Human-readable reason for fallback.
+    * ``drop_plan_summary``              – Compact plan summary dict.
+    * ``drop_validation_warnings``       – Serialised warning-level issues.
+
+    Parameters
+    ----------
+    render_plan:
+        The live render plan dict (already built by arranger_v2 or legacy,
+        with Timeline, Pattern Variation, Groove, and Decision promotions
+        already applied).
+    drop_shadow_result:
+        The dict returned by :func:`_run_drop_engine_shadow`.
+    arrangement_id:
+        Used in log messages.
+    correlation_id:
+        Used for structured log events.
+
+    Returns
+    -------
+    dict
+        The (potentially mutated) *render_plan* with observability keys set.
+    """
+    from app.services.drop_engine.planner import _derive_section_type
+
+    # Canonical section types that are significant enough to warrant drop planning.
+    _SIGNIFICANT_SECTIONS = frozenset(
+        {"intro", "verse", "pre_hook", "hook", "bridge", "breakdown", "outro"}
+    )
+
+    # Initialise observability fields — written regardless of outcome.
+    render_plan["drop_primary_used"] = False
+    render_plan["drop_primary_fallback_used"] = False
+    render_plan["drop_primary_fallback_reason"] = ""
+    render_plan["drop_plan_summary"] = {}
+    render_plan["drop_validation_warnings"] = []
+
+    def _record_fallback(reason: str) -> dict:
+        logger.warning(
+            "DROP_ENGINE_PRIMARY [arr=%d] fallback to live behaviour — %s",
+            arrangement_id,
+            reason,
+        )
+        render_plan["drop_primary_fallback_used"] = True
+        render_plan["drop_primary_fallback_reason"] = reason
+        log_feature_event(
+            logger,
+            event="drop_primary_fallback",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            reason=reason,
+        )
+        return render_plan
+
+    # ------------------------------------------------------------------ #
+    # Guard 1: build error                                                 #
+    # ------------------------------------------------------------------ #
+    if drop_shadow_result.get("error"):
+        return _record_fallback(
+            f"Drop plan build failed: {drop_shadow_result['error']}"
+        )
+
+    plan_dict = drop_shadow_result.get("plan") or {}
+    boundaries = list(plan_dict.get("boundaries") or [])
+    render_sections = list(render_plan.get("sections") or [])
+
+    # Build the plan summary once; reused in both fallback and success paths.
+    plan_summary = _build_drop_plan_summary(drop_shadow_result)
+
+    # ------------------------------------------------------------------ #
+    # Guard 2: empty plan when significant boundaries exist                #
+    # ------------------------------------------------------------------ #
+    has_significant_boundaries = False
+    if len(render_sections) >= 2:
+        for i in range(len(render_sections) - 1):
+            from_raw = str(
+                render_sections[i].get("type") or render_sections[i].get("name") or "verse"
+            )
+            to_raw = str(
+                render_sections[i + 1].get("type") or render_sections[i + 1].get("name") or "verse"
+            )
+            if (
+                _derive_section_type(from_raw) in _SIGNIFICANT_SECTIONS
+                or _derive_section_type(to_raw) in _SIGNIFICANT_SECTIONS
+            ):
+                has_significant_boundaries = True
+                break
+
+    if not boundaries and has_significant_boundaries:
+        return _record_fallback(
+            "Drop plan is empty but render plan has significant section boundaries"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Guard 3: error-severity validation issues                            #
+    # ------------------------------------------------------------------ #
+    all_issues = list(drop_shadow_result.get("warnings") or [])
+    error_issues = [i for i in all_issues if i.get("severity") == "error"]
+    warning_issues = [i for i in all_issues if i.get("severity") != "error"]
+
+    if error_issues:
+        error_summary = "; ".join(
+            i.get("message") or i.get("rule") or "unknown" for i in error_issues
+        )
+        render_plan["drop_plan_summary"] = plan_summary
+        render_plan["drop_validation_warnings"] = all_issues
+        return _record_fallback(
+            f"Drop plan failed validation ({len(error_issues)} error(s)): {error_summary}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Apply: annotate each render section's entry boundary with drop data  #
+    # ------------------------------------------------------------------ #
+
+    # Build a lookup: (from_section, to_section, occurrence_index) → boundary_dict
+    boundary_lookup: dict[tuple, dict] = {}
+    for b in boundaries:
+        key = (
+            b.get("from_section"),
+            b.get("to_section"),
+            int(b.get("occurrence_index") or 0),
+        )
+        boundary_lookup[key] = b
+
+    # Track occurrence counters per (from_type, to_type) pair.
+    occurrence_counters: dict[tuple, int] = {}
+    applied_count = 0
+
+    repeated_hook_score = float(plan_dict.get("repeated_hook_drop_variation_score") or 0.0)
+    render_plan["drop_repeated_hook_variation_score"] = round(repeated_hook_score, 4)
+
+    for i in range(len(render_sections) - 1):
+        from_sec = render_sections[i]
+        to_sec = render_sections[i + 1]
+
+        from_raw = str(from_sec.get("type") or from_sec.get("name") or "verse")
+        to_raw = str(to_sec.get("type") or to_sec.get("name") or "verse")
+        from_type = _derive_section_type(from_raw)
+        to_type = _derive_section_type(to_raw)
+
+        pair = (from_type, to_type)
+        occ = occurrence_counters.get(pair, 0)
+        occurrence_counters[pair] = occ + 1
+
+        boundary = boundary_lookup.get((from_type, to_type, occ))
+        if boundary is None:
+            continue
+
+        # Apply boundary drop data to the entering section.
+        to_sec["primary_drop_event"] = boundary.get("primary_drop_event")
+        to_sec["support_events"] = list(boundary.get("support_events") or [])
+        to_sec["tension_score"] = float(boundary.get("tension_score") or 0.0)
+        to_sec["payoff_score"] = float(boundary.get("payoff_score") or 0.0)
+
+        applied_count += 1
+        logger.info(
+            "DROP_ENGINE_PRIMARY [arr=%d] applied boundary=%r primary_event=%r "
+            "tension=%.2f payoff=%.2f",
+            arrangement_id,
+            boundary.get("boundary_name"),
+            (boundary.get("primary_drop_event") or {}).get("event_type"),
+            float(boundary.get("tension_score") or 0.0),
+            float(boundary.get("payoff_score") or 0.0),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Metadata                                                             #
+    # ------------------------------------------------------------------ #
+    render_plan["drop_plan_summary"] = plan_summary
+    render_plan["drop_validation_warnings"] = warning_issues
+    render_plan["drop_primary_used"] = True
+
+    log_feature_event(
+        logger,
+        event="drop_primary_applied",
+        correlation_id=correlation_id,
+        arrangement_id=arrangement_id,
+        boundaries_applied=applied_count,
+        total_drop_count=int(plan_dict.get("total_drop_count") or 0),
+        repeated_hook_variation_score=round(repeated_hook_score, 4),
+        validation_warning_count=len(warning_issues),
+    )
+
+    logger.info(
+        "DROP_ENGINE_PRIMARY [arr=%d] promoted — %d boundaries annotated, "
+        "%d validation warnings",
+        arrangement_id,
+        applied_count,
+        len(warning_issues),
+    )
+
+    return render_plan
+
+
 def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = None):
     """
     Background job to generate an arrangement.
@@ -5714,16 +5986,35 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_ai_fallback_used"] = _ai_result.get("fallback_used", False)
 
         # ====================================================================
-        # DROP ENGINE SHADOW: drop design planning for observability.
-        # Runs DropEnginePlanner + DropValidator against the finalised
-        # render-plan sections.  Results are stored in render_plan under:
+        # DROP ENGINE: shadow planning + optional primary promotion.
+        #
+        # The shadow pass always runs when DROP_ENGINE_SHADOW=true OR when
+        # DROP_ENGINE_PRIMARY=true (primary requires the plan).  Results are
+        # stored in render_plan under:
         #   _drop_plan           — serialised DropPlan
         #   _drop_scores         — per-boundary tension/payoff scores
         #   _drop_warnings       — DropValidationIssue dicts
         #   _drop_fallback_used  — bool
-        # Does NOT drive live rendering (shadow mode only).
+        #
+        # Primary promotion (DROP_ENGINE_PRIMARY=true):
+        #   - primary_drop_event, support_events, tension_score, payoff_score
+        #     from each DropBoundaryPlan are applied to the entering render-plan
+        #     section so the render path can consume them as authoritative
+        #     boundary/drop instructions.
+        #   - drop_repeated_hook_variation_score is stored at the plan level.
+        #   - Compatible with Timeline, Pattern Variation, Groove, and Decision
+        #     primary outputs — only drop boundary fields are added; section
+        #     structure is preserved.
+        #   - Falls back to current live behaviour if build fails, plan is empty
+        #     when significant transitions exist, or validator reports errors.
+        # Does NOT make Motif or AI Producer primary.
         # ====================================================================
-        if settings.feature_drop_engine_shadow:
+        _drop_result: dict = {}
+        _run_drop_shadow = (
+            settings.feature_drop_engine_shadow
+            or settings.feature_drop_engine_primary
+        )
+        if _run_drop_shadow:
             _drop_source_quality = "stereo_fallback"
             if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
                 _drop_source_quality = str(
@@ -5754,6 +6045,19 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_drop_scores"] = _drop_result.get("scores")
             render_plan["_drop_warnings"] = _drop_result.get("warnings", [])
             render_plan["_drop_fallback_used"] = _drop_result.get("fallback_used", False)
+
+        # Promote Drop Engine to primary boundary/payoff planner when enabled.
+        # This must run after the shadow pass (which builds the plan) and after
+        # all other primary promotions (Timeline, Pattern Variation, Groove,
+        # Decision) so it annotates the final active-role set but before the
+        # render plan is persisted to the database.
+        if settings.feature_drop_engine_primary:
+            render_plan = _apply_drop_engine_primary(
+                render_plan=render_plan,
+                drop_shadow_result=_drop_result,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+            )
 
         # ====================================================================
         # MOTIF ENGINE SHADOW: motif identity planning for observability.
