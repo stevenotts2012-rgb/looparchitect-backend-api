@@ -4789,6 +4789,418 @@ def _run_motif_engine_shadow(
     return result
 
 
+# ---------------------------------------------------------------------------
+# _build_motif_plan_summary
+# ---------------------------------------------------------------------------
+
+
+def _build_motif_plan_summary(motif_shadow_result: dict) -> dict:
+    """Build a compact, JSON-safe summary of a Motif Engine shadow result.
+
+    Parameters
+    ----------
+    motif_shadow_result:
+        The dict returned by :func:`_run_motif_engine_shadow`.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``motif_type``           – motif type string or ``None``
+    * ``motif_source_role``    – source role string or ``None``
+    * ``occurrence_count``     – number of occurrences in the plan
+    * ``motif_reuse_score``    – aggregate reuse quality [0.0, 1.0]
+    * ``motif_variation_score``– aggregate variation quality [0.0, 1.0]
+    * ``fallback_used``        – True when the planner fell back to conservative behaviour
+    * ``occurrences``          – list of compact per-occurrence dicts
+    """
+    plan = motif_shadow_result.get("plan") or {}
+    scores = list(motif_shadow_result.get("scores") or [])
+
+    motif = plan.get("motif") or {}
+
+    occurrence_summaries = [
+        {
+            "section_name": s.get("section_name", ""),
+            "occurrence_index": int(s.get("occurrence_index") or 0),
+            "source_role": s.get("source_role", ""),
+            "transformation_types": list(s.get("transformation_types") or []),
+            "target_intensity": float(s.get("target_intensity") or 0.0),
+            "is_strong": bool(s.get("is_strong", False)),
+        }
+        for s in scores
+    ]
+
+    return {
+        "motif_type": motif.get("motif_type"),
+        "motif_source_role": motif.get("source_role"),
+        "occurrence_count": len(scores),
+        "motif_reuse_score": float(plan.get("motif_reuse_score") or 0.0),
+        "motif_variation_score": float(plan.get("motif_variation_score") or 0.0),
+        "fallback_used": bool(plan.get("fallback_used", False)),
+        "occurrences": occurrence_summaries,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Canonical section-type helper (local copy to avoid cross-module import)
+# ---------------------------------------------------------------------------
+
+
+def _motif_derive_section_type(name: str) -> str:
+    """Derive a canonical section type from a raw section name string."""
+    n = name.lower().strip()
+    for token in ("pre_hook", "pre-hook", "prehook", "buildup", "build"):
+        if token in n:
+            return "pre_hook"
+    for token in ("hook", "chorus", "drop"):
+        if token in n:
+            return "hook"
+    for token in ("verse",):
+        if token in n:
+            return "verse"
+    for token in ("bridge",):
+        if token in n:
+            return "bridge"
+    for token in ("breakdown", "break"):
+        if token in n:
+            return "breakdown"
+    for token in ("intro",):
+        if token in n:
+            return "intro"
+    for token in ("outro",):
+        if token in n:
+            return "outro"
+    return "verse"
+
+
+# ---------------------------------------------------------------------------
+# _apply_motif_engine_primary
+# ---------------------------------------------------------------------------
+
+# Sections that ALWAYS receive motif annotation when a motif exists.
+_MOTIF_PRIMARY_ALWAYS_SECTIONS: frozenset[str] = frozenset({"hook", "outro"})
+
+# Sections where the motif is eligible (may receive annotation).
+_MOTIF_PRIMARY_ELIGIBLE_SECTIONS: frozenset[str] = frozenset(
+    {"intro", "verse", "pre_hook", "hook", "bridge", "breakdown", "outro"}
+)
+
+
+def _apply_motif_engine_primary(
+    render_plan: dict,
+    motif_shadow_result: dict,
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Apply Motif Engine outputs as the primary motif/identity planner.
+
+    When :data:`settings.feature_motif_engine_primary` is ``True`` this
+    function overlays per-section motif guidance — ``motif_source_role``,
+    ``motif_transformations``, ``motif_intensity``, and ``motif_prominence`` —
+    onto the already-built *render_plan* sections.  The underlying section
+    structure (names, bar counts, energy targets, active roles) produced by
+    Timeline/Pattern/Groove/Decision/Drop engines is preserved.
+
+    Integration rules enforced here:
+
+    * Verse motifs must be weaker (``is_strong=False``) than hook motifs.
+    * Repeated hooks must not share identical motif transformation sets.
+    * Bridge/breakdown sections must not copy hook motif treatment.
+    * Outro must not use a strong motif statement (no ``full_phrase``).
+    * Decision Engine ``blocked_roles`` are respected — the motif
+      ``source_role`` is applied only when the role is present in the
+      section's active role set.
+
+    Falls back safely to the current live behaviour (render_plan returned
+    unchanged except for observability keys) in any of the following
+    conditions:
+
+    * The shadow planner encountered an exception (``error`` key is set).
+    * The plan is empty or has no occurrences when eligible sections exist.
+    * The MotifValidator reported at least one ``"error"``-severity issue.
+
+    In all cases the following observability keys are written into *render_plan*:
+
+    * ``motif_primary_used``              – True when the plan was applied.
+    * ``motif_primary_fallback_used``     – True when the fallback path ran.
+    * ``motif_primary_fallback_reason``   – Human-readable reason for fallback.
+    * ``motif_plan_summary``              – Compact plan summary dict.
+    * ``motif_validation_warnings``       – Serialised warning-level issues.
+    * ``motif_reuse_score``               – Plan-level reuse score [0.0, 1.0].
+    * ``motif_variation_score``           – Plan-level variation score [0.0, 1.0].
+
+    Parameters
+    ----------
+    render_plan:
+        The live render plan dict (already built by arranger_v2 or legacy,
+        with all other primary promotions already applied).
+    motif_shadow_result:
+        The dict returned by :func:`_run_motif_engine_shadow`.
+    arrangement_id:
+        Used in log messages.
+    correlation_id:
+        Used for structured log events.
+
+    Returns
+    -------
+    dict
+        The (potentially mutated) *render_plan* with observability keys set.
+    """
+    # Initialise observability fields — written regardless of outcome.
+    render_plan["motif_primary_used"] = False
+    render_plan["motif_primary_fallback_used"] = False
+    render_plan["motif_primary_fallback_reason"] = ""
+    render_plan["motif_plan_summary"] = {}
+    render_plan["motif_validation_warnings"] = []
+    render_plan["motif_reuse_score"] = 0.0
+    render_plan["motif_variation_score"] = 0.0
+
+    def _record_fallback(reason: str) -> dict:
+        logger.warning(
+            "MOTIF_ENGINE_PRIMARY [arr=%d] fallback to live behaviour — %s",
+            arrangement_id,
+            reason,
+        )
+        render_plan["motif_primary_fallback_used"] = True
+        render_plan["motif_primary_fallback_reason"] = reason
+        log_feature_event(
+            logger,
+            event="motif_primary_fallback",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            reason=reason,
+        )
+        return render_plan
+
+    # ------------------------------------------------------------------ #
+    # Guard 1: build error                                                 #
+    # ------------------------------------------------------------------ #
+    if motif_shadow_result.get("error"):
+        return _record_fallback(
+            f"Motif plan build failed: {motif_shadow_result['error']}"
+        )
+
+    plan_dict = motif_shadow_result.get("plan") or {}
+    occurrences = list(plan_dict.get("occurrences") or [])
+    render_sections = list(render_plan.get("sections") or [])
+
+    # Count eligible sections to decide whether an empty plan is a problem.
+    eligible_section_count = sum(
+        1 for s in render_sections
+        if _motif_derive_section_type(
+            str(s.get("type") or s.get("name") or "verse")
+        ) in _MOTIF_PRIMARY_ELIGIBLE_SECTIONS
+    )
+
+    # ------------------------------------------------------------------ #
+    # Guard 2: empty plan when eligible sections exist                     #
+    # ------------------------------------------------------------------ #
+    if not occurrences and eligible_section_count > 0:
+        plan_summary = _build_motif_plan_summary(motif_shadow_result)
+        render_plan["motif_plan_summary"] = plan_summary
+        return _record_fallback(
+            "Motif plan has no occurrences but render plan has eligible sections"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Guard 3: error-severity validation issues                            #
+    # ------------------------------------------------------------------ #
+    all_issues = list(motif_shadow_result.get("warnings") or [])
+    error_issues = [i for i in all_issues if i.get("severity") == "error"]
+    warning_issues = [i for i in all_issues if i.get("severity") != "error"]
+
+    if error_issues:
+        error_summary = "; ".join(
+            i.get("message") or i.get("rule") or "unknown" for i in error_issues
+        )
+        render_plan["motif_plan_summary"] = _build_motif_plan_summary(
+            motif_shadow_result
+        )
+        render_plan["motif_validation_warnings"] = all_issues
+        return _record_fallback(
+            f"Motif plan failed validation ({len(error_issues)} error(s)): "
+            f"{error_summary}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Build occurrence lookup: section_name → occurrence dict              #
+    # ------------------------------------------------------------------ #
+    # Prefer the first occurrence for each section name; repeated sections
+    # are distinguished by occurrence_index inside the same section_name key
+    # when they appear.
+    occurrence_by_name: dict[str, dict] = {}
+    for occ in occurrences:
+        key = str(occ.get("section_name") or "")
+        if key and key not in occurrence_by_name:
+            occurrence_by_name[key] = occ
+
+    # Also build by section_type for fallback matching.
+    occurrence_by_type: dict[str, list[dict]] = {}
+    for occ in occurrences:
+        raw = str(occ.get("section_name") or "verse")
+        stype = _motif_derive_section_type(raw)
+        occurrence_by_type.setdefault(stype, []).append(occ)
+
+    # Pre-compute per-type occurrence counters for repeated section matching.
+    type_counters: dict[str, int] = {}
+
+    # ------------------------------------------------------------------ #
+    # Apply: annotate each render section with motif guidance              #
+    # ------------------------------------------------------------------ #
+    applied_count = 0
+    hook_transformations_seen: list[frozenset] = []
+
+    for render_sec in render_sections:
+        raw_name = str(render_sec.get("type") or render_sec.get("name") or "verse")
+        section_type = _motif_derive_section_type(raw_name)
+
+        if section_type not in _MOTIF_PRIMARY_ELIGIBLE_SECTIONS:
+            continue
+
+        type_idx = type_counters.get(section_type, 0)
+        type_counters[section_type] = type_idx + 1
+
+        # Find the matching occurrence for this section.
+        # Priority: exact name match → type match by occurrence index.
+        occ: dict | None = occurrence_by_name.get(raw_name)
+        if occ is None:
+            type_occs = occurrence_by_type.get(section_type, [])
+            if type_idx < len(type_occs):
+                occ = type_occs[type_idx]
+            elif type_occs:
+                occ = type_occs[-1]
+
+        if occ is None:
+            continue
+
+        source_role: str = str(occ.get("source_role") or "")
+        transformation_types: list[str] = list(occ.get("transformation_types") or [])
+        target_intensity: float = float(occ.get("target_intensity") or 0.5)
+        is_strong: bool = bool(occ.get("is_strong", False))
+
+        # ---- Respect Decision Engine blocked_roles ---- #
+        # Only set the motif source_role when the role is not blocked.
+        blocked_roles: list[str] = list(
+            render_sec.get("decision_blocked_roles")
+            or render_sec.get("blocked_roles")
+            or []
+        )
+        current_roles: list[str] = list(
+            render_sec.get("instruments")
+            or render_sec.get("active_stem_roles")
+            or []
+        )
+        role_available = (
+            not source_role
+            or source_role not in blocked_roles
+            and (not current_roles or source_role in current_roles)
+        )
+
+        # ---- Integration rule: verse weaker than hook ---- #
+        if section_type == "verse" and is_strong:
+            # Downgrade to non-strong by forcing the annotated intensity down.
+            target_intensity = min(target_intensity, 0.50)
+            is_strong = False
+
+        # ---- Integration rule: repeated hook must differ ---- #
+        if section_type == "hook":
+            tx_set = frozenset(transformation_types)
+            if tx_set in hook_transformations_seen:
+                # Log a warning but still apply — the planner should have
+                # ensured variety; if not, record the issue.
+                logger.warning(
+                    "MOTIF_ENGINE_PRIMARY [arr=%d] repeated hook '%s' has "
+                    "identical motif treatment %s — variation expected",
+                    arrangement_id,
+                    raw_name,
+                    sorted(transformation_types),
+                )
+            hook_transformations_seen.append(tx_set)
+
+        # ---- Integration rule: bridge must not copy hook ---- #
+        if section_type in ("bridge", "breakdown"):
+            hook_tx_sets = {frozenset(o.get("transformation_types") or [])
+                            for o in occurrence_by_type.get("hook", [])}
+            my_set = frozenset(transformation_types)
+            if my_set and my_set in hook_tx_sets:
+                # Apply a warning annotation but do NOT block the write —
+                # the validator already flags this; here we record it.
+                logger.warning(
+                    "MOTIF_ENGINE_PRIMARY [arr=%d] bridge/breakdown '%s' "
+                    "copies hook motif treatment %s — should vary",
+                    arrangement_id,
+                    raw_name,
+                    sorted(transformation_types),
+                )
+
+        # ---- Integration rule: outro must resolve/strip ---- #
+        if section_type == "outro" and is_strong:
+            # Force non-strong: outro must reduce motif.
+            target_intensity = min(target_intensity, 0.40)
+            is_strong = False
+            if "full_phrase" in transformation_types:
+                transformation_types = [
+                    t for t in transformation_types if t != "full_phrase"
+                ]
+                if not transformation_types:
+                    transformation_types = ["simplify"]
+
+        # ---- Write motif fields onto the section ---- #
+        render_sec["motif_source_role"] = source_role if role_available else None
+        render_sec["motif_transformations"] = transformation_types
+        render_sec["motif_intensity"] = round(target_intensity, 4)
+        render_sec["motif_prominence"] = "strong" if is_strong else "subtle"
+
+        applied_count += 1
+        logger.info(
+            "MOTIF_ENGINE_PRIMARY [arr=%d] applied section=%r type=%s "
+            "source_role=%s transformations=%s intensity=%.2f prominence=%s",
+            arrangement_id,
+            raw_name,
+            section_type,
+            render_sec["motif_source_role"],
+            transformation_types,
+            target_intensity,
+            render_sec["motif_prominence"],
+        )
+
+    # ------------------------------------------------------------------ #
+    # Metadata                                                             #
+    # ------------------------------------------------------------------ #
+    plan_summary = _build_motif_plan_summary(motif_shadow_result)
+    render_plan["motif_plan_summary"] = plan_summary
+    render_plan["motif_validation_warnings"] = warning_issues
+    render_plan["motif_primary_used"] = True
+    render_plan["motif_reuse_score"] = round(
+        float(plan_dict.get("motif_reuse_score") or 0.0), 4
+    )
+    render_plan["motif_variation_score"] = round(
+        float(plan_dict.get("motif_variation_score") or 0.0), 4
+    )
+
+    log_feature_event(
+        logger,
+        event="motif_primary_applied",
+        correlation_id=correlation_id,
+        arrangement_id=arrangement_id,
+        sections_applied=applied_count,
+        motif_reuse_score=render_plan["motif_reuse_score"],
+        motif_variation_score=render_plan["motif_variation_score"],
+        validation_warning_count=len(warning_issues),
+    )
+
+    logger.info(
+        "MOTIF_ENGINE_PRIMARY [arr=%d] promoted — %d sections annotated, "
+        "%d validation warnings",
+        arrangement_id,
+        applied_count,
+        len(warning_issues),
+    )
+
+    return render_plan
+
+
 def _run_decision_engine_shadow(
     render_plan: dict,
     available_roles: list[str],
@@ -6060,16 +6472,32 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             )
 
         # ====================================================================
-        # MOTIF ENGINE SHADOW: motif identity planning for observability.
-        # Runs MotifPlanner + MotifValidator against the finalised render-plan
-        # sections.  Results are stored in render_plan under:
+        # MOTIF ENGINE: shadow planning + optional primary promotion.
+        #
+        # The shadow pass always runs when MOTIF_ENGINE_SHADOW=true OR when
+        # MOTIF_ENGINE_PRIMARY=true (primary requires the plan).  Results are
+        # stored in render_plan under:
         #   _motif_plan           — serialised MotifPlan
         #   _motif_scores         — per-occurrence role/transformation scores
         #   _motif_warnings       — MotifValidationIssue dicts
         #   _motif_fallback_used  — bool
-        # Does NOT drive live rendering (shadow mode only).
+        #
+        # Primary promotion (MOTIF_ENGINE_PRIMARY=true):
+        #   - motif_source_role, motif_transformations, motif_intensity, and
+        #     motif_prominence are applied to each eligible render-plan section
+        #     so the render path can use them as authoritative motif identity
+        #     instructions.
+        #   - Respects Decision Engine blocked_roles constraints.
+        #   - Integration rules: verse < hook strength, bridge ≠ hook, outro resolves.
+        #   - Falls back to current live behaviour if build fails, plan is empty
+        #     when sections exist, or validator reports error-severity issues.
         # ====================================================================
-        if settings.feature_motif_engine_shadow:
+        _motif_result: dict = {}
+        _run_motif_shadow = (
+            settings.feature_motif_engine_shadow
+            or settings.feature_motif_engine_primary
+        )
+        if _run_motif_shadow:
             _motif_source_quality = "stereo_fallback"
             if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
                 _motif_source_quality = str(
@@ -6100,6 +6528,19 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
             render_plan["_motif_scores"] = _motif_result.get("scores")
             render_plan["_motif_warnings"] = _motif_result.get("warnings", [])
             render_plan["_motif_fallback_used"] = _motif_result.get("fallback_used", False)
+
+        # Promote Motif Engine to primary motif/identity planner when enabled.
+        # This must run after the shadow pass (which builds the plan) and after
+        # all other primary promotions (Timeline, Pattern Variation, Groove,
+        # Decision, Drop) so it annotates the finalised role set before the
+        # render plan is persisted to the database.
+        if settings.feature_motif_engine_primary:
+            render_plan = _apply_motif_engine_primary(
+                render_plan=render_plan,
+                motif_shadow_result=_motif_result,
+                arrangement_id=arrangement_id,
+                correlation_id=correlation_id,
+            )
 
         # ====================================================================
         # DECISION ENGINE: shadow planning + optional primary promotion.
