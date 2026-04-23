@@ -175,12 +175,13 @@ class TestBuildOpenApiServers:
     def test_includes_public_url_when_available(self):
         from app.main import _build_openapi_servers
 
-        with patch("app.main._get_public_base_url", return_value="https://myapp.railway.app"), \
+        expected_url = "https://myapp.railway.app"
+        with patch("app.main._get_public_base_url", return_value=expected_url), \
              patch("app.main._is_railway_environment", return_value=True):
             servers = _build_openapi_servers()
 
         urls = [s["url"] for s in servers]
-        assert "https://myapp.railway.app" in urls
+        assert expected_url in urls
 
     def test_always_includes_localhost(self):
         from app.main import _build_openapi_servers
@@ -203,12 +204,13 @@ class TestBuildOpenApiServers:
     def test_public_url_description_railway(self):
         from app.main import _build_openapi_servers
 
-        with patch("app.main._get_public_base_url", return_value="https://myapp.railway.app"), \
+        expected_url = "https://myapp.railway.app"
+        with patch("app.main._get_public_base_url", return_value=expected_url), \
              patch("app.main._is_railway_environment", return_value=True):
             servers = _build_openapi_servers()
 
         production_entry = next(
-            (s for s in servers if s["url"] == "https://myapp.railway.app"), None
+            (s for s in servers if s["url"] == expected_url), None
         )
         assert production_entry is not None
         assert "Railway" in production_entry["description"]
