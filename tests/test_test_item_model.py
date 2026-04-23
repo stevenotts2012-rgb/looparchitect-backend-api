@@ -1,7 +1,7 @@
 """
 Tests for app/models/test_model.py – the TestItem SQLAlchemy model.
 
-This file has 0% coverage because it is a model definition that was never
+This file had 0% coverage because it is a model definition that was never
 imported or exercised by any test.  These tests bring it to full coverage by:
 - Importing and inspecting the class
 - Creating/querying TestItem rows via an in-memory SQLite database
