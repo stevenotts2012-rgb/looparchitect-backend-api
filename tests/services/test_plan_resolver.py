@@ -159,9 +159,13 @@ def test_skipped_actions_recorded():
     resolver = GenreAwarePlanResolver(render_plan, available_roles=["drums", "bass"])
     plan = resolver.resolve()
     assert isinstance(plan.resolver_skipped_actions, list)
-    # The no-op for 'nonexistent_role' should be recorded
-    skipped_actions = [s.get("proposed_action", "") for s in plan.resolver_skipped_actions]
-    assert any("nonexistent_role" in a for a in skipped_actions)
+    # The no-op for 'nonexistent_role' should be recorded with correct structure
+    assert len(plan.resolver_skipped_actions) > 0
+    skipped = plan.resolver_skipped_actions[0]
+    assert skipped["engine_name"] == "decision"
+    assert "nonexistent_role" in skipped["proposed_action"]
+    assert skipped["section_name"] == "Verse 1"
+    assert skipped["reason_skipped"] != ""
 
 
 def test_fallback_on_empty_plan():

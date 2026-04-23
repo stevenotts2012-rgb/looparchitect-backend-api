@@ -67,14 +67,13 @@ def test_deterministic_seed(sel):
 
 
 def test_different_seed_may_differ(sel):
-    """With multiple candidates, different seeds can produce different templates."""
-    # melodic_richness > 0.6 AND energy > 0.7 gives two candidates: trap_C and trap_B
-    results = {
-        sel.select("trap", "dark", 0.8, 0.8, 0.5, variation_seed=s).template_id
-        for s in range(4)
-    }
-    # At least two different results should be possible
-    assert len(results) >= 1  # At minimum it's deterministic; ideally > 1
+    """With multiple candidates, different seeds produce different templates."""
+    # melodic_richness > 0.6 → trap_C, loop_density < 0.35 → trap_D: two candidates
+    # seed 0 → candidates[0 % 2] = trap_C, seed 1 → candidates[1 % 2] = trap_D
+    t0 = sel.select("trap", "dark", 0.5, 0.8, 0.2, variation_seed=0)
+    t1 = sel.select("trap", "dark", 0.5, 0.8, 0.2, variation_seed=1)
+    # With two candidates, seeds 0 and 1 must produce different results
+    assert t0.template_id != t1.template_id
 
 
 def test_drill_gets_valid_template(sel):
