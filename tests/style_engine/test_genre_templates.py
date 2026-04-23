@@ -318,8 +318,9 @@ class TestSelectorMetadata:
 class TestGenreSpecificBehaviours:
     def test_trap_dark_context_selects_trap_D_or_trap_A(self) -> None:
         """With dark vibe and low melodic richness, selector should favour
-        trap_D (dark minimal) or trap_A (classic).  We assert the result is
-        one of the dark-vibe templates across a range of seeds."""
+        trap_D (dark minimal), trap_A (classic), or trap_B (dark hook-heavy).
+        We assert the result is one of these dark-vibe templates across a
+        range of seeds."""
         dark_friendly = {"trap_D", "trap_A", "trap_B"}
         seen: set[str] = set()
         for seed in range(50):
