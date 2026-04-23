@@ -368,6 +368,38 @@ class Settings(BaseSettings):
         validation_alias="DROP_ENGINE_PRIMARY",
     )
 
+    # Motif Engine Primary Mode — promotes the Motif Engine from shadow mode to
+    # the primary motif/identity planner for cross-section melodic cohesion.
+    # When enabled, MotifPlan outputs (motif_source_role, motif_transformations,
+    # motif_intensity) are applied to each live render-plan section AFTER all
+    # other primary passes (Timeline, Pattern, Groove, Decision, Drop) so the
+    # arrangement gains a reusable melodic identity layer without disrupting
+    # structural decisions already made.
+    #
+    # Integration rules enforced in primary mode:
+    #   - Repeated hooks must not use identical motif treatment.
+    #   - Verse motifs must be simpler (weaker) than hook motifs.
+    #   - Bridge must not reuse hook motif treatment directly.
+    #   - Outro must resolve or strip motif (no full_phrase strong statement).
+    #
+    # Decision Engine constraints are always respected:
+    #   - blocked_roles from Decision Engine are not overwritten.
+    #   - Motif source_role is only written if the role is present in the section.
+    #
+    # The shadow pass (MOTIF_ENGINE_SHADOW) is automatically enabled when this
+    # flag is set so both share the same planning pass.
+    # Falls back to the current live behaviour (no motif fields injected) if:
+    #   - the Motif Engine raised an exception
+    #   - the resulting plan is empty when sections exist and motifs should appear
+    #   - the MotifValidator reports any error-severity issues
+    #
+    # Rollback: set MOTIF_ENGINE_PRIMARY=false — no code deployment required.
+    # Enable with MOTIF_ENGINE_PRIMARY=true.
+    feature_motif_engine_primary: bool = Field(
+        default=False,
+        validation_alias="MOTIF_ENGINE_PRIMARY",
+    )
+
     # -----------------------------------------------------------------------
     # Shadow-engine live-mode cutover flags
     #
@@ -573,6 +605,7 @@ class Settings(BaseSettings):
         "feature_ai_producer_system_live",
         "feature_decision_engine_primary",
         "feature_drop_engine_primary",
+        "feature_motif_engine_primary",
         mode="before",
     )
     @classmethod
