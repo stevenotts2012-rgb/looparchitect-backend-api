@@ -473,8 +473,12 @@ class TestApplyDropEnginePrimary:
         render_plan = self._render_plan()
         empty_shadow = {
             "error": None,
-            "plan": {"boundaries": [], "total_drop_count": 0,
-                     "repeated_hook_drop_variation_score": 0.5, "fallback_used": False},
+            "plan": {
+                "boundaries": [],
+                "total_drop_count": 0,
+                "repeated_hook_drop_variation_score": 0.5,
+                "fallback_used": False,
+            },
             "scores": [],
             "warnings": [],
             "fallback_used": False,
@@ -554,8 +558,12 @@ class TestApplyDropEnginePrimary:
         render_plan = {"sections": []}
         shadow = {
             "error": None,
-            "plan": {"boundaries": [], "total_drop_count": 0,
-                     "repeated_hook_drop_variation_score": 0.5, "fallback_used": False},
+            "plan": {
+                "boundaries": [],
+                "total_drop_count": 0,
+                "repeated_hook_drop_variation_score": 0.5,
+                "fallback_used": False,
+            },
             "scores": [],
             "warnings": [],
         }

@@ -5293,7 +5293,6 @@ def _apply_drop_engine_primary(
       (the ``to_section``).
     * Section structure (names, bar counts, roles, energy targets) produced by
       Timeline/Pattern/Groove/Decision engines is preserved.
-    * Motif and AI Producer shadow outputs are NOT consumed here.
 
     Falls back safely to the current live behaviour (render_plan returned
     unchanged except for observability keys) in any of the following conditions:
@@ -5371,6 +5370,9 @@ def _apply_drop_engine_primary(
     boundaries = list(plan_dict.get("boundaries") or [])
     render_sections = list(render_plan.get("sections") or [])
 
+    # Build the plan summary once; reused in both fallback and success paths.
+    plan_summary = _build_drop_plan_summary(drop_shadow_result)
+
     # ------------------------------------------------------------------ #
     # Guard 2: empty plan when significant boundaries exist                #
     # ------------------------------------------------------------------ #
@@ -5406,7 +5408,7 @@ def _apply_drop_engine_primary(
         error_summary = "; ".join(
             i.get("message") or i.get("rule") or "unknown" for i in error_issues
         )
-        render_plan["drop_plan_summary"] = _build_drop_plan_summary(drop_shadow_result)
+        render_plan["drop_plan_summary"] = plan_summary
         render_plan["drop_validation_warnings"] = all_issues
         return _record_fallback(
             f"Drop plan failed validation ({len(error_issues)} error(s)): {error_summary}"
@@ -5470,7 +5472,7 @@ def _apply_drop_engine_primary(
     # ------------------------------------------------------------------ #
     # Metadata                                                             #
     # ------------------------------------------------------------------ #
-    render_plan["drop_plan_summary"] = _build_drop_plan_summary(drop_shadow_result)
+    render_plan["drop_plan_summary"] = plan_summary
     render_plan["drop_validation_warnings"] = warning_issues
     render_plan["drop_primary_used"] = True
 
