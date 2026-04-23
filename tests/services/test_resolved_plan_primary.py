@@ -175,23 +175,20 @@ class TestApplyResolvedPlanPrimary:
         assert "pads" not in instruments
 
     def test_mismatch_counted_when_blocked_role_still_active(self):
-        # Force a situation where the final_active_roles *also* includes the
-        # blocked role so subtraction can't fully remove it (edge case guard).
-        # Because the blocked list is applied AFTER active_roles is set, any role
-        # that ends up listed in both final_active_roles and final_blocked_roles
-        # should NOT survive — but this test validates the detection path by
-        # crafting a scenario where the pre-active-roles merge already included
-        # the role.  We manually keep the role in instruments to simulate a
-        # mismatch and check that it's detected.
-        raw = _raw_section(instruments=["drums", "bass"])
+        # A render_mismatch occurs when the resolver places the same role in
+        # BOTH final_active_roles AND final_blocked_roles — an inconsistency in
+        # the resolved plan.  blocked_roles takes precedence (role is removed)
+        # but the conflict is counted as a mismatch.
+        raw = _raw_section(instruments=["drums", "bass", "melody"])
         res = _resolved_section(
-            final_active_roles=["drums", "bass"],
-            final_blocked_roles=["nonexistent_role"],  # role not in instruments
+            final_active_roles=["drums", "bass", "melody"],
+            final_blocked_roles=["melody"],  # melody is in both → inconsistency
         )
         render_plan, resolved_dict = _make_plan([raw], [res])
-        # A blocked role that was never in instruments → no mismatch (it was already absent)
         _, _, mismatch_count = _apply_resolved_plan_primary(render_plan, resolved_dict)
-        assert mismatch_count == 0
+        assert mismatch_count == 1
+        # The blocked role must still be removed despite the mismatch
+        assert "melody" not in render_plan["sections"][0]["instruments"]
 
     # -- reentry roles --------------------------------------------------------
 

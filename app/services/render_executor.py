@@ -504,16 +504,23 @@ def _apply_resolved_plan_primary(
                 raw_sec["instruments"] = new_instruments
                 raw_sec["active_stem_roles"] = new_instruments
 
-                # Mismatch detection: did any blocked role survive?
-                for role in final_blocked_roles:
-                    if role in new_instruments:
-                        mismatch_count += 1
-                        logger.warning(
-                            "render_mismatch section='%s': blocked role '%s' is still "
-                            "present in active instruments after subtraction",
-                            section_name,
-                            role,
-                        )
+                # Mismatch / no-op detection: a role is a no-op mismatch when
+                # the resolver listed it in BOTH final_active_roles AND
+                # final_blocked_roles — the plan is internally inconsistent.
+                # blocked_roles takes precedence (role is removed), but the
+                # conflict is surfaced as a render_mismatch event so operators
+                # can diagnose resolver bugs.
+                if final_active_roles is not None:
+                    for role in final_blocked_roles:
+                        if role in final_active_roles:
+                            mismatch_count += 1
+                            logger.warning(
+                                "render_mismatch section='%s': blocked role '%s' was also "
+                                "in final_active_roles — resolver plan is inconsistent; "
+                                "blocked_roles takes precedence",
+                                section_name,
+                                role,
+                            )
 
             # ------------------------------------------------------------------
             # 3. Reentry roles — roles reintroduced mid-section
