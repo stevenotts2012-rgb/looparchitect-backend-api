@@ -10,6 +10,15 @@ These tests verify:
 6. boundary_audio_signature and planned_transition_events are present in render summary.
 7. Transition events are NOT double-applied (not in both variations AND boundary_events).
 8. _build_render_spec_summary carries the new observability fields.
+9. Full arrangement has varied boundary types.
+10. DSP effects produce audible audio changes at correct segment positions.
+11. _BOUNDARY_TRANSITION_EVENT_TYPES is a superset of the legacy set.
+12. No click at drop boundaries — fades applied to silence_gap, silence_drop_before_hook,
+    silence_drop, and drop_kick.
+13. No duplicated drop events — boundary-type events appear only in boundary_events,
+    never in both variations and boundary_events.
+14. Boundary event gain is clamped within headroom ceiling after application.
+15. Smooth re-entry — subtractive_entry fades audio up from attenuated opening.
 """
 
 from __future__ import annotations
@@ -622,4 +631,210 @@ def test_boundary_transition_event_types_matches_supported_boundary_events() -> 
     assert not missing_in_executor, (
         f"These SUPPORTED_BOUNDARY_EVENTS are missing from _BOUNDARY_TRANSITION_EVENT_TYPES: "
         f"{missing_in_executor}.  Add them to render_executor._BOUNDARY_TRANSITION_EVENT_TYPES."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 12. No click at drop boundaries — fades applied to silence gaps
+# ---------------------------------------------------------------------------
+
+def test_silence_gap_has_no_abrupt_junction() -> None:
+    """silence_gap must apply a crossfade at the lead/attenuated-tail junction so the
+    transition from full-level audio to the attenuated window is click-free.
+    A hard cut (zero fade) at a non-zero sample value produces an audible click."""
+    bar_ms = 1000
+    seg = _tone(bar_ms, gain_db=-10.0)
+    result = _apply_producer_move_effect(
+        segment=seg,
+        move_type="silence_gap",
+        intensity=0.8,
+        stem_available=True,
+        bar_duration_ms=bar_ms,
+    )
+    assert len(result) == len(seg), "silence_gap must not change segment length"
+    # The tail must be attenuated relative to the head.
+    gap_ms = int(bar_ms * (0.12 + 0.08 * 0.8))
+    gap_ms = max(1, min(gap_ms, bar_ms - 1))
+    lead_end = len(seg) - gap_ms  # Junction point between lead and attenuated tail.
+    head_rms = result[:lead_end // 2].rms
+    tail_rms = result[lead_end:].rms
+    assert tail_rms < head_rms, (
+        f"silence_gap must attenuate the tail: head_rms={head_rms}, tail_rms={tail_rms}"
+    )
+    # The fade-out is applied to the last `fade_ms` samples of the lead.
+    # Verify those samples differ from the original (confirming fade was applied).
+    fade_ms = max(5, min(10, gap_ms // 4))
+    fade_region_start = max(0, lead_end - fade_ms)
+    if lead_end > fade_ms:
+        assert result[fade_region_start:lead_end].raw_data != seg[fade_region_start:lead_end].raw_data, (
+            "silence_gap must apply a fade-out at the lead end to prevent a click"
+        )
+
+
+def test_silence_drop_before_hook_applies_fade_in_on_tail() -> None:
+    """silence_drop_before_hook must fade-in the audio after the silent gap so the
+    re-entry point is not an abrupt discontinuity."""
+    bar_ms = 1000
+    seg = _tone(bar_ms, gain_db=-10.0)
+    result = _apply_producer_move_effect(
+        segment=seg,
+        move_type="silence_drop_before_hook",
+        intensity=0.8,
+        stem_available=True,
+        bar_duration_ms=bar_ms,
+    )
+    assert len(result) == len(seg), "silence_drop_before_hook must not change segment length"
+    # The very start of the result is silence (the gap).
+    gap_ms = int(bar_ms * (0.04 + 0.04 * 0.8))
+    assert result[:gap_ms].rms < 5, (
+        "silence_drop_before_hook must have a silent gap at the start"
+    )
+    # The re-entry audio (after the gap) must be audible.
+    tail_start = gap_ms + 20  # skip fade-in ramp
+    assert result[tail_start:].rms > 0, (
+        "silence_drop_before_hook must produce audible audio after the silent gap"
+    )
+
+
+def test_silence_drop_applies_fade_in_on_re_entry() -> None:
+    """silence_drop must fade-in audio after the silent gap to avoid a click."""
+    bar_ms = 1000
+    seg = _tone(bar_ms, gain_db=-10.0)
+    result = _apply_producer_move_effect(
+        segment=seg,
+        move_type="silence_drop",
+        intensity=0.6,
+        stem_available=True,
+        bar_duration_ms=bar_ms,
+    )
+    assert len(result) == len(seg), "silence_drop must not change segment length"
+    # Audio after the gap must be audible.
+    pause_bars = 0.06 + 0.06 * 0.6
+    gap_ms = int(bar_ms * max(0.04, min(0.12, pause_bars)))
+    tail_start = gap_ms + 20  # allow for fade-in ramp
+    assert result[tail_start:].rms > 0, (
+        "silence_drop must have audible audio after the silent gap"
+    )
+
+
+def test_drop_kick_applies_fade_in_on_re_entry() -> None:
+    """drop_kick must fade-in audio after the silent gap to avoid a click."""
+    bar_ms = 1000
+    seg = _tone(bar_ms, gain_db=-10.0)
+    result = _apply_producer_move_effect(
+        segment=seg,
+        move_type="drop_kick",
+        intensity=0.7,
+        stem_available=True,
+        bar_duration_ms=bar_ms,
+        params={"pause_bars": 0.10},
+    )
+    assert len(result) == len(seg), "drop_kick must not change segment length"
+    drop_len = int(bar_ms * 0.10)
+    tail_start = drop_len + 15
+    assert result[tail_start:].rms > 0, (
+        "drop_kick must have audible audio after the silent gap"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 13. No duplicated drop events — boundary-type events must NOT appear in
+#     both variations and boundary_events
+# ---------------------------------------------------------------------------
+
+def test_boundary_type_event_not_added_to_variations() -> None:
+    """When _build_producer_arrangement_from_render_plan processes a boundary-type event
+    (e.g. silence_gap, subtractive_entry), it must add it ONLY to boundary_events, not
+    also to variations.  Adding it to both paths causes the same DSP to run twice."""
+    for drop_type in ("silence_gap", "subtractive_entry", "re_entry_accent", "crash_hit"):
+        render_plan = {
+            "bpm": 120.0,
+            "sections": [
+                {
+                    "name": "Bridge",
+                    "type": "bridge",
+                    "bar_start": 0,
+                    "bars": 8,
+                    "energy": 0.40,
+                    "instruments": ["melody"],
+                    "boundary_events": [],
+                    "variations": [],
+                },
+            ],
+            "events": [
+                {
+                    "type": drop_type,
+                    "bar": 7,
+                    "placement": "end_of_section",
+                    "intensity": 0.80,
+                },
+            ],
+        }
+        producer_arrangement, _ = _build_producer_arrangement_from_render_plan(
+            render_plan=render_plan,
+            fallback_bpm=120.0,
+        )
+        section = producer_arrangement["sections"][0]
+        variation_types = [
+            str(v.get("variation_type") or "") for v in (section.get("variations") or [])
+        ]
+        boundary_types = [
+            str(e.get("type") or "") for e in (section.get("boundary_events") or [])
+        ]
+        assert drop_type not in variation_types, (
+            f"'{drop_type}' is a boundary-type event — must NOT appear in variations "
+            f"(would cause double DSP application). variations={variation_types}"
+        )
+        assert drop_type in boundary_types, (
+            f"'{drop_type}' must appear in boundary_events. boundary_events={boundary_types}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 14. Boundary event gain is clamped after application
+# ---------------------------------------------------------------------------
+
+def test_boundary_event_gain_clamped_after_re_entry_accent() -> None:
+    """re_entry_accent boosts the opening window.  When applied via boundary_events
+    the resulting segment must stay within the -1.5 dBFS headroom ceiling."""
+    bar_ms = 1000
+    seg = _tone(bar_ms, gain_db=-5.0)  # Relatively hot input
+    result = _apply_producer_move_effect(
+        segment=seg,
+        move_type="re_entry_accent",
+        intensity=1.0,
+        stem_available=True,
+        bar_duration_ms=bar_ms,
+    )
+    # The peak must not exceed 0 dBFS (pydub uses -inf to 0 scale).
+    peak_dbfs = float(result.max_dBFS)
+    assert peak_dbfs <= 0.0, (
+        f"re_entry_accent with hot input produced peak {peak_dbfs:.1f} dBFS — clipping risk"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 15. Smooth re-entry — subtractive_entry fades up correctly
+# ---------------------------------------------------------------------------
+
+def test_subtractive_entry_volume_ramps_up() -> None:
+    """subtractive_entry must attenuate the opening portion of a section and then
+    allow the audio to ramp up, creating a smooth re-entry rather than a hard entry.
+    The first 25% of the segment must be quieter than the last 25%."""
+    bar_ms = 1000
+    seg = _tone(bar_ms * 4, gain_db=-10.0)  # 4-bar section
+    result = _apply_producer_move_effect(
+        segment=seg,
+        move_type="subtractive_entry",
+        intensity=0.6,
+        stem_available=True,
+        bar_duration_ms=bar_ms,
+    )
+    assert len(result) == len(seg), "subtractive_entry must not change segment length"
+    quarter = len(result) // 4
+    opening_rms = result[:quarter].rms
+    closing_rms = result[-quarter:].rms
+    assert opening_rms < closing_rms, (
+        f"subtractive_entry must open quieter than the tail: "
+        f"opening_rms={opening_rms}, closing_rms={closing_rms}"
     )

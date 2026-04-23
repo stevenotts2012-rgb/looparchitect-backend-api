@@ -173,14 +173,29 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         if target is None and normalized_sections:
             target = normalized_sections[-1]
         if target is not None:
-            # Skip adding to variations when the section's boundary_events already
-            # contains an event of the same type (from _apply_stem_primary_section_states).
-            # Adding it to both paths would cause the same DSP to run twice on the
-            # same audio window, stacking transitions on a single boundary.
+            # Boundary transition event types must ONLY go into boundary_events, never
+            # into variations.  Adding a boundary-type event to both paths causes the
+            # same DSP to run twice on the same audio window (double-application),
+            # producing compound silence or stacked gain that sounds like broken audio.
             existing_boundary_types = {
                 str(e.get("type") or "") for e in target.get("boundary_events", [])
             }
-            if event_type not in existing_boundary_types:
+            if event_type in _BOUNDARY_TRANSITION_EVENT_TYPES:
+                # Register only in boundary_events (single application path).
+                if event_type not in existing_boundary_types:
+                    target.setdefault("boundary_events", []).append(
+                        {
+                            "type": event_type,
+                            "bar": event_bar,
+                            "placement": event.get("placement"),
+                            "boundary": event.get("boundary"),
+                            "intensity": float(event.get("intensity", 0.7) or 0.7),
+                            "params": event.get("params") if isinstance(event.get("params"), dict) else {},
+                        }
+                    )
+            else:
+                # Non-boundary event types (stem enables, gain changes, etc.) go into
+                # variations as before.
                 target["variations"].append(
                     {
                         "bar": event_bar,
@@ -188,17 +203,6 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
                         "intensity": float(event.get("intensity", 0.7) or 0.7),
                         "duration_bars": event.get("duration_bars"),
                         "description": event.get("description", ""),
-                        "params": event.get("params") if isinstance(event.get("params"), dict) else {},
-                    }
-                )
-            if event_type in _BOUNDARY_TRANSITION_EVENT_TYPES and event_type not in existing_boundary_types:
-                target.setdefault("boundary_events", []).append(
-                    {
-                        "type": event_type,
-                        "bar": event_bar,
-                        "placement": event.get("placement"),
-                        "boundary": event.get("boundary"),
-                        "intensity": float(event.get("intensity", 0.7) or 0.7),
                         "params": event.get("params") if isinstance(event.get("params"), dict) else {},
                     }
                 )
