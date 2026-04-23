@@ -100,6 +100,9 @@ class ResolvedSection:
     phrase_plan: Optional[dict] = None
     hook_evolution: Optional[str] = None
     variations: List[dict] = field(default_factory=list)
+    # Instrument Activation Rules metadata (populated by FinalPlanResolver when rules are applied).
+    rule_snapshot: Optional[Dict[str, Any]] = None
+    target_fullness: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -120,6 +123,10 @@ class ResolvedSection:
             "phrase_plan": self.phrase_plan,
             "hook_evolution": self.hook_evolution,
             "variations": list(self.variations),
+            "rule_snapshot": self.rule_snapshot,
+            "target_fullness": self.target_fullness,
+            "active_roles_count": len(self.final_active_roles),
+            "blocked_roles_count": len(self.final_blocked_roles),
         }
 
 
@@ -159,6 +166,10 @@ class ResolvedRenderPlan:
     render_profile: Dict[str, Any] = field(default_factory=dict)
     resolver_version: int = 1
     noop_annotations: List[dict] = field(default_factory=list)
+    # Instrument Activation Rules observability.
+    rules_applied: bool = False
+    rule_set_version: Optional[str] = None
+    rule_modifiers: Dict[str, Any] = field(default_factory=dict)
 
     # ---------------------------------------------------------------------------
     # Convenience properties
@@ -203,4 +214,7 @@ class ResolvedRenderPlan:
             "resolved_sections": [s.to_dict() for s in self.resolved_sections],
             "final_section_role_map": self.final_section_role_map,
             "noop_annotations": list(self.noop_annotations),
+            "rules_applied": self.rules_applied,
+            "rule_set_version": self.rule_set_version,
+            "rule_modifiers": dict(self.rule_modifiers),
         }
