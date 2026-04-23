@@ -574,12 +574,16 @@ class TestMotifIntegrationRules:
                 )
 
     def test_verse_intensity_at_most_half(self):
-        """If verse occurrence would have been strong, intensity is capped at 0.50."""
+        """Verse motif_intensity must be <= 0.50 (verse is never a strong motif statement)."""
         result = self._apply_primary()
         for section in result["sections"]:
             raw = str(section.get("type") or section.get("name") or "")
             if "verse" in raw.lower() and "motif_intensity" in section:
-                assert section["motif_intensity"] <= 0.50 or section.get("motif_prominence") != "strong"
+                # Verse motifs are always downgraded — intensity must never exceed 0.50.
+                assert section["motif_intensity"] <= 0.50, (
+                    f"Verse section '{raw}' motif_intensity={section['motif_intensity']} > 0.50 — "
+                    f"verse motif must not be as strong as hook motif"
+                )
 
     def test_hook_sections_receive_motif_fields(self):
         """Hooks must always receive motif annotation when a motif exists."""
