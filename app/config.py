@@ -315,6 +315,35 @@ class Settings(BaseSettings):
         validation_alias="DECISION_ENGINE_SHADOW",
     )
 
+    # Decision Engine Primary Mode — promotes the Decision Engine from shadow mode
+    # to the controller layer ABOVE Timeline, Pattern Variation, and Groove engines.
+    # When enabled, DecisionPlan outputs (blocked_roles, target_fullness,
+    # required_reentries, allow_full_stack, protected_roles) are applied to the
+    # live render-plan sections AFTER Timeline/Pattern/Groove primary passes,
+    # shaping active roles, suppressed roles, and density targets so arrangements
+    # gain real contrast and payoff.
+    #
+    # Integration rules enforced in primary mode:
+    #   - Verse 1 must not be full stack unless source material is too limited.
+    #   - Pre-hook must subtract at least one anchor role when possible.
+    #   - Hooks should reintroduce withheld material for payoff.
+    #   - Bridge enforces a reset (sparse/medium, no full stack).
+    #   - Outro enforces reduction/resolution.
+    #
+    # Does NOT replace Timeline Engine as the primary structural planner.
+    # Does NOT make Drop, Motif, or AI Producer primary.
+    # Falls back to the current live behaviour (no decision fields applied) if:
+    #   - the Decision Engine raised an exception
+    #   - the resulting plan is empty when sections exist
+    #   - the DecisionValidator reports any critical issues
+    #
+    # Rollback: set DECISION_ENGINE_PRIMARY=false — no code deployment required.
+    # Enable with DECISION_ENGINE_PRIMARY=true.
+    feature_decision_engine_primary: bool = Field(
+        default=False,
+        validation_alias="DECISION_ENGINE_PRIMARY",
+    )
+
     # -----------------------------------------------------------------------
     # Shadow-engine live-mode cutover flags
     #
@@ -518,6 +547,7 @@ class Settings(BaseSettings):
         "feature_pattern_variation_primary",
         "feature_groove_engine_primary",
         "feature_ai_producer_system_live",
+        "feature_decision_engine_primary",
         mode="before",
     )
     @classmethod
