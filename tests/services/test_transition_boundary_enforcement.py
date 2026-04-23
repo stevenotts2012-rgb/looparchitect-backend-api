@@ -686,7 +686,7 @@ def test_silence_drop_before_hook_applies_fade_in_on_tail() -> None:
     assert len(result) == len(seg), "silence_drop_before_hook must not change segment length"
     # The very start of the result is silence (the gap).
     gap_ms = int(bar_ms * (0.04 + 0.04 * 0.8))
-    assert result[:gap_ms].rms == 0 or result[:gap_ms].rms < 5, (
+    assert result[:gap_ms].rms < 5, (
         "silence_drop_before_hook must have a silent gap at the start"
     )
     # The re-entry audio (after the gap) must be audible.

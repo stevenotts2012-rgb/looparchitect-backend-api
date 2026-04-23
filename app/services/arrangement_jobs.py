@@ -1496,11 +1496,11 @@ def _apply_producer_move_effect(
 
     if move_type == "silence_drop":
         # Keep gap short (≤ 0.12 bars) so it sounds like a "breath" rather than broken audio.
-        # Safe fades (5–10 ms) prevent clicks at non-zero sample crossings.
+        # A safe fade-in (5–10 ms) after the silent window prevents a click at the
+        # silence-to-audio re-entry point where the sample value jumps from zero.
         pause_bars = float(params.get("pause_bars", 0.06 + (0.06 * intensity)) or (0.06 + (0.06 * intensity)))
         gap_ms = int(min(len(segment), bar_duration_ms * max(0.04, min(0.12, pause_bars))))
         fade_ms = max(5, min(10, gap_ms // 4))
-        head = segment[:gap_ms].fade_out(fade_ms) if gap_ms > fade_ms else segment[:gap_ms]
         tail = segment[gap_ms:].fade_in(fade_ms) if len(segment) > gap_ms + fade_ms else segment[gap_ms:]
         return AudioSegment.silent(duration=gap_ms) + tail
 
