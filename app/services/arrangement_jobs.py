@@ -1451,9 +1451,12 @@ def _apply_producer_move_effect(
         # Brief low-frequency pulse: short high-pass cut at the start to simulate a kick drop.
         # Previously inserted 0.35 bars of silence at bar_start of every verse, making verses
         # sound like they stuttered on playback.  Now applied at a mid-section bar only.
+        # Safe fade-in (5–10 ms) prevents a click at the silence-to-audio boundary.
         pause_bars = float(params.get("pause_bars", 0.12) or 0.12)
         drop_len = int(min(len(segment), bar_duration_ms * max(0.05, pause_bars)))
-        return AudioSegment.silent(duration=drop_len) + segment[drop_len:]
+        fade_ms = max(5, min(10, drop_len // 4))
+        tail = segment[drop_len:].fade_in(fade_ms) if len(segment) > drop_len + fade_ms else segment[drop_len:]
+        return AudioSegment.silent(duration=drop_len) + tail
 
     if move_type == "bass_pause":
         # Cap at 0.12 bars (just under 1/2 beat) so bass briefly dips without
@@ -1493,9 +1496,13 @@ def _apply_producer_move_effect(
 
     if move_type == "silence_drop":
         # Keep gap short (≤ 0.12 bars) so it sounds like a "breath" rather than broken audio.
+        # Safe fades (5–10 ms) prevent clicks at non-zero sample crossings.
         pause_bars = float(params.get("pause_bars", 0.06 + (0.06 * intensity)) or (0.06 + (0.06 * intensity)))
         gap_ms = int(min(len(segment), bar_duration_ms * max(0.04, min(0.12, pause_bars))))
-        return AudioSegment.silent(duration=gap_ms) + segment[gap_ms:]
+        fade_ms = max(5, min(10, gap_ms // 4))
+        head = segment[:gap_ms].fade_out(fade_ms) if gap_ms > fade_ms else segment[:gap_ms]
+        tail = segment[gap_ms:].fade_in(fade_ms) if len(segment) > gap_ms + fade_ms else segment[gap_ms:]
+        return AudioSegment.silent(duration=gap_ms) + tail
 
     if move_type == "pre_hook_mute":
         # Attenuate rather than mute; use a very short window to avoid dead air.
@@ -1555,8 +1562,11 @@ def _apply_producer_move_effect(
 
     if move_type == "silence_drop_before_hook":
         # Very brief dip (≤ 1/16 bar) — enough for dramatic effect without dead air.
+        # Safe fade-in (5–10 ms) after silence prevents a click at the re-entry point.
         gap_ms = int(min(len(segment), bar_duration_ms * (0.04 + 0.04 * intensity)))
+        fade_ms = max(5, min(10, gap_ms // 4))
         tail = segment[gap_ms:] + (2 * intensity)
+        tail = tail.fade_in(fade_ms) if len(tail) > fade_ms else tail
         return AudioSegment.silent(duration=gap_ms) + tail
 
     if move_type == "hat_density_variation":
@@ -1627,11 +1637,19 @@ def _apply_producer_move_effect(
     if move_type == "silence_gap":
         # Brief but noticeable attenuation window — stronger than silence_drop.
         # Used at bridge/breakdown entry to signal density reduction.
+        # A short crossfade (5–10 ms) at the lead/tail junction prevents a click
+        # when audio is non-zero at the cut point.
         gap_ms = int(min(len(segment), bar_duration_ms * (0.12 + 0.08 * intensity)))
         gap_ms = max(1, min(gap_ms, max(1, len(segment) - 1)))
+        fade_ms = max(5, min(10, gap_ms // 4))
         lead = segment[:-gap_ms] if gap_ms < len(segment) else AudioSegment.silent(duration=0)
         tail = segment[-gap_ms:] if gap_ms < len(segment) else segment
         attenuated = tail - (14 + 4 * intensity)
+        # Fade-out at end of lead and fade-in on attenuated tail to smooth the junction.
+        if len(lead) >= fade_ms:
+            lead = lead[:-fade_ms] + lead[-fade_ms:].fade_out(fade_ms)
+        if len(attenuated) >= fade_ms:
+            attenuated = attenuated[:fade_ms].fade_in(fade_ms) + attenuated[fade_ms:]
         return lead + attenuated
 
     if move_type == "subtractive_entry":
@@ -2396,6 +2414,10 @@ def _render_producer_arrangement(
                 bar_duration_ms=bar_duration_ms,
                 params=params,
             )
+            # Cap boundary segment level before splicing back — same ceiling applied to
+            # variation segments — to prevent stacking of multiple boundary effects
+            # (e.g. crash_hit + re_entry_accent on the same bar) from causing clipping.
+            boundary_segment = _apply_headroom_ceiling(boundary_segment, target_peak_dbfs=-1.5)
             section_applied_events.append(event_type)
             section_audio = section_audio[:event_start_ms] + boundary_segment + section_audio[event_end_ms:]
         
