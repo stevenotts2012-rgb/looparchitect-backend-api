@@ -536,6 +536,40 @@ class Settings(BaseSettings):
         validation_alias="TRACK_QUALITY_ANALYSIS",
     )
 
+    # Resolved Plan Primary Mode — promotes the ResolvedRenderPlan produced by
+    # FinalPlanResolver from an annotation layer to the primary source of truth
+    # consumed by render_from_plan().
+    #
+    # When enabled (RESOLVED_PLAN_PRIMARY=true), the renderer prioritises:
+    #   - resolved_sections[].final_active_roles  (what actually plays)
+    #   - resolved_sections[].final_blocked_roles (mute/remove layers)
+    #   - resolved_sections[].final_reentries     (roles reintroduced mid-section)
+    #   - resolved_sections[].final_boundary_events (drop/transition behaviour)
+    #   - resolved_sections[].final_pattern_events  (intra-section pattern variation)
+    #   - resolved_sections[].final_groove_events   (groove engine events)
+    #   - resolved_sections[].final_motif_treatment (motif engine treatment)
+    #
+    # Per-field fallback: if any resolved field is absent the legacy value for
+    # that field is kept so a partial resolved plan does not silently break audio.
+    # Structural fallback: if the resolved plan is missing, structurally invalid,
+    # or its section count mismatches the raw plan, the entire primary cutover is
+    # skipped for that render job.
+    #
+    # No-op / mismatch detection: when a resolved plan says to remove a role but
+    # that role is still present in the final active set, the discrepancy is
+    # logged as a render_mismatch event and counted in render_mismatch_count.
+    #
+    # Observability fields added to render_from_plan() return dict:
+    #   - resolved_plan_primary_used         (bool)
+    #   - resolved_plan_primary_fallback_used (bool)
+    #   - render_mismatch_count              (int)
+    #
+    # Rollback: set RESOLVED_PLAN_PRIMARY=false — no code deployment required.
+    feature_resolved_plan_primary: bool = Field(
+        default=False,
+        validation_alias="RESOLVED_PLAN_PRIMARY",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -606,6 +640,7 @@ class Settings(BaseSettings):
         "feature_decision_engine_primary",
         "feature_drop_engine_primary",
         "feature_motif_engine_primary",
+        "feature_resolved_plan_primary",
         mode="before",
     )
     @classmethod

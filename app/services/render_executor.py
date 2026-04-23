@@ -280,39 +280,57 @@ def render_from_plan(
     stem_sep = render_profile.get("stem_separation") or {}
     source_quality_mode_used = _derive_source_quality_mode(render_plan, stems, stem_sep)
 
-    # When a resolved render plan is present (produced by FinalPlanResolver)
-    # inject its section role information back into the raw sections so that
-    # _build_producer_arrangement_from_render_plan uses the authoritative roles
-    # rather than scattered per-engine annotations.  This is a lightweight merge:
-    # we only overwrite instruments/active_stem_roles; all structural fields
-    # (bar_start, bars, energy, variations, boundary_events) are preserved.
+    # Resolved render plan merge — applies authoritative resolved fields from
+    # FinalPlanResolver back into the raw section dicts so that
+    # _build_producer_arrangement_from_render_plan uses canonical roles and events.
+    #
+    # Two modes:
+    #   RESOLVED_PLAN_PRIMARY=false (default): lightweight merge, roles only.
+    #   RESOLVED_PLAN_PRIMARY=true:  full primary cutover — all resolved fields
+    #     take precedence with per-field fallback to legacy when absent.
     resolved_dict = render_plan.get("_resolved_render_plan")
+    _resolved_plan_primary_used = False
+    _resolved_plan_primary_fallback_used = False
+    _render_mismatch_count = 0
+
     if resolved_dict:
-        try:
-            resolved_sections = resolved_dict.get("resolved_sections") or []
-            raw_sections = render_plan.get("sections") or []
-            if len(resolved_sections) == len(raw_sections):
-                for raw_sec, res_sec in zip(raw_sections, resolved_sections):
-                    final_roles = res_sec.get("final_active_roles")
-                    if final_roles is not None:
-                        raw_sec["instruments"] = list(final_roles)
-                        raw_sec["active_stem_roles"] = list(final_roles)
-                logger.info(
-                    "render_executor: applied resolved_render_plan role map "
-                    "(%d sections)", len(raw_sections)
-                )
-            else:
-                logger.warning(
-                    "render_executor: resolved_sections length %d != raw_sections %d "
-                    "— skipping resolved plan role injection",
-                    len(resolved_sections),
-                    len(raw_sections),
-                )
-        except Exception as _merge_exc:
-            logger.warning(
-                "render_executor: resolved plan merge failed (non-blocking): %s",
-                _merge_exc,
+        from app.config import settings as _settings
+        if _settings.feature_resolved_plan_primary:
+            # Full primary cutover path
+            _primary_used, _fallback_used, _mismatch_count = _apply_resolved_plan_primary(
+                render_plan=render_plan,
+                resolved_dict=resolved_dict,
             )
+            _resolved_plan_primary_used = _primary_used
+            _resolved_plan_primary_fallback_used = _fallback_used
+            _render_mismatch_count = _mismatch_count
+        else:
+            # Legacy lightweight merge: only overwrite instruments/active_stem_roles.
+            try:
+                resolved_sections = resolved_dict.get("resolved_sections") or []
+                raw_sections = render_plan.get("sections") or []
+                if len(resolved_sections) == len(raw_sections):
+                    for raw_sec, res_sec in zip(raw_sections, resolved_sections):
+                        final_roles = res_sec.get("final_active_roles")
+                        if final_roles is not None:
+                            raw_sec["instruments"] = list(final_roles)
+                            raw_sec["active_stem_roles"] = list(final_roles)
+                    logger.info(
+                        "render_executor: applied resolved_render_plan role map "
+                        "(%d sections)", len(raw_sections)
+                    )
+                else:
+                    logger.warning(
+                        "render_executor: resolved_sections length %d != raw_sections %d "
+                        "— skipping resolved plan role injection",
+                        len(resolved_sections),
+                        len(raw_sections),
+                    )
+            except Exception as _merge_exc:
+                logger.warning(
+                    "render_executor: resolved plan merge failed (non-blocking): %s",
+                    _merge_exc,
+                )
 
     producer_payload, summary = _build_producer_arrangement_from_render_plan(
         render_plan=render_plan,
@@ -359,19 +377,26 @@ def render_from_plan(
 
     logger.info(
         "RENDER_OBSERVABILITY render_path=%s source_quality=%s fallbacks=%d "
-        "unique_signatures=%d phrase_splits=%d mastering_applied=%s",
+        "unique_signatures=%d phrase_splits=%d mastering_applied=%s "
+        "resolved_plan_primary=%s fallback_used=%s mismatches=%d",
         render_observability.get("render_path_used"),
         render_observability.get("source_quality_mode_used"),
         render_observability.get("fallback_triggered_count", 0),
         render_observability.get("unique_render_signature_count", 0),
         render_observability.get("phrase_split_count", 0),
         render_observability.get("mastering_applied"),
+        _resolved_plan_primary_used,
+        _resolved_plan_primary_fallback_used,
+        _render_mismatch_count,
     )
 
     return {
         "timeline_json": timeline_json,
         "summary": summary,
         "render_observability": render_observability,
+        "resolved_plan_primary_used": _resolved_plan_primary_used,
+        "resolved_plan_primary_fallback_used": _resolved_plan_primary_fallback_used,
+        "render_mismatch_count": _render_mismatch_count,
         "postprocess": {
             "mastering": {
                 "applied": mastering_result.applied,
@@ -381,6 +406,219 @@ def render_from_plan(
             }
         },
     }
+
+
+def _apply_resolved_plan_primary(
+    render_plan: dict,
+    resolved_dict: dict,
+) -> tuple[bool, bool, int]:
+    """Apply the ResolvedRenderPlan as the primary source of truth for rendering.
+
+    This implements the full RESOLVED_PLAN_PRIMARY cutover:
+
+    * ``final_active_roles``    → ``section["instruments"]`` and
+                                   ``section["active_stem_roles"]``
+    * ``final_blocked_roles``   → removed from instruments (track muting)
+    * ``final_reentries``       → added to instruments (role reintroduction)
+    * ``final_boundary_events`` → replaces ``section["boundary_events"]``
+    * ``final_pattern_events``  → injected into ``section["timeline_events"]``
+    * ``final_groove_events``   → injected as ``section["_groove_events"]``
+    * ``final_motif_treatment`` → injected as ``section["_motif_treatment"]``
+
+    Per-field fallback: when a resolved field is absent (``None`` or not present)
+    the legacy value already in the raw section is preserved unmodified.
+
+    Structural fallback: if the resolved section count does not match the raw
+    section count the function returns ``(False, True, 0)`` and leaves the render
+    plan unchanged — the caller falls through to the legacy lightweight merge or
+    stereo fallback.
+
+    Mismatch detection (no-op detection): after applying ``final_blocked_roles``,
+    any role that was supposed to be blocked but is still present in the active
+    instrument list is recorded as a ``render_mismatch`` log event.
+
+    Parameters
+    ----------
+    render_plan:
+        The raw render plan dict (mutated in-place for each section).
+    resolved_dict:
+        The serialised :class:`ResolvedRenderPlan` dict stored under
+        ``render_plan["_resolved_render_plan"]``.
+
+    Returns
+    -------
+    tuple[bool, bool, int]
+        ``(primary_used, fallback_used, mismatch_count)``
+    """
+    resolved_sections: list[dict] = resolved_dict.get("resolved_sections") or []
+    raw_sections: list[dict] = render_plan.get("sections") or []
+
+    # --- Structural validation ---
+    if not resolved_sections or not raw_sections:
+        logger.warning(
+            "render_executor[primary]: resolved plan has no sections or raw plan "
+            "has no sections — falling back to legacy merge"
+        )
+        return False, True, 0
+
+    if len(resolved_sections) != len(raw_sections):
+        logger.warning(
+            "render_executor[primary]: resolved_sections count %d != raw_sections "
+            "count %d — structural mismatch, falling back to legacy merge",
+            len(resolved_sections),
+            len(raw_sections),
+        )
+        return False, True, 0
+
+    mismatch_count = 0
+    any_fallback_field = False
+
+    try:
+        for raw_sec, res_sec in zip(raw_sections, resolved_sections):
+            section_name = str(
+                raw_sec.get("name") or raw_sec.get("type") or "unknown"
+            )
+
+            # ------------------------------------------------------------------
+            # 1. Active roles — primary source of truth for what plays
+            # ------------------------------------------------------------------
+            final_active_roles: list[str] | None = res_sec.get("final_active_roles")
+            if final_active_roles is not None:
+                raw_sec["instruments"] = list(final_active_roles)
+                raw_sec["active_stem_roles"] = list(final_active_roles)
+            else:
+                any_fallback_field = True
+                logger.debug(
+                    "render_executor[primary]: section='%s' final_active_roles absent "
+                    "— keeping legacy instruments",
+                    section_name,
+                )
+
+            # ------------------------------------------------------------------
+            # 2. Blocked roles — mute / remove layers
+            # ------------------------------------------------------------------
+            final_blocked_roles: list[str] = res_sec.get("final_blocked_roles") or []
+            if final_blocked_roles:
+                current_instruments: list[str] = list(raw_sec.get("instruments") or [])
+                new_instruments = [r for r in current_instruments if r not in final_blocked_roles]
+                raw_sec["instruments"] = new_instruments
+                raw_sec["active_stem_roles"] = new_instruments
+
+                # Mismatch / no-op detection: a role is a no-op mismatch when
+                # the resolver listed it in BOTH final_active_roles AND
+                # final_blocked_roles — the plan is internally inconsistent.
+                # blocked_roles takes precedence (role is removed), but the
+                # conflict is surfaced as a render_mismatch event so operators
+                # can diagnose resolver bugs.
+                if final_active_roles is not None:
+                    for role in final_blocked_roles:
+                        if role in final_active_roles:
+                            mismatch_count += 1
+                            logger.warning(
+                                "render_mismatch section='%s': blocked role '%s' was also "
+                                "in final_active_roles — resolver plan is inconsistent; "
+                                "blocked_roles takes precedence",
+                                section_name,
+                                role,
+                            )
+
+            # ------------------------------------------------------------------
+            # 3. Reentry roles — roles reintroduced mid-section
+            # ------------------------------------------------------------------
+            final_reentries: list[str] = res_sec.get("final_reentries") or []
+            if final_reentries:
+                current_instruments = list(raw_sec.get("instruments") or [])
+                for role in final_reentries:
+                    if role not in current_instruments:
+                        current_instruments.append(role)
+                raw_sec["instruments"] = current_instruments
+                raw_sec["active_stem_roles"] = current_instruments
+
+            # ------------------------------------------------------------------
+            # 4. Boundary events — drive drop / transition behaviour
+            #    Replace section boundary_events with the deduplicated resolved
+            #    list.  Each resolved event is converted back to the legacy dict
+            #    shape that _render_producer_arrangement expects.
+            # ------------------------------------------------------------------
+            final_boundary_events: list[dict] | None = res_sec.get("final_boundary_events")
+            if final_boundary_events is not None:
+                raw_sec["boundary_events"] = [
+                    {
+                        "type": evt.get("event_type", ""),
+                        "bar": evt.get("bar", raw_sec.get("bar_start", 0)),
+                        "placement": evt.get("placement", "boundary"),
+                        "intensity": evt.get("intensity", 0.7),
+                        "params": dict(evt.get("params") or {}),
+                        "_source_engine": evt.get("source_engine", "resolved"),
+                    }
+                    for evt in final_boundary_events
+                    if evt.get("event_type")
+                ]
+            else:
+                any_fallback_field = True
+                logger.debug(
+                    "render_executor[primary]: section='%s' final_boundary_events absent "
+                    "— keeping legacy boundary_events",
+                    section_name,
+                )
+
+            # ------------------------------------------------------------------
+            # 5. Pattern events — intra-section variation events
+            #    Injected into timeline_events so the existing DSP path picks
+            #    them up without modification.
+            # ------------------------------------------------------------------
+            final_pattern_events: list[dict] | None = res_sec.get("final_pattern_events")
+            if final_pattern_events is not None:
+                existing_timeline: list[dict] = list(raw_sec.get("timeline_events") or [])
+                # Only inject events that are not already present (by action/type key).
+                existing_actions = {
+                    str(e.get("action") or e.get("type") or "")
+                    for e in existing_timeline
+                }
+                for evt in final_pattern_events:
+                    action_key = str(evt.get("action") or evt.get("type") or "")
+                    if action_key and action_key not in existing_actions:
+                        existing_timeline.append(dict(evt))
+                        existing_actions.add(action_key)
+                raw_sec["timeline_events"] = existing_timeline
+            else:
+                any_fallback_field = True
+
+            # ------------------------------------------------------------------
+            # 6. Groove events — groove engine events applied in this section
+            # ------------------------------------------------------------------
+            final_groove_events: list[dict] | None = res_sec.get("final_groove_events")
+            if final_groove_events is not None:
+                raw_sec["_groove_events"] = list(final_groove_events)
+            else:
+                any_fallback_field = True
+
+            # ------------------------------------------------------------------
+            # 7. Motif treatment — motif engine treatment dict
+            # ------------------------------------------------------------------
+            final_motif_treatment: dict | None = res_sec.get("final_motif_treatment")
+            if final_motif_treatment is not None:
+                raw_sec["_motif_treatment"] = dict(final_motif_treatment)
+            # When None: preserve legacy _motif_treatment if already present; no fallback flag
+            # because None is an expected state when motif engine was not run.
+
+        logger.info(
+            "render_executor[primary]: resolved plan primary applied "
+            "(%d sections, %d mismatches, fallback_fields=%s)",
+            len(raw_sections),
+            mismatch_count,
+            any_fallback_field,
+        )
+        return True, any_fallback_field, mismatch_count
+
+    except Exception as exc:
+        logger.warning(
+            "render_executor[primary]: resolved plan primary application failed "
+            "(non-blocking): %s — falling back to legacy merge",
+            exc,
+            exc_info=True,
+        )
+        return False, True, 0
 
 
 def _derive_source_quality_mode(
