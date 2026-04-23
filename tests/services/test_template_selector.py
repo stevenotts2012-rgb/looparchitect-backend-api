@@ -43,10 +43,13 @@ def test_user_override_trap_C(sel):
 
 
 def test_unknown_override_falls_back(sel):
-    """user_override='nonexistent_template' → normal selection."""
-    tmpl = sel.select("trap", "dark", 0.5, 0.5, 0.5, user_override="nonexistent_template")
-    # Should fall back to normal trap selection (trap_A for defaults)
-    assert tmpl.template_id in {"trap_A", "trap_B", "trap_C", "trap_D"}
+    """user_override='nonexistent_template' → normal trap selection (fallback invoked)."""
+    tmpl_no_override = sel.select("trap", "dark", 0.5, 0.5, 0.5)
+    tmpl_bad_override = sel.select("trap", "dark", 0.5, 0.5, 0.5, user_override="nonexistent_template")
+    # Both should produce the same result — the bad override is ignored and normal selection runs
+    assert tmpl_bad_override.template_id == tmpl_no_override.template_id
+    # Result must still be a valid trap template
+    assert tmpl_bad_override.template_id in {"trap_A", "trap_B", "trap_C", "trap_D"}
 
 
 def test_all_templates_returns_list(sel):

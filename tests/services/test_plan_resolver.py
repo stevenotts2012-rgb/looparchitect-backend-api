@@ -134,9 +134,22 @@ def test_conflict_detection():
     render_plan["_decision_plan"] = dec_plan
     resolver = GenreAwarePlanResolver(render_plan, available_roles=["drums", "bass", "melody"])
     plan = resolver.resolve()
-    # Either in conflicts or skipped actions — conflict was detected
+    # The Decision Engine blocked "melody" in the section. FinalPlanResolver records this as a
+    # no-op if melody wasn't in base roles, or applies the block and notes it in noop_annotations.
+    # Either way the plan resolves without raising and conflict data is accessible.
+    assert plan.section_count > 0
+    # The melody block is reflected in blocked or skipped records
     all_conflict_roles = [c.get("role") for c in plan.resolver_conflicts]
-    assert "melody" in all_conflict_roles or plan.section_count > 0
+    all_skipped_actions = [s.get("planned_action", "") for s in plan.resolver_skipped_actions]
+    melody_tracked = (
+        "melody" in all_conflict_roles
+        or any("melody" in a for a in all_skipped_actions)
+        or any(
+            "melody" in s.final_blocked_roles
+            for s in plan.sections
+        )
+    )
+    assert melody_tracked, "melody block should be tracked in conflicts, skipped_actions, or final_blocked_roles"
 
 
 def test_skipped_actions_recorded():

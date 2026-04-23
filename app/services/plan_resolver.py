@@ -221,7 +221,10 @@ class GenreAwarePlanResolver:
                 final_reentry_roles=list(resolved_sec.final_reentries),
                 final_pattern_events=list(resolved_sec.final_pattern_events),
                 final_groove_events=list(resolved_sec.final_groove_events),
-                final_boundary_events=[e.to_dict() for e in resolved_sec.final_boundary_events],
+                final_boundary_events=[
+                    e.to_dict() if hasattr(e, "to_dict") else dict(e)
+                    for e in resolved_sec.final_boundary_events
+                ],
                 final_motif_treatment=resolved_sec.final_motif_treatment,
                 final_transition_profile=transition_profile,
                 final_hook_payoff_level=payoff_level,
