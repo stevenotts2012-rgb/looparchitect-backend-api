@@ -296,12 +296,12 @@ class TestVariationSeed:
         base = engine.get_rules_for_section("HOOK")
         result_a = engine.apply_variation_seed(base, seed=1)
         result_b = engine.apply_variation_seed(copy.deepcopy(base), seed=999)
-        # At least one role density should differ between seeds
-        for role in result_a["roles"]:
-            if result_a["roles"][role].get("density") != result_b["roles"][role].get("density"):
-                break
-        else:
-            pytest.fail("No density difference between seeds 1 and 999")
+        # At least one role density must differ between the two seeds.
+        density_differs = any(
+            result_a["roles"][role].get("density") != result_b["roles"][role].get("density")
+            for role in result_a["roles"]
+        )
+        assert density_differs, "Expected density to differ between seeds 1 and 999"
 
     def test_variation_keeps_density_in_valid_range(self, engine: InstrumentActivationRules):
         for seed in (0, 1, 42, 100, 9999):

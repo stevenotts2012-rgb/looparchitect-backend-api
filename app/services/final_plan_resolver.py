@@ -354,10 +354,13 @@ class FinalPlanResolver:
     # Instrument Activation Rules integration
     # ------------------------------------------------------------------
 
-    def _init_rules_engine(self):  # type: ignore[return]
+    def _init_rules_engine(self) -> Optional[Any]:
         """Load the IAR engine; return ``None`` on any failure (fallback mode)."""
         try:
-            from app.services.instrument_activation_rules import InstrumentActivationRules  # noqa: PLC0415
+            from app.services.instrument_activation_rules import (  # noqa: PLC0415
+                InstrumentActivationRules,
+                _normalise_section,
+            )
             engine = InstrumentActivationRules()
             if not engine.is_loaded:
                 logger.warning(
@@ -399,6 +402,8 @@ class FinalPlanResolver:
             return _empty
 
         try:
+            from app.services.instrument_activation_rules import _normalise_section  # noqa: PLC0415
+
             rules = engine.get_rules_for_section(section_type)
             if self._genre or self._vibe:
                 rules = engine.apply_genre_vibe_modifiers(
@@ -420,8 +425,8 @@ class FinalPlanResolver:
             # Extra pattern events driven by rule flags.
             extra_pattern_events: List[dict] = []
             # PRE_HOOK drop_kick: remove kick accent from drums pattern.
-            canonical = section_type.upper().replace("-", "_")
-            if canonical in ("PRE_HOOK", "PRE_CHORUS", "BUILDUP", "BUILD"):
+            canonical = _normalise_section(section_type)
+            if canonical == "PRE_HOOK":
                 drums_rule = roles_data.get("drums") or {}
                 if drums_rule.get("drop_kick"):
                     extra_pattern_events.append({
