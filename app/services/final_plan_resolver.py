@@ -45,6 +45,16 @@ logger = logging.getLogger(__name__)
 # Resolver version — bump when merge semantics change.
 _RESOLVER_VERSION = 1
 
+# Instrument Activation Rules: section-type → target fullness label.
+_SECTION_FULLNESS: Dict[str, str] = {
+    "HOOK": "full",
+    "PRE_HOOK": "high",
+    "VERSE": "medium",
+    "BRIDGE": "medium",
+    "INTRO": "sparse",
+    "OUTRO": "sparse",
+}
+
 # Boundary event types from _BOUNDARY_TRANSITION_EVENT_TYPES in render_executor.
 # Kept here so the resolver can route boundary vs. variation events correctly.
 _BOUNDARY_TRANSITION_EVENT_TYPES: frozenset[str] = frozenset({
@@ -137,7 +147,7 @@ class FinalPlanResolver:
         self._variation_seed = variation_seed
 
         # Lazily import to avoid circular imports and allow test patching.
-        self._rules_engine = self._init_rules_engine()
+        self._rules_engine = self._init_rules_engine()  # type: ignore[assignment]
 
     # ------------------------------------------------------------------
     # Public API
@@ -208,6 +218,17 @@ class FinalPlanResolver:
             render_profile=render_profile,
             resolver_version=_RESOLVER_VERSION,
             noop_annotations=list(self._noop_annotations),
+            rules_applied=self._rules_engine is not None and self._rules_engine.is_loaded,
+            rule_set_version=(
+                self._rules_engine.version
+                if self._rules_engine and self._rules_engine.is_loaded
+                else None
+            ),
+            rule_modifiers=(
+                {"genre": self._genre, "vibe": self._vibe}
+                if self._rules_engine and self._rules_engine.is_loaded
+                else {}
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -298,6 +319,15 @@ class FinalPlanResolver:
         # --- Step 6: motif treatment ---
         motif_treatment: Optional[dict] = raw_sec.get("_motif_treatment") or None
 
+        # --- Step 7: apply Instrument Activation Rules ---
+        rule_snapshot, target_fullness, iar_blocked, extra_pattern_events = (
+            self._apply_iar_to_section(section_type, section_name, active_roles)
+        )
+        if iar_blocked:
+            active_roles = [r for r in active_roles if r not in iar_blocked]
+            blocked_roles = _ordered_unique(blocked_roles + iar_blocked)
+        pattern_events = pattern_events + extra_pattern_events
+
         return ResolvedSection(
             section_name=section_name,
             section_type=section_type,
@@ -316,7 +346,129 @@ class FinalPlanResolver:
             phrase_plan=raw_sec.get("phrase_plan"),
             hook_evolution=raw_sec.get("hook_evolution"),
             variations=list(raw_sec.get("variations") or []),
+            rule_snapshot=rule_snapshot,
+            target_fullness=target_fullness,
         )
+
+    # ------------------------------------------------------------------
+    # Instrument Activation Rules integration
+    # ------------------------------------------------------------------
+
+    def _init_rules_engine(self):  # type: ignore[return]
+        """Load the IAR engine; return ``None`` on any failure (fallback mode)."""
+        try:
+            from app.services.instrument_activation_rules import InstrumentActivationRules  # noqa: PLC0415
+            engine = InstrumentActivationRules()
+            if not engine.is_loaded:
+                logger.warning(
+                    "FinalPlanResolver [arr=%d]: IAR engine loaded with failure: %s "
+                    "— invalid_rule_fallback mode active",
+                    self._arrangement_id,
+                    engine._load_failure,
+                )
+            return engine
+        except Exception as exc:
+            logger.warning(
+                "FinalPlanResolver [arr=%d]: IAR engine could not be initialised: %s "
+                "— invalid_rule_fallback mode active",
+                self._arrangement_id,
+                exc,
+            )
+            return None
+
+    def _apply_iar_to_section(
+        self,
+        section_type: str,
+        section_name: str,
+        active_roles: List[str],
+    ):
+        """Apply Instrument Activation Rules to one section.
+
+        Returns
+        -------
+        tuple
+            ``(rule_snapshot, target_fullness, iar_blocked_roles, extra_pattern_events)``
+
+        Falls back gracefully to empty outputs when the rules engine is
+        unavailable or the section type is not found.
+        """
+        _empty = (None, None, [], [])
+
+        engine = self._rules_engine
+        if engine is None or not engine.is_loaded:
+            return _empty
+
+        try:
+            rules = engine.get_rules_for_section(section_type)
+            if self._genre or self._vibe:
+                rules = engine.apply_genre_vibe_modifiers(
+                    rules, genre=self._genre, vibe=self._vibe
+                )
+            if self._variation_seed is not None:
+                rules = engine.apply_variation_seed(rules, seed=self._variation_seed)
+
+            roles_data: dict = rules.get("roles") or {}
+
+            # Determine which active roles IAR wants to block.
+            iar_blocked: List[str] = [
+                role
+                for role, rule in roles_data.items()
+                if isinstance(rule, dict) and not rule.get("active", True)
+                and role in active_roles
+            ]
+
+            # Extra pattern events driven by rule flags.
+            extra_pattern_events: List[dict] = []
+            # PRE_HOOK drop_kick: remove kick accent from drums pattern.
+            canonical = section_type.upper().replace("-", "_")
+            if canonical in ("PRE_HOOK", "PRE_CHORUS", "BUILDUP", "BUILD"):
+                drums_rule = roles_data.get("drums") or {}
+                if drums_rule.get("drop_kick"):
+                    extra_pattern_events.append({
+                        "action": "drop_kick",
+                        "source": "instrument_activation_rules",
+                        "bar": 0,
+                        "intensity": float(drums_rule.get("density") or 0.75),
+                    })
+
+            # target_fullness from section type.
+            target_fullness = _SECTION_FULLNESS.get(canonical, "medium")
+
+            # Capture the final rule values as a snapshot.
+            rule_snapshot: Dict[str, Any] = {
+                "roles": {role: dict(rule) for role, rule in roles_data.items()},
+                "section_type": rules.get("section_type", section_type),
+            }
+            if rules.get("_modifiers_applied") is not None:
+                rule_snapshot["_modifiers_applied"] = rules["_modifiers_applied"]
+                logger.info(
+                    "FinalPlanResolver [arr=%d] section='%s': rule_override_applied %s",
+                    self._arrangement_id,
+                    section_name,
+                    rules["_modifiers_applied"],
+                )
+            if rules.get("_variation_seed") is not None:
+                rule_snapshot["_variation_seed"] = rules["_variation_seed"]
+
+            if iar_blocked:
+                logger.debug(
+                    "FinalPlanResolver [arr=%d] section='%s': IAR blocked roles %s",
+                    self._arrangement_id,
+                    section_name,
+                    iar_blocked,
+                )
+
+            return rule_snapshot, target_fullness, iar_blocked, extra_pattern_events
+
+        except Exception as exc:
+            logger.warning(
+                "FinalPlanResolver [arr=%d] section='%s': IAR application failed: %s "
+                "— invalid_rule_fallback applied",
+                self._arrangement_id,
+                section_name,
+                exc,
+            )
+            return _empty
 
     # ------------------------------------------------------------------
     # Boundary event merging / deduplication
