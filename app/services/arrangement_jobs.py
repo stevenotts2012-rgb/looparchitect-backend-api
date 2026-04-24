@@ -6681,6 +6681,73 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 exc_info=True,
             )
 
+        # ====================================================================
+        # PRODUCTION QUALITY REPAIR PASS
+        #
+        # When PRODUCTION_QUALITY_REPAIR=true:
+        #   Resolved Plan → Production Quality Audit → Repair → Re-audit → Render
+        #
+        # The repair pass is non-blocking: if it fails the unrepaired plan is
+        # used and the failure reason is recorded under _production_quality_repair.
+        # ====================================================================
+        if settings.feature_production_quality_repair:
+            try:
+                from app.services.production_quality_auditor import ProductionQualityAuditor
+                from app.services.production_quality_repair import run_repair
+
+                # Retrieve the resolved plan that may have been built above.
+                _resolved_for_repair = locals().get("_resolved")
+                if _resolved_for_repair is not None:
+                    # Run quality audit to feed the repair pass
+                    _pqa_auditor = ProductionQualityAuditor(
+                        resolved_plan=_resolved_for_repair,
+                        raw_render_plan=render_plan,
+                        arrangement_id=arrangement_id,
+                    )
+                    _pqa_report = _pqa_auditor.audit()
+
+                    # Apply repair pass
+                    _repaired = run_repair(
+                        resolved_plan=_resolved_for_repair,
+                        quality_report=_pqa_report,
+                        available_roles=_available_roles_for_resolver,
+                        genre=str(render_plan.get("genre") or "generic"),
+                        arrangement_id=arrangement_id,
+                    )
+
+                    # Promote repaired plan back into render_plan
+                    render_plan["_resolved_render_plan"] = _repaired.resolved_plan.to_dict()
+                    render_plan["_production_quality_repair"] = _repaired.repair_metadata
+
+                    log_feature_event(
+                        logger,
+                        event="production_quality_repair_applied",
+                        correlation_id=correlation_id,
+                        arrangement_id=arrangement_id,
+                        repairs_applied=_repaired.repair_metadata.get(
+                            "production_quality_repair_count", 0
+                        ),
+                        repair_failed=_repaired.repair_metadata.get("repair_failed_reason") is not None,
+                    )
+                else:
+                    logger.debug(
+                        "PRODUCTION_QUALITY_REPAIR [arr=%d] skipped: no resolved plan available",
+                        arrangement_id,
+                    )
+            except Exception as _repair_exc:
+                logger.warning(
+                    "PRODUCTION_QUALITY_REPAIR [arr=%d] failed (non-blocking): %s",
+                    arrangement_id,
+                    _repair_exc,
+                    exc_info=True,
+                )
+                render_plan["_production_quality_repair"] = {
+                    "production_quality_repair_applied": False,
+                    "production_quality_repairs": [],
+                    "production_quality_repair_count": 0,
+                    "repair_failed_reason": str(_repair_exc),
+                }
+
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
 

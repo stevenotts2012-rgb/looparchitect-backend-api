@@ -165,6 +165,17 @@ class Settings(BaseSettings):
         validation_alias="ARRANGEMENT_QUALITY_GATES",
     )
 
+    # Production Quality Repair Pass — deterministic repair/tuning pass applied
+    # after the Production Quality Audit and before rendering.  When enabled the
+    # pipeline is: Resolved Plan → Audit → Repair → Re-audit → Render.
+    # Repairs repeated sections, weak hooks, low pre-hook tension, outro drums,
+    # render mismatches, no-op events, and transition safety issues.
+    # Default: false — enable with PRODUCTION_QUALITY_REPAIR=true.
+    feature_production_quality_repair: bool = Field(
+        default=False,
+        validation_alias="PRODUCTION_QUALITY_REPAIR",
+    )
+
     # Source Quality Mode — classify stems as true_stems / zip_stems /
     # ai_separated / stereo_fallback and apply per-mode arrangement constraints.
     # Enable with SOURCE_QUALITY_MODES=true.
