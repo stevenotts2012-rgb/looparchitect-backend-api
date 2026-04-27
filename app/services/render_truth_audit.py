@@ -89,6 +89,9 @@ class RenderTruthAudit:
     applied_reintroductions: List[dict] = field(default_factory=list)
     final_section_role_map: Dict[str, List[str]] = field(default_factory=dict)
     transition_safety_findings: List[dict] = field(default_factory=list)
+    # Generative Producer mute mismatches: mute_role events whose target_role
+    # still appears in final_active_roles after the GP primary pass.
+    producer_mute_mismatches: List[dict] = field(default_factory=list)
 
     # ---------------------------------------------------------------------------
     # Factory
@@ -152,11 +155,16 @@ class RenderTruthAudit:
         safety_auditor = TransitionSafetyAuditor(resolved_plan)
         audit.transition_safety_findings = safety_auditor.audit()
 
+        # --- Generative Producer mute-role mismatch check ---
+        audit.producer_mute_mismatches = _check_producer_mute_mismatches(
+            raw_render_plan, resolved_plan
+        )
+
         # Log summary
         logger.info(
             "RENDER_TRUTH_AUDIT [arr=%d] sections=%d applied_events=%d "
             "skipped_events=%d noop_annotations=%d role_mutes=%d "
-            "reentries=%d safety_findings=%d",
+            "reentries=%d safety_findings=%d producer_mute_mismatches=%d",
             arrangement_id,
             resolved_plan.section_count,
             len(audit.applied_events),
@@ -165,6 +173,7 @@ class RenderTruthAudit:
             len(audit.applied_role_mutes),
             len(audit.applied_reintroductions),
             len(audit.transition_safety_findings),
+            len(audit.producer_mute_mismatches),
         )
 
         return audit
@@ -182,6 +191,7 @@ class RenderTruthAudit:
             "applied_reintroductions": list(self.applied_reintroductions),
             "final_section_role_map": dict(self.final_section_role_map),
             "transition_safety_findings": list(self.transition_safety_findings),
+            "producer_mute_mismatches": list(self.producer_mute_mismatches),
         }
 
 
@@ -475,3 +485,79 @@ def _unique_roles_from_events(events: List[dict], key: str = "role") -> List[str
             seen.add(role)
             out.append(role)
     return out
+
+
+def _check_producer_mute_mismatches(
+    raw_render_plan: Dict[str, Any],
+    resolved_plan: ResolvedRenderPlan,
+) -> List[dict]:
+    """Detect mute_role ProducerEvents whose target_role is still in the actual mix.
+
+    For each Generative Producer event with ``render_action == "mute_role"``,
+    checks whether the ``target_role`` is still present in the resolved section's
+    ``final_active_roles``.  If so, the mute did not take effect and a mismatch
+    record is emitted.
+
+    Returns
+    -------
+    list[dict]
+        Each dict has keys:
+          ``section`` – section name
+          ``target_role`` – role that was supposed to be muted
+          ``event_id`` – producer event ID (if present)
+          ``message`` – human-readable description
+    """
+    mismatches: List[dict] = []
+    gp_events: List[dict] = list(raw_render_plan.get("_generative_producer_events") or [])
+    if not gp_events:
+        return mismatches
+
+    # Build lookup: section_name → final_active_roles set
+    active_roles_by_section: Dict[str, set] = {
+        sec.section_name.strip().lower(): set(sec.final_active_roles)
+        for sec in resolved_plan.resolved_sections
+    }
+
+    for evt in gp_events:
+        try:
+            render_action = str(evt.get("render_action") or "").strip()
+            if render_action != "mute_role":
+                continue
+            target_role = str(evt.get("target_role") or "").strip()
+            section_name = str(evt.get("section_name") or "").strip()
+            event_id = str(evt.get("event_id") or "")
+            if not target_role or not section_name:
+                continue
+
+            active_roles = active_roles_by_section.get(section_name.lower())
+            if active_roles is None:
+                # Try prefix match
+                for key_name, active_set in active_roles_by_section.items():
+                    if key_name.startswith(section_name.lower()) or section_name.lower().startswith(key_name):
+                        active_roles = active_set
+                        break
+            if active_roles is None:
+                continue
+
+            if target_role in active_roles:
+                mismatch: Dict[str, Any] = {
+                    "section": section_name,
+                    "target_role": target_role,
+                    "event_id": event_id,
+                    "message": (
+                        f"ProducerEvent mute_role targeted role={target_role!r} "
+                        f"in section={section_name!r} but role is still present "
+                        "in final_active_roles — mute did not take effect"
+                    ),
+                }
+                mismatches.append(mismatch)
+                logger.warning(
+                    "RENDER_TRUTH_AUDIT producer_mute_mismatch section=%r role=%r event_id=%r",
+                    section_name,
+                    target_role,
+                    event_id,
+                )
+        except Exception:
+            continue
+
+    return mismatches

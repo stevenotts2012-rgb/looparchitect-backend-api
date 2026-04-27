@@ -170,6 +170,12 @@ class ResolvedRenderPlan:
     rules_applied: bool = False
     rule_set_version: Optional[str] = None
     rule_modifiers: Dict[str, Any] = field(default_factory=dict)
+    # Generative Producer Primary observability.
+    generative_producer_primary_used: bool = False
+    generative_producer_primary_fallback_used: bool = False
+    generative_producer_primary_fallback_reason: str = ""
+    generative_producer_events_applied: int = 0
+    generative_producer_events_skipped: int = 0
 
     # ---------------------------------------------------------------------------
     # Convenience properties
@@ -217,4 +223,9 @@ class ResolvedRenderPlan:
             "rules_applied": self.rules_applied,
             "rule_set_version": self.rule_set_version,
             "rule_modifiers": dict(self.rule_modifiers),
+            "generative_producer_primary_used": self.generative_producer_primary_used,
+            "generative_producer_primary_fallback_used": self.generative_producer_primary_fallback_used,
+            "generative_producer_primary_fallback_reason": self.generative_producer_primary_fallback_reason,
+            "generative_producer_events_applied": self.generative_producer_events_applied,
+            "generative_producer_events_skipped": self.generative_producer_events_skipped,
         }
