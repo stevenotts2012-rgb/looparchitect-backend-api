@@ -177,7 +177,19 @@ def apply_vibe(
             variation_seed,
         )
 
-    except Exception as exc:  # noqa: BLE001 — safety net; never crash
+    except (KeyError, ValueError, TypeError, AttributeError, ArithmeticError) as exc:
+        # Catch concrete exceptions that can arise from bad config values,
+        # missing keys, or numeric conversion failures.  The spec requires the
+        # engine to "never crash" so we log and fall back instead of re-raising.
+        logger.error(
+            "vibe_modifier_engine: error for vibe=%r section=%r: %s — "
+            "returning original rules",
+            selected_vibe,
+            section_type,
+            exc,
+        )
+        return copy.deepcopy(instrument_rules)
+    except Exception as exc:  # noqa: BLE001 — last-resort safety net
         logger.error(
             "vibe_modifier_engine: unexpected error for vibe=%r section=%r: %s — "
             "returning original rules",
