@@ -129,6 +129,14 @@ export interface GenerateArrangementRequest {
   producer_moves?: string[];
   variation_count?: number;
   seed?: number | string;
+  /** Explicit genre for template selection: trap | drill | rnb | rage */
+  genre_override?: string;
+  /** Vibe/mood modifier: dark | emotional | hype | pain | rage | ambient | cinematic */
+  vibe_override?: string;
+  /** Deterministic seed for template, vibe, and variation engines */
+  variation_seed?: number;
+  /** Variation intensity 0.0 (safe) → 1.0 (experimental) */
+  variation_intensity?: number;
 }
 
 export interface GenerateArrangementResponse {

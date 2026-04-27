@@ -658,6 +658,41 @@ def _parse_style_profile(style_profile_json: str | None) -> dict | None:
         return None
 
 
+def _parse_intelligent_controls_from_json(
+    raw_json: str | None,
+) -> dict:
+    """Extract intelligent arrangement controls from arrangement_json.
+
+    Returns a dict with keys:
+        genre_override, vibe_override, variation_seed, variation_intensity
+    All default to None when absent.
+    """
+    defaults: dict = {
+        "genre_override": None,
+        "vibe_override": None,
+        "variation_seed": None,
+        "variation_intensity": None,
+    }
+    if not raw_json:
+        return defaults
+    try:
+        payload = json.loads(raw_json)
+        if not isinstance(payload, dict):
+            return defaults
+        genre_override = payload.get("genre_override")
+        vibe_override = payload.get("vibe_override")
+        variation_seed = payload.get("variation_seed")
+        variation_intensity = payload.get("variation_intensity")
+        return {
+            "genre_override": str(genre_override).lower().strip() if genre_override else None,
+            "vibe_override": str(vibe_override).lower().strip() if vibe_override else None,
+            "variation_seed": int(variation_seed) if variation_seed is not None else None,
+            "variation_intensity": float(variation_intensity) if variation_intensity is not None else None,
+        }
+    except Exception:
+        return defaults
+
+
 def _parse_producer_arrangement(producer_arrangement_json: str | None) -> dict | None:
     """
     Parse ProducerArrangement from JSON.
@@ -6056,6 +6091,67 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 selected_producer_moves,
             )
 
+        # ========================================================================
+        # INTELLIGENT ARRANGEMENT CONTROLS — Template, IAR, Vibe, Variation
+        # ========================================================================
+        _ia_controls = _parse_intelligent_controls_from_json(arrangement.arrangement_json)
+
+        # Resolve genre: genre_override > arrangement.genre > loop.genre > "trap"
+        _ia_genre: str = (
+            _ia_controls.get("genre_override")
+            or str(arrangement.genre or "").strip()
+            or str((loop.genre or "")).strip()
+            or "trap"
+        ).lower()
+
+        # Resolve vibe
+        _ia_vibe: str | None = _ia_controls.get("vibe_override") or None
+
+        # Resolve variation_seed: use provided seed, fallback to stable hash of loop_id
+        _ia_variation_seed: int = (
+            _ia_controls.get("variation_seed")
+            if _ia_controls.get("variation_seed") is not None
+            else (hash(f"loop_{arrangement.loop_id}") & 0x7FFFFFFF)
+        )
+
+        # Resolve variation intensity (0.0 = safe, 1.0 = experimental)
+        _ia_variation_intensity: float = float(
+            _ia_controls.get("variation_intensity") if _ia_controls.get("variation_intensity") is not None else 0.5
+        )
+
+        # Template selection — additive, never breaks existing flow
+        _ia_template_id: str = "default"
+        _ia_template_total_bars: int = 0
+        # Maximum BPM used to normalise loop tempo into a 0–1 energy value.
+        # 200 BPM represents the upper bound of common electronic/hip-hop tempos.
+        _MAX_BPM_FOR_ENERGY_CALC: float = 200.0
+        try:
+            from app.style_engine.template_selector import select_template
+            _loop_energy: float = float(bpm / _MAX_BPM_FOR_ENERGY_CALC) if bpm else 0.5
+            _loop_energy = max(0.0, min(1.0, _loop_energy))
+            _ia_result = select_template(
+                genre=_ia_genre,
+                vibe=_ia_vibe,
+                loop_energy=_loop_energy,
+                variation_seed=_ia_variation_seed,
+            )
+            _ia_template_id = _ia_result.selected_template_id
+            _ia_template_total_bars = _ia_result.template_total_bars
+            logger.info(
+                "intelligent_arrangement: template selected — genre=%r vibe=%r "
+                "template=%r total_bars=%d seed=%d",
+                _ia_genre,
+                _ia_vibe,
+                _ia_template_id,
+                _ia_template_total_bars,
+                _ia_variation_seed,
+            )
+        except Exception as _ia_tmpl_exc:
+            logger.warning(
+                "intelligent_arrangement: template selection failed (non-blocking): %s",
+                _ia_tmpl_exc,
+            )
+
         # V3: Check for ProducerArrangement (most advanced)
         producer_arrangement = None
         if arrangement.producer_arrangement_json:
@@ -6188,6 +6284,78 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
         # This is required for both the arranger_v2 path (which does not call
         # assign_section_variants) and as a safety net for the pre-render-plan path.
         attach_loops_to_sections(render_plan, loop_variation_manifest)
+
+        # ====================================================================
+        # INTELLIGENT ARRANGEMENT METADATA — Stamp genre, vibe, template, seed
+        # into the render plan so all downstream engines and the response can
+        # expose them.  This runs after the render plan is built and before any
+        # engine modification, ensuring the metadata reflects the actual inputs.
+        # ====================================================================
+        render_plan["selected_genre"] = _ia_genre
+        render_plan["selected_vibe"] = _ia_vibe or ""
+        render_plan["template_id"] = _ia_template_id
+        render_plan["variation_seed"] = _ia_variation_seed
+        render_plan["variation_intensity"] = _ia_variation_intensity
+        # Also stamp genre/vibe at the render_profile level for engines that read it there
+        render_plan.setdefault("genre", _ia_genre)
+        render_plan.setdefault("vibe", _ia_vibe or "")
+
+        # ====================================================================
+        # VIBE MODIFIER ENGINE — Apply per-section vibe rules using IAR
+        # Non-blocking: failures log a warning and leave sections unchanged.
+        # ====================================================================
+        if _ia_vibe:
+            try:
+                from app.services.instrument_activation_rules import get_rules_for_section
+                from app.services.vibe_modifier_engine import apply_vibe
+
+                _vibe_sections_modified = 0
+                _vibe_applied_meta: list[dict] = []
+                for _section in render_plan.get("sections") or []:
+                    _stype = str(_section.get("type") or _section.get("name") or "verse")
+                    try:
+                        _iar_rules = get_rules_for_section(_stype)
+                        _vibe_rules = apply_vibe(
+                            section_type=_stype,
+                            instrument_rules=_iar_rules,
+                            selected_vibe=_ia_vibe,
+                            variation_seed=_ia_variation_seed,
+                        )
+                        # Stamp vibe metadata onto the section
+                        _section["_vibe_applied"] = _vibe_rules.get("vibe_applied", False)
+                        _section["_vibe_name"] = _vibe_rules.get("vibe_name", "")
+                        _section["_density_before_vs_after"] = _vibe_rules.get(
+                            "density_before_vs_after", {}
+                        )
+                        if _vibe_rules.get("vibe_applied"):
+                            _vibe_sections_modified += 1
+                        _vibe_applied_meta.append({
+                            "section_type": _stype,
+                            "vibe_applied": _vibe_rules.get("vibe_applied", False),
+                            "modifiers": _vibe_rules.get("vibe_modifiers_applied", []),
+                        })
+                    except Exception as _section_vibe_exc:
+                        logger.debug(
+                            "intelligent_arrangement: vibe engine skipped for section=%r: %s",
+                            _stype,
+                            _section_vibe_exc,
+                        )
+
+                render_plan["vibe_applied"] = _vibe_sections_modified > 0
+                render_plan["_vibe_section_meta"] = _vibe_applied_meta
+                logger.info(
+                    "intelligent_arrangement: vibe modifier applied — vibe=%r sections_modified=%d",
+                    _ia_vibe,
+                    _vibe_sections_modified,
+                )
+            except Exception as _vibe_exc:
+                logger.warning(
+                    "intelligent_arrangement: vibe modifier engine failed (non-blocking): %s",
+                    _vibe_exc,
+                )
+                render_plan["vibe_applied"] = False
+        else:
+            render_plan["vibe_applied"] = False
 
         # ====================================================================
         # TIMELINE ENGINE: shadow planning + optional primary promotion.
