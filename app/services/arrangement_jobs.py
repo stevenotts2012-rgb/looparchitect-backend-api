@@ -6753,6 +6753,148 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                         exc_info=True,
                     )
 
+            # ==============================================================
+            # IMPACT & CONTRAST ENGINE PASS
+            #
+            # Enabled behind IMPACT_ENGINE_ENABLED=true (default: false).
+            # Runs after Production Quality Repair (if enabled) and before
+            # render, enforcing strong section contrast, real drops, re-entry
+            # accents, repeated-section differentiation, and hook identity.
+            #
+            # Results stored in render_plan["_impact_engine"]:
+            #   impact_engine_enabled           bool
+            #   impact_engine_applied           bool
+            #   impact_engine_fallback_used     bool
+            #   impact_engine_fallback_reason   str  (on fallback only)
+            #   impact_adjustments              list[dict]
+            #   post_impact_quality_report      dict
+            #   contrast_adjustment_count       int
+            #   drop_enforcement_count          int
+            #   reentry_enforcement_count       int
+            #   repetition_fix_count            int
+            #
+            # Failure is non-blocking: if the impact pass raises the repaired
+            # plan is kept and impact_engine_fallback_used is set to True.
+            # ==============================================================
+            if settings.feature_impact_engine:
+                _impact_meta: dict = {
+                    "impact_engine_enabled": True,
+                    "impact_engine_applied": False,
+                    "impact_engine_fallback_used": False,
+                    "impact_engine_fallback_reason": None,
+                    "impact_adjustments": [],
+                    "post_impact_quality_report": {},
+                    "contrast_adjustment_count": 0,
+                    "drop_enforcement_count": 0,
+                    "reentry_enforcement_count": 0,
+                    "repetition_fix_count": 0,
+                }
+                try:
+                    from app.services.impact_engine import ImpactEngine
+                    from app.services.production_quality_auditor import (
+                        ProductionQualityAuditor,
+                    )
+
+                    # Gather the quality report that was produced most recently
+                    # (post-repair report if repair ran, otherwise run a fresh audit).
+                    _pre_impact_report: dict = {}
+                    _pq_repair_meta = render_plan.get("_production_quality_repair") or {}
+                    if _pq_repair_meta.get("post_repair_quality_report"):
+                        _pre_impact_report = _pq_repair_meta["post_repair_quality_report"]
+                    else:
+                        _pre_impact_auditor = ProductionQualityAuditor(
+                            _resolved,
+                            raw_render_plan=render_plan,
+                            arrangement_id=arrangement_id,
+                        )
+                        _pre_impact_report = _pre_impact_auditor.audit()
+
+                    _impact_engine = ImpactEngine(
+                        resolved_plan=_resolved,
+                        production_quality_report=_pre_impact_report,
+                        selected_genre=str(render_plan.get("genre") or "generic"),
+                        selected_vibe=str(render_plan.get("vibe") or "neutral"),
+                        arrangement_id=arrangement_id,
+                    )
+                    _impacted_plan, _engine_meta = _impact_engine.enforce()
+
+                    if _engine_meta.get("impact_engine_applied"):
+                        # Promote the impacted plan as canonical
+                        _resolved = _impacted_plan
+                        render_plan["_resolved_render_plan"] = _impacted_plan.to_dict()
+
+                        # Final safety audit after impact pass
+                        _post_impact_auditor = ProductionQualityAuditor(
+                            _impacted_plan,
+                            raw_render_plan=render_plan,
+                            arrangement_id=arrangement_id,
+                        )
+                        _post_impact_report = _post_impact_auditor.audit()
+
+                        _all_adjustments = (
+                            _engine_meta.get("contrast_adjustments", [])
+                            + _engine_meta.get("drop_enforcements", [])
+                            + _engine_meta.get("reentry_enforcements", [])
+                        )
+                        # Count by rule type for summary
+                        _contrast_adj_count = sum(
+                            1 for a in _engine_meta.get("contrast_adjustments", [])
+                            if a.get("rule") in (
+                                "verse_density_reduced",
+                                "hook_density_boosted",
+                                "hook_identity_strengthened",
+                            )
+                        )
+                        _drop_count = len(_engine_meta.get("drop_enforcements", []))
+                        _reentry_count = len(_engine_meta.get("reentry_enforcements", []))
+                        _repeat_count = sum(
+                            1 for a in _engine_meta.get("contrast_adjustments", [])
+                            if a.get("rule") == "repeated_section_differentiated"
+                        )
+
+                        _impact_meta.update({
+                            "impact_engine_applied": True,
+                            "impact_adjustments": _all_adjustments,
+                            "post_impact_quality_report": _post_impact_report,
+                            "contrast_adjustment_count": _contrast_adj_count,
+                            "drop_enforcement_count": _drop_count,
+                            "reentry_enforcement_count": _reentry_count,
+                            "repetition_fix_count": _repeat_count,
+                        })
+
+                        log_feature_event(
+                            logger,
+                            event="impact_engine_applied",
+                            correlation_id=correlation_id,
+                            arrangement_id=arrangement_id,
+                            contrast_adjustment_count=_contrast_adj_count,
+                            drop_enforcement_count=_drop_count,
+                            reentry_enforcement_count=_reentry_count,
+                            repetition_fix_count=_repeat_count,
+                        )
+                    else:
+                        # Engine ran but reported not applied (e.g. internal error)
+                        _impact_meta.update({
+                            "impact_engine_fallback_used": True,
+                            "impact_engine_fallback_reason": _engine_meta.get(
+                                "impact_engine_error", "engine returned applied=False"
+                            ),
+                        })
+
+                except Exception as _impact_exc:
+                    logger.warning(
+                        "IMPACT_ENGINE [arr=%d] integration failed (non-blocking): %s",
+                        arrangement_id,
+                        _impact_exc,
+                        exc_info=True,
+                    )
+                    _impact_meta.update({
+                        "impact_engine_fallback_used": True,
+                        "impact_engine_fallback_reason": str(_impact_exc),
+                    })
+
+                render_plan["_impact_engine"] = _impact_meta
+
         except Exception as _audit_exc:
             logger.warning(
                 "RENDER_TRUTH_AUDIT [arr=%d] failed (non-blocking): %s",

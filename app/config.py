@@ -593,6 +593,27 @@ class Settings(BaseSettings):
         validation_alias="PRODUCTION_QUALITY_REPAIR",
     )
 
+    # Impact & Contrast Engine — shapes the final resolved plan before rendering
+    # to enforce strong section contrast, impactful drops, re-entry accents, and
+    # repeated-section differentiation.
+    #
+    # Pipeline position (when PRODUCTION_QUALITY_REPAIR is also enabled):
+    #   Resolved Plan → Quality Audit → Repair → Re-audit
+    #   → Impact & Contrast Engine → Final safety audit → Render
+    #
+    # When only IMPACT_ENGINE_ENABLED is true (repair disabled):
+    #   Resolved Plan → Impact & Contrast Engine → Final safety audit → Render
+    #
+    # Impact Engine failure is non-blocking: if the pass raises an exception the
+    # repaired/resolved plan is used unchanged and the fallback is recorded in
+    # render_plan["_impact_engine"] under impact_engine_fallback_used = True.
+    #
+    # Rollback: set IMPACT_ENGINE_ENABLED=false — no deployment required.
+    feature_impact_engine: bool = Field(
+        default=False,
+        validation_alias="IMPACT_ENGINE_ENABLED",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
