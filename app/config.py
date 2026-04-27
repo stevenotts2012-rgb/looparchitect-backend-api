@@ -570,6 +570,29 @@ class Settings(BaseSettings):
         validation_alias="RESOLVED_PLAN_PRIMARY",
     )
 
+    # Production Quality Repair Pass — applies deterministic post-audit repairs
+    # to weak or repetitive Resolved Arrangement Plans before rendering.
+    #
+    # Pipeline: Resolved Plan → Quality Audit → Repair Pass → Re-audit → Render
+    #
+    # When enabled (PRODUCTION_QUALITY_REPAIR=true):
+    # 1. ProductionQualityAuditor runs to produce the initial quality report.
+    # 2. ProductionQualityRepair applies deterministic fixes (repeated sections,
+    #    weak hooks, pre-hook tension, outro cleanup, render mismatches, no-op
+    #    events, transition safety).
+    # 3. ProductionQualityAuditor re-runs on the repaired plan.
+    # 4. Repair metadata + post-repair report are stored in the render plan under
+    #    _production_quality_repair (dict).
+    #
+    # Repair failure is non-blocking: if the repair pass raises an exception the
+    # original unrepaired plan is used and repair_failed_reason is recorded.
+    #
+    # Rollback: set PRODUCTION_QUALITY_REPAIR=false — no deployment required.
+    feature_production_quality_repair: bool = Field(
+        default=False,
+        validation_alias="PRODUCTION_QUALITY_REPAIR",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
