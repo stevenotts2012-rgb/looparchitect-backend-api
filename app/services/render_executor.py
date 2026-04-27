@@ -355,7 +355,7 @@ def render_from_plan(
         stems=stems,
         loop_variations=loop_variations,
     )
-    output_audio = _apply_master_headroom(output_audio)
+    output_audio = _apply_master_headroom(output_audio, target_peak_dbfs=-1.0)
 
     mastering_result = apply_mastering(
         output_audio,
