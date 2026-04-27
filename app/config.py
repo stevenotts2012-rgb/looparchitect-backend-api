@@ -630,6 +630,53 @@ class Settings(BaseSettings):
         validation_alias="GENERATIVE_PRODUCER_SHADOW",
     )
 
+    # Generative Producer System Primary Mode — promotes the Generative Producer
+    # System from shadow mode to the primary source of fine-grained per-section
+    # audio behaviour (mutes, unmutes, filters, fills, FX risers, impacts, etc.)
+    # in the Resolved Arrangement Plan.
+    #
+    # When enabled (GENERATIVE_PRODUCER_PRIMARY=true), ProducerEvent outputs from
+    # ``_generative_producer_events`` are merged into each ResolvedSection by
+    # FinalPlanResolver after all other engine primary passes (Timeline, Pattern,
+    # Groove, Decision, Drop, Motif) have run.  The merge respects:
+    #   - Decision Engine ``blocked_roles`` (GP cannot unmute what DE blocked).
+    #   - Instrument Activation Rules ``available_roles`` (GP cannot target absent roles).
+    #   - Deduplication: events of the same type already present from other engines
+    #     are skipped, never doubled.
+    # Supported render_action → resolved field mapping:
+    #   mute_role              → final_blocked_roles / remove from final_active_roles
+    #   unmute_role            → final_active_roles / final_reentries
+    #   filter_role            → final_pattern_events
+    #   chop_role              → final_pattern_events
+    #   reverse_slice          → final_boundary_events
+    #   add_hat_roll           → final_pattern_events
+    #   add_drum_fill          → final_pattern_events
+    #   bass_pattern_variation → final_pattern_events
+    #   add_fx_riser           → final_boundary_events
+    #   add_impact             → final_boundary_events
+    #   fade_role              → final_boundary_events
+    #   widen_role             → final_groove_events
+    #   delay_role             → final_pattern_events
+    #   reverb_tail            → final_boundary_events
+    # Observability fields added to ResolvedRenderPlan:
+    #   generative_producer_primary_used          bool
+    #   generative_producer_primary_fallback_used bool
+    #   generative_producer_primary_fallback_reason str
+    #   generative_producer_events_applied        int
+    #   generative_producer_events_skipped        int
+    # Render truth check: if a mute_role ProducerEvent targets a role that remains
+    # in final_active_roles, a render_mismatch is recorded.
+    # Falls back cleanly (no audio plan changes) if:
+    #   - the shadow planner produced no events
+    #   - any event is malformed (missing/invalid fields)
+    #   - the section matching fails
+    # GENERATIVE_PRODUCER_SHADOW must also be true for events to be available.
+    # Rollback: set GENERATIVE_PRODUCER_PRIMARY=false — no code deployment required.
+    feature_generative_producer_primary: bool = Field(
+        default=False,
+        validation_alias="GENERATIVE_PRODUCER_PRIMARY",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -702,6 +749,9 @@ class Settings(BaseSettings):
         "feature_motif_engine_primary",
         "feature_resolved_plan_primary",
         "feature_generative_producer_shadow",
+        "feature_generative_producer_primary",
+        "feature_production_quality_repair",
+        "feature_impact_engine",
         mode="before",
     )
     @classmethod

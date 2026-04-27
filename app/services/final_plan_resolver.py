@@ -136,6 +136,7 @@ class FinalPlanResolver:
         genre: str = "generic",
         vibe: str = "",
         variation_seed: Optional[int] = None,
+        generative_producer_primary: bool = False,
     ) -> None:
         self._plan = render_plan
         self._available_roles: List[str] = list(available_roles or [])
@@ -145,6 +146,7 @@ class FinalPlanResolver:
         self._genre = str(genre or "generic").lower().strip()
         self._vibe = str(vibe or "").lower().strip()
         self._variation_seed = variation_seed
+        self._generative_producer_primary = generative_producer_primary
 
         # Lazily import to avoid circular imports and allow test patching.
         self._rules_engine = self._init_rules_engine()  # type: ignore[assignment]
@@ -207,6 +209,19 @@ class FinalPlanResolver:
             )
             resolved_sections.append(resolved)
 
+        # Generative Producer Primary pass — merges GP events into resolved sections.
+        gp_primary_used = False
+        gp_fallback_used = False
+        gp_fallback_reason = ""
+        gp_applied = 0
+        gp_skipped = 0
+
+        if self._generative_producer_primary:
+            gp_applied, gp_skipped, gp_fallback_used, gp_fallback_reason = (
+                self._apply_generative_producer_primary(resolved_sections)
+            )
+            gp_primary_used = not gp_fallback_used
+
         return ResolvedRenderPlan(
             resolved_sections=resolved_sections,
             bpm=bpm,
@@ -229,6 +244,11 @@ class FinalPlanResolver:
                 if self._rules_engine and self._rules_engine.is_loaded
                 else {}
             ),
+            generative_producer_primary_used=gp_primary_used,
+            generative_producer_primary_fallback_used=gp_fallback_used,
+            generative_producer_primary_fallback_reason=gp_fallback_reason,
+            generative_producer_events_applied=gp_applied,
+            generative_producer_events_skipped=gp_skipped,
         )
 
     # ------------------------------------------------------------------
@@ -593,6 +613,362 @@ class FinalPlanResolver:
             if decision_name.startswith(section_type_prefix):
                 return d
         return None
+
+    # ------------------------------------------------------------------
+    # Generative Producer Primary pass
+    # ------------------------------------------------------------------
+
+    # Render actions that map to boundary events (ResolvedBoundaryEvent).
+    _GP_BOUNDARY_ACTIONS: frozenset = frozenset({
+        "add_fx_riser",
+        "add_impact",
+        "fade_role",
+        "reverb_tail",
+        "reverse_slice",
+    })
+
+    # Render actions that map to pattern events (List[dict]).
+    _GP_PATTERN_ACTIONS: frozenset = frozenset({
+        "filter_role",
+        "chop_role",
+        "add_hat_roll",
+        "add_drum_fill",
+        "bass_pattern_variation",
+        "delay_role",
+    })
+
+    # Render actions that map to groove events (List[dict]).
+    _GP_GROOVE_ACTIONS: frozenset = frozenset({
+        "widen_role",
+    })
+
+    # render_action → boundary event_type mapping.
+    _GP_ACTION_TO_BOUNDARY_TYPE: Dict[str, str] = {
+        "add_fx_riser": "riser_fx",
+        "add_impact": "crash_hit",
+        "fade_role": "outro_strip",
+        "reverb_tail": "reverse_fx",
+        "reverse_slice": "reverse_fx",
+    }
+
+    def _apply_generative_producer_primary(
+        self,
+        resolved_sections: List[ResolvedSection],
+    ) -> "tuple[int, int, bool, str]":
+        """Merge Generative Producer events into *resolved_sections* in-place.
+
+        Reads ``_generative_producer_events`` from the raw render plan and
+        applies each event to the matching resolved section according to the
+        render_action → resolved-field mapping.
+
+        Rules enforced:
+        1. Only events whose render_action is in ``SUPPORTED_RENDER_ACTIONS``
+           (defined in generative_producer_system.types) are processed; others
+           are skipped with a reason.
+        2. Decision Engine ``blocked_roles`` are respected — ``unmute_role``
+           cannot override a role that the Decision Engine has blocked.
+        3. Instrument Activation Rules: events targeting roles absent from
+           ``available_roles`` are skipped.
+        4. Deduplication: events whose output would duplicate an event already
+           present from another engine are skipped (no double-application).
+        5. Malformed events (missing required fields) are skipped without raising.
+
+        Returns
+        -------
+        tuple (applied_count, skipped_count, fallback_used, fallback_reason)
+        """
+        gp_events: List[dict] = list(self._plan.get("_generative_producer_events") or [])
+
+        if not gp_events:
+            if resolved_sections:
+                logger.debug(
+                    "FinalPlanResolver [arr=%d] GP primary: no events in "
+                    "_generative_producer_events — fallback (no changes)",
+                    self._arrangement_id,
+                )
+                return 0, 0, True, "no generative producer events available"
+            return 0, 0, False, ""
+
+        # Build a name→section index for fast lookup.
+        section_by_name: Dict[str, int] = {
+            sec.section_name.strip().lower(): idx
+            for idx, sec in enumerate(resolved_sections)
+        }
+
+        # Supported render actions (import lazily to keep circular-import safe).
+        try:
+            from app.services.generative_producer_system.types import (  # noqa: PLC0415
+                SUPPORTED_RENDER_ACTIONS as _GPS_SUPPORTED,
+            )
+        except Exception:
+            _GPS_SUPPORTED = frozenset()  # type: ignore[assignment]
+
+        applied = 0
+        skipped = 0
+
+        for raw_evt in gp_events:
+            try:
+                skip_reason = self._apply_single_gp_event(
+                    raw_evt=raw_evt,
+                    resolved_sections=resolved_sections,
+                    section_by_name=section_by_name,
+                    supported_render_actions=_GPS_SUPPORTED,
+                )
+            except Exception as exc:
+                skip_reason = f"malformed event: {exc}"
+                logger.debug(
+                    "FinalPlanResolver [arr=%d] GP primary: skipping malformed event %r — %s",
+                    self._arrangement_id,
+                    raw_evt,
+                    exc,
+                )
+            if skip_reason:
+                skipped += 1
+                self._noop_annotations.append({
+                    "engine_name": "generative_producer_primary",
+                    "section": str(raw_evt.get("section_name") or ""),
+                    "planned_action": str(raw_evt.get("render_action") or raw_evt.get("event_type") or ""),
+                    "reason_not_applied": skip_reason,
+                })
+            else:
+                applied += 1
+
+        logger.info(
+            "FinalPlanResolver [arr=%d] GP primary: applied=%d skipped=%d",
+            self._arrangement_id,
+            applied,
+            skipped,
+        )
+        return applied, skipped, False, ""
+
+    def _apply_single_gp_event(
+        self,
+        raw_evt: dict,
+        resolved_sections: List[ResolvedSection],
+        section_by_name: Dict[str, int],
+        supported_render_actions: frozenset,
+    ) -> str:
+        """Apply one GP event to the matching section.
+
+        Returns an empty string on success, or a non-empty skip reason string.
+        Modifies *resolved_sections* in-place on success.
+        """
+        # --- Validate required fields ---
+        render_action = str(raw_evt.get("render_action") or "").strip()
+        event_type = str(raw_evt.get("event_type") or "").strip()
+        target_role = str(raw_evt.get("target_role") or "").strip()
+        section_name = str(raw_evt.get("section_name") or "").strip()
+        bar_start = raw_evt.get("bar_start")
+        bar_end = raw_evt.get("bar_end")
+        intensity = float(raw_evt.get("intensity") or 0.7)
+        parameters: dict = dict(raw_evt.get("parameters") or {})
+        event_id = str(raw_evt.get("event_id") or "")
+
+        if not render_action:
+            return "missing render_action"
+        if not target_role:
+            return "missing target_role"
+        if not section_name:
+            return "missing section_name"
+
+        # --- Check render_action is supported ---
+        if supported_render_actions and render_action not in supported_render_actions:
+            return f"unsupported render_action={render_action!r}"
+
+        # --- Find matching section ---
+        idx = section_by_name.get(section_name.lower())
+        if idx is None:
+            # Try prefix match (e.g. "hook 1" → "hook")
+            name_lower = section_name.lower()
+            for sec_name_key, sec_idx in section_by_name.items():
+                if sec_name_key.startswith(name_lower) or name_lower.startswith(sec_name_key):
+                    idx = sec_idx
+                    break
+        if idx is None:
+            return f"section {section_name!r} not found in resolved plan"
+
+        section = resolved_sections[idx]
+
+        # --- Rule 2: Instrument Activation Rules — skip if role absent ---
+        if self._available_roles and target_role not in self._available_roles:
+            return (
+                f"target_role={target_role!r} not in available_roles — "
+                "Instrument Activation Rules"
+            )
+
+        # --- Dispatch by render_action ---
+        if render_action == "mute_role":
+            return self._gp_apply_mute_role(section, target_role)
+        elif render_action == "unmute_role":
+            return self._gp_apply_unmute_role(section, target_role)
+        elif render_action in self._GP_PATTERN_ACTIONS:
+            return self._gp_apply_pattern_event(
+                section, render_action, target_role, event_type,
+                bar_start, bar_end, intensity, parameters, event_id,
+            )
+        elif render_action in self._GP_BOUNDARY_ACTIONS:
+            return self._gp_apply_boundary_event(
+                section, render_action, target_role, event_type,
+                bar_start, intensity, parameters,
+            )
+        elif render_action in self._GP_GROOVE_ACTIONS:
+            return self._gp_apply_groove_event(
+                section, render_action, target_role, event_type,
+                bar_start, bar_end, intensity, parameters, event_id,
+            )
+        else:
+            return f"render_action={render_action!r} has no resolver mapping"
+
+    # --- GP sub-action appliers ---
+
+    def _gp_apply_mute_role(self, section: ResolvedSection, target_role: str) -> str:
+        """Block *target_role* in *section*. Returns skip reason or ''."""
+        # Already blocked by Decision Engine or a prior GP event — no-op.
+        if target_role in section.final_blocked_roles:
+            return (
+                f"target_role={target_role!r} already in final_blocked_roles "
+                "(Decision Engine or prior GP mute)"
+            )
+        # Not in active roles — nothing to mute.
+        if target_role not in section.final_active_roles:
+            return (
+                f"target_role={target_role!r} not in final_active_roles — nothing to mute"
+            )
+        # Apply: remove from active, add to blocked.
+        section.final_active_roles = [r for r in section.final_active_roles if r != target_role]
+        if target_role not in section.final_blocked_roles:
+            section.final_blocked_roles = list(section.final_blocked_roles) + [target_role]
+        return ""
+
+    def _gp_apply_unmute_role(self, section: ResolvedSection, target_role: str) -> str:
+        """Add *target_role* back to *section*. Returns skip reason or ''."""
+        # Decision Engine has blocked this role — GP must not override.
+        if target_role in section.final_blocked_roles:
+            return (
+                f"target_role={target_role!r} is blocked by Decision Engine — "
+                "GP unmute_role cannot override"
+            )
+        # Already active — deduplication.
+        if target_role in section.final_active_roles:
+            return (
+                f"target_role={target_role!r} already in final_active_roles — dedup"
+            )
+        # Apply: add to active_roles and reentries.
+        section.final_active_roles = list(section.final_active_roles) + [target_role]
+        if target_role not in section.final_reentries:
+            section.final_reentries = list(section.final_reentries) + [target_role]
+        return ""
+
+    def _gp_apply_pattern_event(
+        self,
+        section: ResolvedSection,
+        render_action: str,
+        target_role: str,
+        event_type: str,
+        bar_start: Any,
+        bar_end: Any,
+        intensity: float,
+        parameters: dict,
+        event_id: str,
+    ) -> str:
+        """Append a pattern event to *section.final_pattern_events*."""
+        action_key = render_action
+        # Deduplication: skip if same action+role already present.
+        for existing in section.final_pattern_events:
+            if (
+                str(existing.get("action") or existing.get("type") or "") == action_key
+                and str(existing.get("role") or existing.get("target_role") or "") == target_role
+            ):
+                return (
+                    f"pattern event action={action_key!r} role={target_role!r} "
+                    "already in final_pattern_events — dedup"
+                )
+        evt: Dict[str, Any] = {
+            "action": action_key,
+            "source": "generative_producer_primary",
+            "target_role": target_role,
+            "event_type": event_type,
+            "intensity": round(intensity, 4),
+            "parameters": parameters,
+        }
+        if bar_start is not None:
+            evt["bar_start"] = int(bar_start)
+        if bar_end is not None:
+            evt["bar_end"] = int(bar_end)
+        if event_id:
+            evt["event_id"] = event_id
+        section.final_pattern_events = list(section.final_pattern_events) + [evt]
+        return ""
+
+    def _gp_apply_boundary_event(
+        self,
+        section: ResolvedSection,
+        render_action: str,
+        target_role: str,
+        event_type: str,
+        bar_start: Any,
+        intensity: float,
+        parameters: dict,
+    ) -> str:
+        """Add a boundary event to *section.final_boundary_events*."""
+        boundary_type = self._GP_ACTION_TO_BOUNDARY_TYPE.get(render_action, render_action)
+        # Deduplication: skip if same event_type already present.
+        existing_types = {evt.event_type for evt in section.final_boundary_events}
+        if boundary_type in existing_types:
+            return (
+                f"boundary event_type={boundary_type!r} already in "
+                "final_boundary_events — dedup"
+            )
+        new_evt = ResolvedBoundaryEvent(
+            event_type=boundary_type,
+            source_engine="generative_producer_primary",
+            placement="boundary",
+            intensity=round(intensity, 4),
+            bar=int(bar_start) if bar_start is not None else section.bar_start,
+            params=dict(parameters),
+        )
+        section.final_boundary_events = list(section.final_boundary_events) + [new_evt]
+        return ""
+
+    def _gp_apply_groove_event(
+        self,
+        section: ResolvedSection,
+        render_action: str,
+        target_role: str,
+        event_type: str,
+        bar_start: Any,
+        bar_end: Any,
+        intensity: float,
+        parameters: dict,
+        event_id: str,
+    ) -> str:
+        """Append a groove event to *section.final_groove_events*."""
+        action_key = render_action
+        for existing in section.final_groove_events:
+            if (
+                str(existing.get("action") or existing.get("type") or "") == action_key
+                and str(existing.get("role") or existing.get("target_role") or "") == target_role
+            ):
+                return (
+                    f"groove event action={action_key!r} role={target_role!r} "
+                    "already in final_groove_events — dedup"
+                )
+        evt: Dict[str, Any] = {
+            "action": action_key,
+            "source": "generative_producer_primary",
+            "target_role": target_role,
+            "event_type": event_type,
+            "intensity": round(intensity, 4),
+            "parameters": parameters,
+        }
+        if bar_start is not None:
+            evt["bar_start"] = int(bar_start)
+        if bar_end is not None:
+            evt["bar_end"] = int(bar_end)
+        if event_id:
+            evt["event_id"] = event_id
+        section.final_groove_events = list(section.final_groove_events) + [evt]
+        return ""
 
     # ------------------------------------------------------------------
     # Fallback

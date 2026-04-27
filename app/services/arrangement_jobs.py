@@ -6959,6 +6959,7 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 available_roles=_available_roles_for_resolver,
                 source_quality=_resolver_source_quality,
                 arrangement_id=arrangement_id,
+                generative_producer_primary=settings.feature_generative_producer_primary,
             )
             _resolved = _resolver.resolve()
             render_plan["_resolved_render_plan"] = _resolved.to_dict()
