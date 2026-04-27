@@ -304,6 +304,38 @@ class AudioArrangementGenerateRequest(BaseModel):
         description="Whether generated arrangements should be persisted to user history immediately",
     )
 
+    # ---- Intelligent Arrangement Controls ----
+    genre_override: Optional[str] = Field(
+        default=None,
+        description=(
+            "Explicit genre for template selection and IAR. "
+            "Supported: trap, drill, rnb, rage. Overrides the genre field when set."
+        ),
+    )
+    vibe_override: Optional[str] = Field(
+        default=None,
+        description=(
+            "Vibe/mood modifier applied per section. "
+            "Supported: dark, emotional, hype, pain, rage, ambient, cinematic."
+        ),
+    )
+    variation_seed: Optional[int] = Field(
+        default=None,
+        description=(
+            "Deterministic integer seed for template selection, vibe engine, and variation engine. "
+            "When omitted a stable seed is derived from the loop_id."
+        ),
+    )
+    variation_intensity: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Variation intensity from 0.0 (safe/predictable) to 1.0 (experimental). "
+            "Controls how much the arrangement deviates from the base template."
+        ),
+    )
+
     # ---- Arrangement Preset ----
     arrangement_preset: Optional[str] = Field(
         default="trap",

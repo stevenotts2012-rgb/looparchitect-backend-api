@@ -1315,6 +1315,13 @@ async def generate_arrangement(
     elif isinstance(request.seed, int):
         base_seed = int(request.seed)
 
+    # Resolve variation_seed from request (prefer variation_seed, fall back to seed)
+    _req_variation_seed: int | None = None
+    if hasattr(request, "variation_seed") and request.variation_seed is not None:
+        _req_variation_seed = int(request.variation_seed)
+    elif base_seed is not None:
+        _req_variation_seed = base_seed
+
     for variation_index in range(candidate_count):
         candidate_seed = (base_seed + variation_index) if base_seed is not None else None
         candidate_structure_json = structure_json
@@ -1334,6 +1341,31 @@ async def generate_arrangement(
                 "correlation_id": correlation_id,
                 "selected_producer_moves": list(request.producer_moves),
             })
+
+        # Inject intelligent arrangement controls into candidate_structure_json
+        # so arrangement_jobs.py can retrieve them.
+        _ia_extra: dict = {}
+        if hasattr(request, "genre_override") and request.genre_override:
+            _ia_extra["genre_override"] = request.genre_override
+        if hasattr(request, "vibe_override") and request.vibe_override:
+            _ia_extra["vibe_override"] = request.vibe_override
+        if _req_variation_seed is not None:
+            _ia_extra["variation_seed"] = _req_variation_seed + variation_index
+        if hasattr(request, "variation_intensity") and request.variation_intensity is not None:
+            _ia_extra["variation_intensity"] = float(request.variation_intensity)
+
+        if _ia_extra:
+            try:
+                _existing = json.loads(candidate_structure_json) if candidate_structure_json else {}
+                if not isinstance(_existing, dict):
+                    _existing = {}
+                _existing.update(_ia_extra)
+                candidate_structure_json = json.dumps(_existing)
+            except Exception:
+                # If JSON merge fails, store ia controls as the payload
+                candidate_structure_json = json.dumps(
+                    {"correlation_id": correlation_id, **_ia_extra}
+                )
 
         # Generate a per-candidate ProducerArrangement using a distinct structure
         # template so each option presented to the user is structurally different
@@ -1379,7 +1411,7 @@ async def generate_arrangement(
             loop_id=request.loop_id,
             status="queued",
             target_seconds=effective_target_seconds,
-            genre=request.genre,
+            genre=getattr(request, "genre_override", None) or request.genre,
             intensity=request.intensity,
             include_stems=request.include_stems,
             arrangement_json=candidate_structure_json,
