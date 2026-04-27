@@ -111,12 +111,10 @@ class TestSuggestVariationStrategy:
         )
         assert result == "role_rotation"
 
-    def test_last_none_percussion_available_not_in_prev_returns_add_percussion(self):
-        """last_used=none, no new roles but percussion is available (line 203)."""
+    def test_last_none_no_new_roles_percussion_in_both_returns_none(self):
+        """last_used=none, percussion already in prev_roles (no net-new roles) → none."""
         mem = ArrangementMemory()
-        # prev_roles include everything except percussion
-        # available_set - prev_set is empty (no new roles other than percussion)
-        # but we make available_set - prev_set == empty by having prev = available minus percussion
+        # available_set == prev_set → available_set - prev_set is empty → falls through to none
         result = mem.suggest_variation_strategy(
             section_type="verse",
             occurrence=2,

@@ -10,27 +10,8 @@ from __future__ import annotations
 import json
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from app.models.base import Base
 from app.models.loop import Loop
 from app.models.arrangement import Arrangement
-
-
-@pytest.fixture(scope="module")
-def db_session(tmp_path_factory):
-    tmp_dir = tmp_path_factory.mktemp("models_ext_db")
-    engine = create_engine(
-        f"sqlite:///{tmp_dir / 'models_ext.sqlite'}",
-        connect_args={"check_same_thread": False},
-    )
-    Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.close()
-    engine.dispose()
 
 
 # ---------------------------------------------------------------------------
