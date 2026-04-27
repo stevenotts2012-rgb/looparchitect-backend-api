@@ -437,7 +437,7 @@ class TestReentryAccentInsertion:
         )
 
     def test_accent_not_added_without_pre_hook(self):
-        """re_entry_accent must NOT be added when hook does not follow a pre-hook."""
+        """re_entry_accent must NOT be added when hook does not follow a pre_hook."""
         verse = _sec("Verse 1", "verse", 0, 8, 0.60)
         hook = _sec("Hook 1", "hook", 8, 8, 0.90)
         plan, meta = _run_engine([verse, hook])
