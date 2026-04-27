@@ -614,6 +614,22 @@ class Settings(BaseSettings):
         validation_alias="IMPACT_ENGINE_ENABLED",
     )
 
+    # Generative Producer System Shadow Mode — runs the Multi-Genre Generative
+    # Producer System as a shadow planner during arrangement jobs.
+    # Generates audio-actionable producer events (drum pattern changes, 808/bass
+    # variations, hi-hat rolls, melody chops, FX transitions, etc.) per section
+    # using deterministic procedural generation, then attaches the plan to
+    # render_plan_json for observability.
+    # Does NOT drive live rendering.  Results are stored inside render_plan_json
+    # under the ``_generative_producer_plan``, ``_generative_producer_events``,
+    # ``_generative_producer_warnings``, and ``_generative_producer_skipped_events`` keys.
+    # Enabled by default so every job emits generative producer observability data.
+    # Disable with GENERATIVE_PRODUCER_SHADOW=false to suppress the extra planning pass.
+    feature_generative_producer_shadow: bool = Field(
+        default=True,
+        validation_alias="GENERATIVE_PRODUCER_SHADOW",
+    )
+
     ffmpeg_binary: str = Field(default="", validation_alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="", validation_alias="FFPROBE_BINARY")
     enforce_audio_binaries: str = Field(default="auto", validation_alias="ENFORCE_AUDIO_BINARIES")
@@ -685,6 +701,7 @@ class Settings(BaseSettings):
         "feature_drop_engine_primary",
         "feature_motif_engine_primary",
         "feature_resolved_plan_primary",
+        "feature_generative_producer_shadow",
         mode="before",
     )
     @classmethod
