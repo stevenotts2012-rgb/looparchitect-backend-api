@@ -259,7 +259,7 @@ class TestParseIntelligentControls:
 class TestMusicalRules:
     """Verify that key musical rules hold across the full IAR → vibe pipeline."""
 
-    def test_intro_never_has_808_bass(self):
+    def test_intro_bass_inactive_or_minimal(self):
         """Bass/808 should be inactive or very low density in intro."""
         rules = get_rules_for_section("intro")
         bass = rules.get("roles", {}).get("bass", {})

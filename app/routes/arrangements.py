@@ -1350,6 +1350,8 @@ async def generate_arrangement(
         if hasattr(request, "vibe_override") and request.vibe_override:
             _ia_extra["vibe_override"] = request.vibe_override
         if _req_variation_seed is not None:
+            # Each candidate gets a unique but deterministic seed offset from the
+            # base seed so multi-candidate requests produce genuinely different outputs.
             _ia_extra["variation_seed"] = _req_variation_seed + variation_index
         if hasattr(request, "variation_intensity") and request.variation_intensity is not None:
             _ia_extra["variation_intensity"] = float(request.variation_intensity)

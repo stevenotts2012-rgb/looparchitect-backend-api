@@ -6122,9 +6122,12 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
         # Template selection — additive, never breaks existing flow
         _ia_template_id: str = "default"
         _ia_template_total_bars: int = 0
+        # Maximum BPM used to normalise loop tempo into a 0–1 energy value.
+        # 200 BPM represents the upper bound of common electronic/hip-hop tempos.
+        _MAX_BPM_FOR_ENERGY_CALC: float = 200.0
         try:
             from app.style_engine.template_selector import select_template
-            _loop_energy: float = float(bpm / 200.0) if bpm else 0.5
+            _loop_energy: float = float(bpm / _MAX_BPM_FOR_ENERGY_CALC) if bpm else 0.5
             _loop_energy = max(0.0, min(1.0, _loop_energy))
             _ia_result = select_template(
                 genre=_ia_genre,

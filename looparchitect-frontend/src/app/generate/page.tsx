@@ -218,9 +218,9 @@ export default function GeneratePage() {
 
   const handleGenerate = () => _doGenerate();
 
-  /** Re-roll: generate again with a new random seed */
+  /** Re-roll: generate again with a new random seed (positive signed 32-bit integer range) */
   const handleReRoll = () => {
-    const newSeed = Math.floor(Math.random() * 2 ** 31);
+    const newSeed = Math.floor(Math.random() * 0x7FFFFFFF);
     setForm((f) => ({ ...f, variationSeed: newSeed }));
     _doGenerate(newSeed);
   };
@@ -545,7 +545,7 @@ export default function GeneratePage() {
             )}
           </div>
           <p className="text-xs text-gray-500">
-            Colour: <span className="text-blue-700">■ low</span>{" "}
+            Color: <span className="text-blue-700">■ low</span>{" "}
             <span className="text-yellow-700">■ medium</span>{" "}
             <span className="text-red-700">■ high (hook)</span>
           </p>
