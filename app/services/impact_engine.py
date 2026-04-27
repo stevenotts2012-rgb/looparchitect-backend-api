@@ -375,12 +375,6 @@ class ImpactEngine:
                     "added_drop_event": added_event,
                     "drop_bars_enforced": _MIN_DROP_BARS,
                 })
-            elif added_event:
-                self._drop_enforcements.append({
-                    "section": sec.section_name,
-                    "added_drop_event": added_event,
-                    "drop_bars_enforced": _MIN_DROP_BARS,
-                })
 
             if patched_events != list(sec.final_boundary_events) or added_event:
                 repaired.append(dataclasses.replace(sec, final_boundary_events=patched_events))
@@ -459,8 +453,6 @@ class ImpactEngine:
         sections: List[ResolvedSection],
     ) -> List[ResolvedSection]:
         """Ensure repeated sections differ in ≥ 2 audible dimensions."""
-        # Build fingerprints: (section_type, frozenset of active roles)
-        seen: Dict[Tuple[str, frozenset], int] = {}  # fingerprint → position in sections
         idx_by_name: Dict[str, int] = {s.section_name: i for i, s in enumerate(sections)}
 
         repetition_groups: List[Dict[str, Any]] = (
@@ -481,7 +473,6 @@ class ImpactEngine:
                 sections[sec_idx] = self._differentiate_section(
                     sections[sec_idx], position
                 )
-                idx_by_name = {s.section_name: i for i, s in enumerate(sections)}
 
         return sections
 
