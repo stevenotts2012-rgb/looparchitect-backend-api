@@ -419,7 +419,10 @@ class TestDuplicateEventsDeduped:
         plan = _make_render_plan(sections=[_make_section()], gp_events=evts)
         result = _resolve(plan)
         section = result.resolved_sections[0]
-        count = sum(1 for e in section.final_pattern_events if e.get("action") == "add_hat_roll" and e.get("target_role") == "drums")
+        count = sum(
+            1 for e in section.final_pattern_events
+            if e.get("action") == "add_hat_roll" and e.get("target_role") == "drums"
+        )
         assert count == 1
 
     def test_unmute_on_already_active_role_is_skipped(self):
