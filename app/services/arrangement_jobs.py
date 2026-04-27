@@ -4525,6 +4525,146 @@ def _run_ai_producer_system_shadow(
     return result
 
 
+def _run_generative_producer_shadow(
+    render_plan: dict,
+    available_roles: list[str],
+    arrangement_id: int,
+    correlation_id: str,
+) -> dict:
+    """Run the Generative Producer System as a shadow planner (non-blocking).
+
+    Generates audio-actionable producer events (drum patterns, 808/bass
+    variations, hi-hat rolls, melody chops, FX transitions, etc.) for every
+    section using deterministic procedural generation.
+
+    The result is stored in render_plan under:
+    - ``_generative_producer_plan``      – full ProducerPlan dict
+    - ``_generative_producer_events``    – flat event list
+    - ``_generative_producer_warnings``  – warnings list
+    - ``_generative_producer_skipped_events`` – skipped events
+
+    It never raises — any exception is caught and recorded so the live
+    render path is completely unaffected.
+
+    Returns
+    -------
+    dict with keys:
+
+    * ``plan``            – serialised ProducerPlan or ``None``
+    * ``events``          – list of serialised ProducerEvent dicts
+    * ``warnings``        – list of warning strings
+    * ``skipped_events``  – list of serialised SkippedEvent dicts
+    * ``genre``           – resolved genre string
+    * ``vibe``            – vibe string
+    * ``seed``            – seed used
+    * ``event_count``     – total kept events
+    * ``skipped_count``   – total skipped events
+    * ``section_variation_score`` – float
+    * ``event_count_per_section`` – dict
+    * ``error``           – error message on failure, ``None`` on success
+    """
+    from app.services.generative_producer_system.orchestrator import (
+        GenerativeProducerOrchestrator,
+        plan_to_dict,
+    )
+
+    result: dict = {
+        "plan": None,
+        "events": [],
+        "warnings": [],
+        "skipped_events": [],
+        "genre": "",
+        "vibe": "",
+        "seed": 0,
+        "event_count": 0,
+        "skipped_count": 0,
+        "section_variation_score": 0.0,
+        "event_count_per_section": {},
+        "error": None,
+    }
+
+    try:
+        sections_raw = render_plan.get("sections") or []
+        if not sections_raw:
+            logger.info(
+                "GENERATIVE_PRODUCER_SHADOW [arr=%d] no sections in render plan — skipping",
+                arrangement_id,
+            )
+            return result
+
+        genre = str(render_plan.get("selected_genre") or render_plan.get("genre") or "generic")
+        vibe = str(render_plan.get("selected_vibe") or render_plan.get("vibe") or "")
+        seed = int(render_plan.get("variation_seed") or 0)
+
+        # Build normalised section list
+        section_template: list[dict] = []
+        current_bar = 0
+        for s in sections_raw:
+            name = str(s.get("type") or s.get("name") or "verse").strip().lower()
+            bars = int(s.get("bars") or 8)
+            bar_start = int(s.get("bar_start", current_bar))
+            bar_end = int(s.get("bar_end", bar_start + bars))
+            section_template.append({
+                "name": name,
+                "bars": bars,
+                "bar_start": bar_start,
+                "bar_end": bar_end,
+            })
+            current_bar = bar_end
+
+        orchestrator = GenerativeProducerOrchestrator(
+            available_roles=available_roles,
+            arrangement_id=arrangement_id,
+            correlation_id=correlation_id,
+        )
+        plan = orchestrator.run(
+            sections=section_template,
+            genre=genre,
+            vibe=vibe,
+            seed=seed,
+        )
+        plan_dict = plan_to_dict(plan)
+
+        result.update({
+            "plan": plan_dict,
+            "events": plan_dict.get("events", []),
+            "warnings": plan_dict.get("warnings", []),
+            "skipped_events": plan_dict.get("skipped_events", []),
+            "genre": plan.genre,
+            "vibe": plan.vibe,
+            "seed": plan.seed,
+            "event_count": len(plan.events),
+            "skipped_count": len(plan.skipped_events),
+            "section_variation_score": plan.section_variation_score,
+            "event_count_per_section": plan.event_count_per_section,
+        })
+
+        log_feature_event(
+            logger,
+            event="generative_producer_shadow_built",
+            correlation_id=correlation_id,
+            arrangement_id=arrangement_id,
+            genre=plan.genre,
+            vibe=plan.vibe,
+            seed=plan.seed,
+            event_count=len(plan.events),
+            skipped_count=len(plan.skipped_events),
+            section_variation_score=plan.section_variation_score,
+            warning_count=len(plan.warnings),
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "GENERATIVE_PRODUCER_SHADOW [arr=%d] planning failed (non-blocking): %s",
+            arrangement_id,
+            exc,
+            exc_info=True,
+        )
+        result["error"] = str(exc)
+
+    return result
+
+
 def _run_drop_engine_shadow(
     render_plan: dict,
     available_roles: list[str],
@@ -7070,6 +7210,63 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 _audit_exc,
                 exc_info=True,
             )
+
+        # ====================================================================
+        # GENERATIVE PRODUCER SYSTEM: shadow planning.
+        #
+        # Generates audio-actionable producer events (drum pattern changes,
+        # 808/bass variations, hi-hat rolls, melody chops, FX transitions,
+        # section-specific dropouts, hook payoff boosts, etc.) for every
+        # section using deterministic procedural generation.
+        #
+        # Runs AFTER the Resolved Arrangement Plan is built and AFTER genre/vibe
+        # are selected.  Shadow mode only — does NOT drive live rendering.
+        #
+        # Results are stored in render_plan_json under:
+        #   _generative_producer_plan
+        #   _generative_producer_events
+        #   _generative_producer_warnings
+        #   _generative_producer_skipped_events
+        #
+        # Disable with GENERATIVE_PRODUCER_SHADOW=false.
+        # ====================================================================
+        if settings.feature_generative_producer_shadow:
+            try:
+                _gp_roles: list[str] = []
+                if stem_metadata and stem_metadata.get("enabled") and stem_metadata.get("succeeded"):
+                    _gp_roles = [
+                        str(r).lower()
+                        for r in (stem_metadata.get("stem_roles") or [])
+                        if r
+                    ]
+
+                _gp_result = _run_generative_producer_shadow(
+                    render_plan=render_plan,
+                    available_roles=_gp_roles,
+                    arrangement_id=arrangement_id,
+                    correlation_id=correlation_id,
+                )
+                render_plan["_generative_producer_plan"] = _gp_result.get("plan")
+                render_plan["_generative_producer_events"] = _gp_result.get("events", [])
+                render_plan["_generative_producer_warnings"] = _gp_result.get("warnings", [])
+                render_plan["_generative_producer_skipped_events"] = _gp_result.get("skipped_events", [])
+
+                # Observability metadata
+                render_plan["generative_producer_enabled"] = True
+                render_plan["generative_producer_genre"] = _gp_result.get("genre", "")
+                render_plan["generative_producer_vibe"] = _gp_result.get("vibe", "")
+                render_plan["producer_events_generated"] = _gp_result.get("event_count", 0)
+                render_plan["producer_event_count_per_section"] = _gp_result.get("event_count_per_section", {})
+                render_plan["producer_section_variation_score"] = _gp_result.get("section_variation_score", 0.0)
+                render_plan["producer_skipped_event_count"] = _gp_result.get("skipped_count", 0)
+            except Exception as _gp_exc:
+                logger.warning(
+                    "GENERATIVE_PRODUCER_SHADOW [arr=%d] outer integration failed (non-blocking): %s",
+                    arrangement_id,
+                    _gp_exc,
+                    exc_info=True,
+                )
+                render_plan["generative_producer_enabled"] = False
 
         arrangement.render_plan_json = json.dumps(render_plan)
         db.commit()
