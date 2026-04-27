@@ -6673,6 +6673,86 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
                 applied_role_mutes=len(_audit.applied_role_mutes),
                 applied_reintroductions=len(_audit.applied_reintroductions),
             )
+
+            # ==============================================================
+            # PRODUCTION QUALITY AUDIT → REPAIR PASS → RE-AUDIT
+            #
+            # Enabled behind PRODUCTION_QUALITY_REPAIR=true (default: false).
+            # Repairs are deterministic and non-blocking: if the repair pass
+            # fails, the original resolved plan is used unchanged.
+            #
+            # Results stored in render_plan["_production_quality_repair"]:
+            #   production_quality_repair_applied   bool
+            #   production_quality_repairs          list[dict]
+            #   production_quality_repair_count     int
+            #   post_repair_quality_report          dict
+            #   repair_failed_reason                str  (on failure only)
+            # ==============================================================
+            if settings.feature_production_quality_repair:
+                try:
+                    from app.services.production_quality_auditor import (
+                        ProductionQualityAuditor,
+                    )
+                    from app.services.production_quality_repair import (
+                        ProductionQualityRepair,
+                    )
+
+                    # Initial audit
+                    _pq_auditor = ProductionQualityAuditor(
+                        _resolved,
+                        raw_render_plan=render_plan,
+                        arrangement_id=arrangement_id,
+                    )
+                    _pq_report = _pq_auditor.audit()
+
+                    # Repair pass
+                    _pq_repair = ProductionQualityRepair(
+                        resolved_plan=_resolved,
+                        production_quality_report=_pq_report,
+                        available_roles=_available_roles_for_resolver,
+                        genre=str(render_plan.get("genre") or "generic"),
+                        arrangement_id=arrangement_id,
+                    )
+                    _repaired_plan, _repair_meta = _pq_repair.repair()
+
+                    # Re-audit the repaired plan
+                    _post_auditor = ProductionQualityAuditor(
+                        _repaired_plan,
+                        raw_render_plan=render_plan,
+                        arrangement_id=arrangement_id,
+                    )
+                    _repair_meta["post_repair_quality_report"] = _post_auditor.audit()
+
+                    render_plan["_production_quality_repair"] = _repair_meta
+
+                    # Promote the repaired plan as the canonical resolved plan
+                    _resolved = _repaired_plan
+                    render_plan["_resolved_render_plan"] = _repaired_plan.to_dict()
+
+                    log_feature_event(
+                        logger,
+                        event="production_quality_repair_applied",
+                        correlation_id=correlation_id,
+                        arrangement_id=arrangement_id,
+                        repair_count=_repair_meta.get("production_quality_repair_count", 0),
+                        repair_applied=_repair_meta.get("production_quality_repair_applied", False),
+                        post_repair_repetition_score=(
+                            _repair_meta.get("post_repair_quality_report", {})
+                            .get("repetition_score", 0)
+                        ),
+                        post_repair_hook_payoff_score=(
+                            _repair_meta.get("post_repair_quality_report", {})
+                            .get("hook_payoff_score", 0)
+                        ),
+                    )
+                except Exception as _repair_exc:
+                    logger.warning(
+                        "PRODUCTION_QUALITY_REPAIR [arr=%d] integration failed (non-blocking): %s",
+                        arrangement_id,
+                        _repair_exc,
+                        exc_info=True,
+                    )
+
         except Exception as _audit_exc:
             logger.warning(
                 "RENDER_TRUTH_AUDIT [arr=%d] failed (non-blocking): %s",
