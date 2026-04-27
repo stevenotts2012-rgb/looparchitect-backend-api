@@ -68,8 +68,10 @@ def apply_mastering(audio: AudioSegment, *, genre: str | None) -> MasteringResul
 
     post_peak = _safe_peak(mastered)
     target_ceiling_dbfs = -1.0
-    if post_peak > target_ceiling_dbfs:
-        mastered = mastered - (post_peak - target_ceiling_dbfs)
+    _SILENCE_FLOOR_DB = -60.0
+    if post_peak > _SILENCE_FLOOR_DB:
+        # Normalize to target ceiling: boost quiet audio up as well as limit loud audio.
+        mastered = mastered + (target_ceiling_dbfs - post_peak)
 
     after_peak = _safe_peak(mastered)
     return MasteringResult(
