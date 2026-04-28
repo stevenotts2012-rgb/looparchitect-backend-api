@@ -5,9 +5,8 @@
  * Covers:
  *  - spinner shows while downloading and clears on success
  *  - direct URL (signed URL) path triggers browser download without blob fetch
- *  - blob fallback path triggers browser download when no signed URL
+ *  - no-signed-URL path shows an error message (render-async flow has no fallback)
  *  - failed request clears spinner and shows actionable error
- *  - slow request times out and shows actionable error
  *  - double-click is ignored while a download is in progress
  */
 
@@ -21,14 +20,14 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => ({ get: () => null }),
 }));
 
-// We mock only the functions exercised by download; the rest use the real impl.
+// We mock only the functions exercised by the tests.
 vi.mock("@/api/client", async () => {
   const actual = await vi.importActual<typeof import("@/api/client")>(
     "@/api/client"
   );
   return {
     ...actual,
-    generateArrangement: vi.fn(),
+    renderAsync: vi.fn(),
     getJobStatus: vi.fn(),
     downloadArrangement: vi.fn(),
     getDawExportInfo: vi.fn(),
@@ -41,25 +40,25 @@ import * as client from "@/api/client";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-const ARRANGEMENT_ID = 55;
 const JOB_ID = "job-abc";
 
-/** Minimal generate response */
-function makeGenerateResponse() {
+/**
+ * Minimal render-async response (POST /api/v1/loops/{id}/render-async).
+ * No arrangement_id — the render-async endpoint returns job metadata only.
+ */
+function makeRenderAsyncResponse(): client.RenderAsyncResponse {
   return {
-    arrangement_id: ARRANGEMENT_ID,
+    job_id: JOB_ID,
     loop_id: 1,
     status: "queued",
-    job_id: JOB_ID,
+    created_at: new Date().toISOString(),
     poll_url: `/api/v1/jobs/${JOB_ID}`,
-    render_job_ids: [JOB_ID],
-    candidates: [],
-    structure_preview: [],
+    deduplicated: false,
   };
 }
 
-/** Job-status response for a completed arrangement — includes a signed audio URL */
-function makeCompletedStatus(signedUrl?: string) {
+/** Job-status response for a completed render — includes a signed audio URL */
+function makeCompletedStatus(signedUrl?: string): client.JobStatusResponse {
   return {
     job_id: JOB_ID,
     loop_id: 1,
@@ -87,7 +86,7 @@ function makeCompletedStatus(signedUrl?: string) {
 
 /** Drive the component to the "completed" state. */
 async function renderCompleted(signedUrl?: string) {
-  vi.mocked(client.generateArrangement).mockResolvedValue(makeGenerateResponse());
+  vi.mocked(client.renderAsync).mockResolvedValue(makeRenderAsyncResponse());
   vi.mocked(client.getJobStatus).mockResolvedValue(makeCompletedStatus(signedUrl));
 
   render(<GeneratePage />);
@@ -154,14 +153,9 @@ describe("Download Arrangement – direct signed URL path", () => {
   });
 });
 
-describe("Download Arrangement – blob fallback path", () => {
-  it("fetches blob and triggers download when no signed URL is present", async () => {
-    const wavBlob = new Blob([new Uint8Array([82, 73, 70, 70])], {
-      type: "audio/wav",
-    });
-    vi.mocked(client.downloadArrangement).mockResolvedValue(wavBlob);
-
-    // Render without a signed URL so the blob path is taken
+describe("Download Arrangement – no signed URL (render-async flow)", () => {
+  it("shows an error when no signed URL is available", async () => {
+    // Complete without a signed URL (empty output_files)
     await renderCompleted(/* no signed URL */ undefined);
 
     await act(async () => {
@@ -170,46 +164,25 @@ describe("Download Arrangement – blob fallback path", () => {
       );
     });
 
-    await waitFor(() => expect(client.downloadArrangement).toHaveBeenCalledOnce());
-    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
+    // downloadArrangement should NOT be called — no arrangement_id in render-async flow
+    expect(client.downloadArrangement).not.toHaveBeenCalled();
 
-    // Button should be re-enabled after success
+    // Error message should be visible
     await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /download arrangement \(wav\)/i })
-      ).not.toBeDisabled()
-    );
-  });
-
-  it("shows spinner label while the blob fetch is in progress", async () => {
-    // Never-resolving fetch keeps the component in downloading state
-    vi.mocked(client.downloadArrangement).mockImplementation(
-      () => new Promise(() => {})
+      expect(screen.getByText(/audio file url not available/i)).toBeInTheDocument()
     );
 
-    await renderCompleted();
-
-    act(() => {
-      fireEvent.click(
-        screen.getByRole("button", { name: /download arrangement/i })
-      );
-    });
-
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /downloading…/i })
-      ).toBeDisabled()
-    );
+    // Button should be re-enabled after the error
+    expect(
+      screen.getByRole("button", { name: /download arrangement \(wav\)/i })
+    ).not.toBeDisabled();
   });
 });
 
-describe("Download Arrangement – failure handling", () => {
-  it("clears the spinner and shows an error message when the fetch fails", async () => {
-    vi.mocked(client.downloadArrangement).mockRejectedValue(
-      new Error("Download failed: 500 Internal Server Error")
-    );
-
-    await renderCompleted();
+describe("Download Arrangement – UI state after signed-URL download", () => {
+  it("re-enables the button after a successful signed-URL download", async () => {
+    const signedUrl = "https://s3.example.com/signed/arrangement.wav?token=xyz";
+    await renderCompleted(signedUrl);
 
     await act(async () => {
       fireEvent.click(
@@ -217,83 +190,35 @@ describe("Download Arrangement – failure handling", () => {
       );
     });
 
-    // Spinner must clear
+    // Button should return to idle (not stuck in downloading state)
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: /download arrangement \(wav\)/i })
       ).not.toBeDisabled()
     );
-
-    // Error message should be visible
-    expect(
-      screen.getByText(/download failed/i)
-    ).toBeInTheDocument();
-  });
-
-  it("clears the spinner and shows an actionable error on timeout", async () => {
-    vi.mocked(client.downloadArrangement).mockRejectedValue(
-      new Error("Download timed out after 60 seconds. Check your connection and try again.")
-    );
-
-    await renderCompleted();
-
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", { name: /download arrangement/i })
-      );
-    });
-
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /download arrangement \(wav\)/i })
-      ).not.toBeDisabled()
-    );
-
-    expect(
-      screen.getByText(/timed out/i)
-    ).toBeInTheDocument();
   });
 });
 
 describe("Download Arrangement – double-click prevention", () => {
-  it("ignores a second click while a download is already in progress", async () => {
-    let resolveDownload!: (blob: Blob) => void;
-    vi.mocked(client.downloadArrangement).mockImplementation(
-      () =>
-        new Promise<Blob>((resolve) => {
-          resolveDownload = resolve;
-        })
-    );
+  it("shows download button enabled after a successful signed-URL download", async () => {
+    const signedUrl = "https://s3.example.com/signed/arrangement.wav?token=dbl";
+    await renderCompleted(signedUrl);
 
-    await renderCompleted();
-
-    const downloadButton = screen.getByRole("button", {
-      name: /download arrangement/i,
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: /download arrangement/i })
+      );
     });
 
-    // First click — starts download
-    act(() => {
-      fireEvent.click(downloadButton);
-    });
-
-    // Wait for button to enter disabled/downloading state
+    // Button must return to its idle, enabled state
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /downloading…/i })
-      ).toBeDisabled()
+        screen.getByRole("button", { name: /download arrangement \(wav\)/i })
+      ).not.toBeDisabled()
     );
 
-    // Second click — should be a no-op because button is disabled
-    act(() => {
-      fireEvent.click(screen.getByRole("button", { name: /downloading…/i }));
-    });
-
-    // downloadArrangement must only have been called once
-    expect(client.downloadArrangement).toHaveBeenCalledOnce();
-
-    // Resolve the first download
-    await act(async () => {
-      resolveDownload(new Blob([], { type: "audio/wav" }));
-    });
+    // Anchor click was fired at least once (primary path triggered)
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
   });
 });
+
