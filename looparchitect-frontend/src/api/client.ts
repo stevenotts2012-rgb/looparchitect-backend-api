@@ -218,10 +218,82 @@ async function apiFetch<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Arrangement generation
+// Async render job  (primary generate path)
 // ---------------------------------------------------------------------------
 
 /**
+ * Configuration body for POST /api/v1/loops/{loop_id}/render-async.
+ *
+ * Maps to the backend `RenderConfig` Pydantic model.
+ */
+export interface RenderAsyncConfig {
+  genre?: string;
+  length_seconds?: number;
+  energy?: string;
+  variations?: number;
+  variation_styles?: string[];
+  custom_style?: string;
+}
+
+/**
+ * Response from POST /api/v1/loops/{loop_id}/render-async.
+ *
+ * Maps to the backend `RenderJobResponse` Pydantic model.
+ * Use `job_id` with `getJobStatus()` to poll for progress.
+ */
+export interface RenderAsyncResponse {
+  job_id: string;
+  loop_id: number;
+  /** queued | processing | completed | failed */
+  status: string;
+  created_at: string;
+  /** Convenience URL: /api/v1/jobs/{job_id} */
+  poll_url: string;
+  /** True when the request was deduplicated against an existing active job. */
+  deduplicated: boolean;
+}
+
+/**
+ * Enqueue an async render job for a loop.
+ *
+ * Calls POST /api/v1/loops/{loop_id}/render-async and returns immediately
+ * with a `job_id`.  Use `getJobStatus(job_id)` to poll for progress.
+ *
+ * Debug events emitted in non-production environments:
+ *   render_async_request_sent  — before the POST is sent
+ *   render_job_id_received     — after the POST returns with a job_id
+ */
+export async function renderAsync(
+  loopId: number,
+  config?: RenderAsyncConfig
+): Promise<RenderAsyncResponse> {
+  if (process.env.NODE_ENV !== "production") {
+    console.debug("[render_async_request_sent]", { loopId, config });
+  }
+  const response = await apiFetch<RenderAsyncResponse>(
+    `/api/v1/loops/${loopId}/render-async`,
+    {
+      method: "POST",
+      body: JSON.stringify(config ?? {}),
+    }
+  );
+  if (process.env.NODE_ENV !== "production") {
+    console.debug("[render_job_id_received]", {
+      job_id: response.job_id,
+      loop_id: response.loop_id,
+      status: response.status,
+    });
+  }
+  return response;
+}
+
+// ---------------------------------------------------------------------------
+// Arrangement generation  (legacy — kept for reference; use renderAsync)
+// ---------------------------------------------------------------------------
+
+/**
+ * @deprecated Use renderAsync() instead.
+ *
  * Trigger arrangement generation for a loop.
  *
  * The returned `job_id` (and `poll_url`) should be used with `getJobStatus()`
