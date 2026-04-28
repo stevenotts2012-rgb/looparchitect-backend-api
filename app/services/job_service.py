@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -76,7 +77,6 @@ def create_render_job(
         return existing_job, True
     
     # Create new job
-    import uuid
     job_id = str(uuid.uuid4())
     
     job = RenderJob(
@@ -96,10 +96,18 @@ def create_render_job(
     arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
 
     logger.info(
-        "App render job created: app_job_id=%s arrangement_id=%s loop_id=%s",
+        "render_job_db_created: job_id=%s loop_id=%s queue_name=%s arrangement_id=%s",
         job_id,
-        arrangement_id,
         loop_id,
+        DEFAULT_RENDER_QUEUE_NAME,
+        arrangement_id,
+    )
+
+    logger.info(
+        "render_job_enqueue_attempt: job_id=%s loop_id=%s queue_name=%s",
+        job_id,
+        loop_id,
+        DEFAULT_RENDER_QUEUE_NAME,
     )
 
     # Enqueue to Redis (never leave silent orphaned queued jobs on enqueue failure)
@@ -119,19 +127,19 @@ def create_render_job(
             job_timeout=-1,
         )
         logger.info(
-            "Render job enqueued: app_job_id=%s rq_job_id=%s arrangement_id=%s loop_id=%s queue_name=%s function_name=%s",
+            "render_job_enqueued_success: job_id=%s rq_job_id=%s loop_id=%s queue_name=%s",
             job_id,
             getattr(rq_job, "id", None),
-            arrangement_id,
             loop_id,
             queue.name,
-            render_loop_worker.__name__,
         )
     except Exception as enqueue_error:
         logger.exception(
-            "Failed to enqueue render job: job_id=%s loop_id=%s",
+            "render_job_enqueue_failed: job_id=%s loop_id=%s queue_name=%s error=%s",
             job_id,
             loop_id,
+            DEFAULT_RENDER_QUEUE_NAME,
+            enqueue_error,
         )
         job.status = "failed"
         job.error_message = f"Queue enqueue failed: {enqueue_error}"
