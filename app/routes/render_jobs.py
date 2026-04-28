@@ -1,6 +1,8 @@
 
 """Async render job endpoints - Redis queue-based background processing."""
 
+import logging
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,7 @@ from app.schemas.job import RenderJobRequest, RenderJobResponse, RenderJobStatus
 from app.services.job_service import create_render_job, get_job_status, list_loop_jobs
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ── Async Job Endpoints ───────────────────────────────────────────────────────────
@@ -27,6 +30,8 @@ async def render_arrangement_async(
     
     Returns immediately with job_id. Poll GET /api/v1/jobs/{job_id} for status.
     """
+    logger.info("render_async_request_received: loop_id=%s", loop_id)
+
     # Check Redis availability first
     if not is_redis_available():
         raise HTTPException(
