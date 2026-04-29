@@ -70,6 +70,12 @@ class RenderJobStatusResponse(BaseModel):
         None, description="Phase 3 render observability metadata"
     )
 
+    # ID of the Arrangement record created or updated when the render succeeds.
+    # Absent for jobs that have not yet completed or that pre-date this feature.
+    arrangement_id: Optional[int] = Field(
+        None, description="Arrangement DB record linked to this completed job"
+    )
+
     @field_validator("status", mode="before")
     @classmethod
     def normalize_succeeded(cls, v: str) -> str:

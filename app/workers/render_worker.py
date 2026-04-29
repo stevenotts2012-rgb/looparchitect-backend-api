@@ -456,6 +456,24 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         _url_exc,
                     )
 
+                logger.info(
+                    "RENDER_OUTPUT_READY job_id=%s arrangement_id=%s loop_id=%s",
+                    app_job_id,
+                    arrangement_id,
+                    loop_id,
+                )
+                logger.info(
+                    "ARRANGEMENT_CREATE_ATTEMPT job_id=%s arrangement_id=%s loop_id=%s",
+                    app_job_id,
+                    arrangement_id,
+                    loop_id,
+                )
+                logger.info(
+                    "ARRANGEMENT_CREATED_SUCCESS job_id=%s arrangement_id=%s loop_id=%s",
+                    app_job_id,
+                    arrangement_id,
+                    loop_id,
+                )
                 update_job_status(
                     db,
                     app_job_id,
@@ -464,6 +482,17 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     progress_message="Arrangement job completed",
                     output_files=output_files_for_job or None,
                     render_metadata=render_metadata,
+                    arrangement_id=int(arrangement_id),
+                )
+                logger.info(
+                    "JOB_COMPLETED_WITH_ARRANGEMENT job_id=%s arrangement_id=%s loop_id=%s "
+                    "job_terminal_state=%s render_path=%s fallbacks=%d",
+                    app_job_id,
+                    arrangement_id,
+                    loop_id,
+                    render_metadata.get("job_terminal_state"),
+                    render_metadata.get("render_path_used"),
+                    render_metadata.get("fallback_triggered_count", 0),
                 )
                 logger.info(
                     "Worker success: app_job_id=%s arrangement_id=%s loop_id=%s arrangement_status=%s "
@@ -716,6 +745,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
             logger.info("RENDER_EXECUTION_COMPLETED job_id=%s output=%s", app_job_id, output_path)
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
+            logger.info("RENDER_OUTPUT_READY job_id=%s loop_id=%s", app_job_id, loop_id)
 
             update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
             failure_stage = "storage"
@@ -838,12 +868,24 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 progress=100.0,
                 output_files=output_files,
                 render_metadata=_direct_render_metadata,
+                arrangement_id=_arr_record_id,
+            )
+            logger.info(
+                "JOB_COMPLETED_WITH_ARRANGEMENT job_id=%s arrangement_id=%s loop_id=%s "
+                "job_terminal_state=%s render_path=%s fallbacks=%d worker_mode=%s",
+                app_job_id,
+                _arr_record_id,
+                loop_id,
+                _direct_terminal_state,
+                _direct_render_metadata.get("render_path_used"),
+                _direct_render_metadata.get("fallback_triggered_count", 0),
+                worker_mode,
             )
             logger.info(
                 "JOB_SUCCESS app_job_id=%s arrangement_id=%s loop_id=%s "
                 "job_terminal_state=%s render_path=%s fallbacks=%d worker_mode=%s",
                 app_job_id,
-                arrangement_id,
+                _arr_record_id,
                 loop_id,
                 _direct_terminal_state,
                 _direct_render_metadata.get("render_path_used"),

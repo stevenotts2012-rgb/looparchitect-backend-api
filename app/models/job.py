@@ -44,6 +44,10 @@ class RenderJob(Base):
     # TTL for completed jobs (optional future cleanup)
     expires_at = Column(DateTime, nullable=True)
 
+    # Linked Arrangement record created/updated when the render succeeds.
+    # Allows GET /api/v1/jobs/{job_id} to surface arrangement_id directly.
+    arrangement_id = Column(Integer, ForeignKey("arrangements.id"), nullable=True, index=True)
+
     # Phase 3 render observability — JSON blob with execution metadata:
     # render_path_used, worker_mode, job_terminal_state, failure_stage,
     # fallback_triggered_count, fallback_reasons, planned/actual stem maps,
