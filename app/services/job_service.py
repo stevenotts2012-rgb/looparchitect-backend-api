@@ -162,6 +162,7 @@ def update_job_status(
     error_message: str = None,
     output_files: List[OutputFile] = None,
     render_metadata: Optional[Dict] = None,
+    arrangement_id: Optional[int] = None,
 ) -> RenderJob:
     """Update job status inline (called by worker)."""
     job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
@@ -176,6 +177,8 @@ def update_job_status(
         job.progress_message = progress_message
     if error_message is not None:
         job.error_message = error_message
+    if arrangement_id is not None:
+        job.arrangement_id = arrangement_id
     
     if status == "processing" and not job.started_at:
         job.started_at = datetime.utcnow()
@@ -251,6 +254,7 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
         error_message=job.error_message,
         retry_count=job.retry_count,
         render_metadata=render_metadata,
+        arrangement_id=getattr(job, "arrangement_id", None),
     )
 
 
