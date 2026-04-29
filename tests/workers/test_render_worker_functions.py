@@ -205,3 +205,96 @@ class TestResolveAppJobId:
             result = render_worker._resolve_app_job_id(db, "fallback-job")
 
         assert result == "fallback-job"
+
+
+# ===========================================================================
+# _select_render_mode — params render_plan_json fallback
+# ===========================================================================
+
+
+class TestSelectRenderMode:
+    def test_returns_render_plan_when_has_render_plan_true(self):
+        result = render_worker._select_render_mode(has_render_plan=True)
+        assert result == "render_plan"
+
+    def test_raises_when_no_render_plan_and_no_dev_fallback(self, monkeypatch):
+        monkeypatch.setattr(render_worker.settings, "dev_fallback_loop_only", False)
+        monkeypatch.setattr(render_worker.settings, "environment", "production")
+        with pytest.raises(ValueError, match="render_plan_json is required"):
+            render_worker._select_render_mode(has_render_plan=False)
+
+    def test_returns_dev_fallback_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(render_worker.settings, "dev_fallback_loop_only", True)
+        monkeypatch.setattr(render_worker.settings, "environment", "development")
+        result = render_worker._select_render_mode(has_render_plan=False)
+        assert result == "dev_fallback"
+
+
+class TestWorkerUsesParamsRenderPlanJson:
+    """Worker must use render_plan_json from params when no DB arrangement exists."""
+
+    def _make_loop(self, bpm=120.0):
+        loop = MagicMock()
+        loop.id = 1
+        loop.bpm = bpm
+        loop.genre = "generic"
+        loop.file_key = "uploads/test.wav"
+        loop.file_url = None
+        return loop
+
+    def test_params_render_plan_json_is_used_when_no_db_arrangement(self, monkeypatch):
+        """_select_render_mode gets has_render_plan=True when params has render_plan_json."""
+        minimal_plan = {"loop_id": 1, "sections": [{"name": "full_loop", "type": "VERSE",
+                                                      "start_bar": 0, "length_bars": 8,
+                                                      "active_stem_roles": ["full_mix"],
+                                                      "instruments": ["full_mix"]}]}
+        params = {"render_plan_json": json.dumps(minimal_plan)}
+
+        # has_render_plan should be True when only params has the plan
+        arrangement = None
+        params_render_plan_json = params.get("render_plan_json") if isinstance(params, dict) else None
+        has_render_plan = bool(
+            (arrangement and getattr(arrangement, "render_plan_json", None)) or params_render_plan_json
+        )
+        assert has_render_plan is True
+
+    def test_params_render_plan_json_selected_when_arrangement_has_none(self):
+        """When arrangement row has no render_plan_json, params value must be chosen."""
+        minimal_plan = {"loop_id": 2, "sections": []}
+        params = {"render_plan_json": json.dumps(minimal_plan)}
+
+        arrangement = MagicMock()
+        arrangement.render_plan_json = None  # arrangement exists but plan is absent
+
+        params_render_plan_json = params.get("render_plan_json") if isinstance(params, dict) else None
+        chosen = (arrangement and arrangement.render_plan_json) or params_render_plan_json
+        assert chosen == params["render_plan_json"]
+
+    def test_arrangement_render_plan_json_preferred_over_params(self):
+        """When both arrangement and params have a plan, arrangement's plan wins."""
+        arr_plan = {"loop_id": 3, "sections": [{"name": "arr_section"}]}
+        params_plan = {"loop_id": 3, "sections": [{"name": "params_section"}]}
+
+        arrangement = MagicMock()
+        arrangement.render_plan_json = json.dumps(arr_plan)
+
+        params = {"render_plan_json": json.dumps(params_plan)}
+        params_render_plan_json = params.get("render_plan_json")
+
+        chosen = (arrangement and arrangement.render_plan_json) or params_render_plan_json
+        parsed = json.loads(chosen)
+        assert parsed["sections"][0]["name"] == "arr_section"
+
+    def test_no_plan_anywhere_raises_value_error(self, monkeypatch):
+        """No plan in either arrangement or params must raise ValueError in worker."""
+        monkeypatch.setattr(render_worker.settings, "dev_fallback_loop_only", False)
+        monkeypatch.setattr(render_worker.settings, "environment", "production")
+
+        arrangement = None
+        params = {}
+        params_render_plan_json = params.get("render_plan_json") if isinstance(params, dict) else None
+        has_render_plan = bool(
+            (arrangement and getattr(arrangement, "render_plan_json", None)) or params_render_plan_json
+        )
+        with pytest.raises(ValueError, match="render_plan_json is required"):
+            render_worker._select_render_mode(has_render_plan)

@@ -1,7 +1,9 @@
 
 """Async render job endpoints - Redis queue-based background processing."""
 
+import json
 import logging
+from typing import Dict
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,6 +17,42 @@ from app.services.job_service import create_render_job, get_job_status, list_loo
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _build_minimal_render_plan(loop: Loop, params: Dict) -> dict:
+    """Build a minimal valid render plan from a loop when no existing plan is available.
+
+    Prefers the loop's own bpm/bars values; falls back to safe defaults so the
+    worker always receives a well-formed plan.
+    """
+    bpm = float(loop.bpm or loop.tempo or 120.0)
+    loop_length_bars = int(loop.bars or 8)
+
+    # Discover available stem roles; fall back to a sensible generic set.
+    available_roles: list = []
+    try:
+        stem_roles = loop.stem_roles  # dict of {role: file_key}
+        if stem_roles:
+            available_roles = list(stem_roles.keys())
+    except Exception:
+        pass
+    if not available_roles:
+        available_roles = ["full_mix"]
+
+    return {
+        "loop_id": loop.id,
+        "bpm": bpm,
+        "sections": [
+            {
+                "name": "full_loop",
+                "type": "VERSE",
+                "start_bar": 0,
+                "length_bars": loop_length_bars,
+                "active_stem_roles": available_roles,
+                "instruments": available_roles,
+            }
+        ],
+    }
 
 
 # ── Async Job Endpoints ───────────────────────────────────────────────────────────
@@ -45,7 +83,62 @@ async def render_arrangement_async(
 
     if not (loop.file_key or loop.file_url):
         raise HTTPException(status_code=400, detail="Loop has no associated audio file")
-    
+
+    # ── Build render_plan_json ────────────────────────────────────────────────
+    # Prefer an existing arrangement's render_plan_json; otherwise build a
+    # minimal valid plan so the worker always receives one.
+    render_plan_json: str | None = None
+
+    logger.info("render_plan_json_build_started: loop_id=%s", loop_id)
+
+    try:
+        from app.models.arrangement import Arrangement
+
+        existing_arrangement = (
+            db.query(Arrangement)
+            .filter(
+                Arrangement.loop_id == loop_id,
+                Arrangement.render_plan_json.isnot(None),
+            )
+            .order_by(Arrangement.created_at.desc())
+            .first()
+        )
+        if existing_arrangement and existing_arrangement.render_plan_json:
+            render_plan_json = existing_arrangement.render_plan_json
+            logger.info(
+                "render_plan_json_build_success: loop_id=%s source=existing_arrangement arrangement_id=%s",
+                loop_id,
+                existing_arrangement.id,
+            )
+        else:
+            minimal_plan = _build_minimal_render_plan(loop, {
+                "genre": config.genre,
+                "length_seconds": config.length_seconds,
+            })
+            render_plan_json = json.dumps(minimal_plan)
+            logger.info(
+                "render_plan_json_build_success: loop_id=%s source=minimal_fallback",
+                loop_id,
+            )
+    except Exception as plan_err:
+        logger.error(
+            "render_plan_json_missing_failed: loop_id=%s error=%s",
+            loop_id,
+            plan_err,
+            exc_info=True,
+        )
+        render_plan_json = None
+
+    if not render_plan_json:
+        logger.error(
+            "render_plan_json_missing_failed: loop_id=%s reason=could_not_build_plan",
+            loop_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Could not build render_plan_json for this loop. Ensure the loop has valid metadata.",
+        )
+
     params = {
         "genre": config.genre,
         "length_seconds": config.length_seconds,
@@ -53,6 +146,7 @@ async def render_arrangement_async(
         "variations": config.variations,
         "variation_styles": config.variation_styles,
         "custom_style": config.custom_style,
+        "render_plan_json": render_plan_json,
     }
     
     try:
