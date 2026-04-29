@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 # Safety limits (shared with the synchronous render route)
 _MAX_TARGET_SECONDS = 21600   # 6 hours
 _MAX_TARGET_BARS = 4096
-_MAX_RANDOM_SEED_OUTER = 2**31 - 1
+# Maximum value for a random seed (fits in a 32-bit signed integer, compatible
+# with downstream deterministic audio engines).
+_MAX_RANDOM_SEED_OUTER = 2**31 - 1  # defined early for use in AsyncRenderRequest limits
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +171,8 @@ _ROLE_GROUPS = {
     "fx": ("fx", "accent", "atmos", "atmosphere"),
 }
 
-# Upper bound for random seed generation; matches common 32-bit signed integer
-# range used by downstream deterministic audio engines.
-_MAX_RANDOM_SEED = 2**31 - 1
+# Re-export under the shorter name used by helper functions in this module.
+_MAX_RANDOM_SEED = _MAX_RANDOM_SEED_OUTER
 
 
 def _classify_roles(available_roles: List[str]) -> Dict[str, List[str]]:

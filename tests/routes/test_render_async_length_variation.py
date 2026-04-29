@@ -412,12 +412,12 @@ class TestRenderAsyncLengthHandling:
         """target_bars must be passed to create_render_job params."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"target_bars": 48, "variation_count": 1},
@@ -525,12 +525,12 @@ class TestVariationCount:
         """variation_count must be forwarded in each job's params."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"variation_count": 5},
@@ -552,12 +552,12 @@ class TestVariationSeeds:
         """Each variation must receive a different seed."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             response = client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"variation_count": 3},
@@ -588,13 +588,13 @@ class TestVariationSeeds:
         """When variation_seed is provided it must be used as the base."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         base_seed = 1000
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"variation_count": 3, "variation_seed": base_seed},
@@ -634,12 +634,12 @@ class TestArrangementMetadata:
         """All required metadata fields must appear in the params sent to create_render_job."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"variation_count": 3},
@@ -665,12 +665,12 @@ class TestArrangementMetadata:
         """section_count in params must equal len(section_sequence)."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"variation_count": 1},
@@ -683,12 +683,12 @@ class TestArrangementMetadata:
         """Section names in render_plan_json must match section_sequence in params."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"variation_count": 1},
@@ -707,12 +707,12 @@ class TestArrangementMetadata:
         """variation_index in params must be 0, 1, 2 for three jobs."""
         captured: list = []
 
-        def capture(db, loop_id, params, **kwargs):
+        def capture_job_params(db, loop_id, params, **kwargs):
             captured.append(params)
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs.create_render_job", side_effect=capture):
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
                 json={"variation_count": 3},
