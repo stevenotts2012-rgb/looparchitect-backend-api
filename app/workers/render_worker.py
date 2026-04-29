@@ -286,6 +286,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             arrangement_id,
             loop_id,
         )
+        logger.info("RENDER_WORKER_STARTED job_id=%s loop_id=%s", app_job_id, loop_id)
         # Structured pickup event — machine-parseable record that the worker
         # dequeued this job.  Consumed by log aggregators for latency metrics.
         log_feature_event(
@@ -713,6 +714,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 except Exception:
                     logger.warning("[%s] Failed to persist worker postprocess metadata", job_id, exc_info=True)
 
+            logger.info("RENDER_EXECUTION_COMPLETED job_id=%s output=%s", app_job_id, output_path)
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
 
             update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
@@ -726,6 +728,89 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     content_type=content_type,
                 )
             ]
+
+            # Persist Arrangement record so GET /arrangements?loop_id=... returns results.
+            logger.info("ARRANGEMENT_CREATE_ATTEMPT job_id=%s loop_id=%s", app_job_id, loop_id)
+            try:
+                _arr_output_url = None
+                try:
+                    _arr_output_url = storage.create_presigned_get_url(
+                        key=s3_key,
+                        expires_seconds=3600,
+                        download_filename=f"arrangement_{app_job_id}.wav",
+                    )
+                except Exception as _url_err:
+                    logger.warning(
+                        "Could not generate presigned URL for arrangement: job_id=%s error=%s",
+                        app_job_id,
+                        _url_err,
+                    )
+
+                try:
+                    _target_seconds = int(
+                        (params.get("length_seconds") if isinstance(params, dict) else None)
+                        or (params.get("target_seconds") if isinstance(params, dict) else None)
+                        or 60
+                    )
+                except (TypeError, ValueError):
+                    _target_seconds = 60
+
+                # Prefer arrangement.render_plan_json when available (it includes postprocess
+                # metadata).  Only serialise render_plan_json when it is a non-None non-str value.
+                if arrangement and arrangement.render_plan_json:
+                    _final_render_plan_json = arrangement.render_plan_json
+                elif render_plan_json is None:
+                    _final_render_plan_json = None
+                elif isinstance(render_plan_json, str):
+                    _final_render_plan_json = render_plan_json
+                else:
+                    _final_render_plan_json = json.dumps(render_plan_json)
+
+                if arrangement:
+                    from app.models.arrangement import Arrangement
+                    arrangement.status = "done"
+                    arrangement.output_s3_key = s3_key
+                    arrangement.output_url = _arr_output_url
+                    arrangement.arrangement_json = timeline_json
+                    arrangement.render_plan_json = _final_render_plan_json
+                    arrangement.progress = 100.0
+                    arrangement.progress_message = "Render complete"
+                    arrangement.error_message = None
+                    db.commit()
+                    _arr_record_id = arrangement.id
+                else:
+                    from app.models.arrangement import Arrangement
+                    _new_arr = Arrangement(
+                        loop_id=loop_id,
+                        status="done",
+                        target_seconds=_target_seconds,
+                        output_s3_key=s3_key,
+                        output_url=_arr_output_url,
+                        arrangement_json=timeline_json,
+                        render_plan_json=_final_render_plan_json,
+                        progress=100.0,
+                        progress_message="Render complete",
+                    )
+                    db.add(_new_arr)
+                    db.commit()
+                    db.refresh(_new_arr)
+                    _arr_record_id = _new_arr.id
+
+                logger.info(
+                    "ARRANGEMENT_CREATED_SUCCESS job_id=%s arrangement_id=%s",
+                    app_job_id,
+                    _arr_record_id,
+                )
+            except Exception as _arr_err:
+                logger.error(
+                    "ARRANGEMENT_CREATE_FAILED job_id=%s error=%s",
+                    app_job_id,
+                    _arr_err,
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    f"Render succeeded but arrangement creation failed for job {app_job_id}: {_arr_err}"
+                ) from _arr_err
 
             # Phase 3: assemble and persist render_metadata on success.
             _direct_terminal_state = determine_job_terminal_state(
