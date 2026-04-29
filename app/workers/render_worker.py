@@ -664,10 +664,19 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             except Exception as e:
                 raise ValueError(f"Failed to load audio: {e}")
             
-            render_mode = _select_render_mode(bool(arrangement and arrangement.render_plan_json))
+            # Prefer DB arrangement render_plan_json; fall back to the plan
+            # injected into params by the render-async endpoint.
+            params_render_plan_json = params.get("render_plan_json") if isinstance(params, dict) else None
+            has_render_plan = bool(
+                (arrangement and arrangement.render_plan_json) or params_render_plan_json
+            )
+            render_mode = _select_render_mode(has_render_plan)
 
             if render_mode == "render_plan":
-                render_plan_json = arrangement.render_plan_json
+                render_plan_json = (
+                    (arrangement and arrangement.render_plan_json)
+                    or params_render_plan_json
+                )
             else:
                 logger.warning(
                     "[%s] No render_plan_json found; DEV_FALLBACK_LOOP_ONLY enabled, using synthetic fallback render plan",
