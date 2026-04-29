@@ -292,7 +292,7 @@ class TestLegacyRenderWorkerArrangementPersistence:
         commit_count = {"n": 0}
         def _commit_side_effect():
             commit_count["n"] += 1
-            if commit_count["n"] >= 1:
+            if commit_count["n"] == 1:
                 raise RuntimeError("DB commit failed")
         db.commit.side_effect = _commit_side_effect
         db.refresh.return_value = None

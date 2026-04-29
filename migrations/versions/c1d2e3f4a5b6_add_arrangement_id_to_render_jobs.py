@@ -26,9 +26,15 @@ def upgrade() -> None:
         sa.Column(
             "arrangement_id",
             sa.Integer(),
-            sa.ForeignKey("arrangements.id"),
             nullable=True,
         ),
+    )
+    op.create_foreign_key(
+        "fk_render_jobs_arrangement_id",
+        "render_jobs",
+        "arrangements",
+        ["arrangement_id"],
+        ["id"],
     )
     op.create_index(
         "ix_render_jobs_arrangement_id",
@@ -40,4 +46,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_render_jobs_arrangement_id", table_name="render_jobs")
+    op.drop_constraint("fk_render_jobs_arrangement_id", "render_jobs", type_="foreignkey")
     op.drop_column("render_jobs", "arrangement_id")
