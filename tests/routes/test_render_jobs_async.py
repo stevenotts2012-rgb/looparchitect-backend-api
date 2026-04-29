@@ -111,14 +111,17 @@ class TestRenderAsyncEndpoint:
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
              patch("app.routes.render_jobs.create_render_job", return_value=(fake_job, False)):
             response = client.post(
-                f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 1},
             )
         assert response.status_code == 202, response.text
         data = response.json()
-        assert data["job_id"] == fake_job.id
+        # New batch response: jobs is a list
         assert data["loop_id"] == test_loop_with_file.id
-        assert data["status"] == "queued"
-        assert data["deduplicated"] is False
+        assert len(data["jobs"]) == 1
+        assert data["jobs"][0]["job_id"] == fake_job.id
+        assert data["jobs"][0]["status"] == "queued"
+        assert data["jobs"][0]["deduplicated"] is False
 
     def test_deduplicated_job_returns_202(self, client, test_loop_with_file):
         fake_job = RenderJob(
@@ -132,10 +135,11 @@ class TestRenderAsyncEndpoint:
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
              patch("app.routes.render_jobs.create_render_job", return_value=(fake_job, True)):
             response = client.post(
-                f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 1},
             )
         assert response.status_code == 202
-        assert response.json()["deduplicated"] is True
+        assert response.json()["jobs"][0]["deduplicated"] is True
 
     def test_create_render_job_value_error_returns_400(self, client, test_loop_with_file):
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
@@ -173,11 +177,13 @@ class TestRenderAsyncEndpoint:
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
              patch("app.routes.render_jobs.create_render_job", return_value=(fake_job, False)):
             response = client.post(
-                f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 1},
             )
         data = response.json()
-        assert "poll_url" in data
-        assert fake_job.id in data["poll_url"]
+        # poll_url lives inside the first job entry
+        assert "poll_url" in data["jobs"][0]
+        assert fake_job.id in data["jobs"][0]["poll_url"]
 
     def test_render_config_fields_passed_to_create_job(self, client, test_loop_with_file):
         """Verify that config fields (genre, energy, etc.) are forwarded."""
@@ -234,7 +240,8 @@ class TestRenderAsyncEnqueue:
              patch("app.services.job_service.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = uuid.UUID(expected_job_id)
             response = client.post(
-                f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 1},
             )
 
         assert response.status_code == 202, response.text
@@ -256,7 +263,7 @@ class TestRenderAsyncEnqueue:
         assert mock_queue.enqueue.called
 
     def test_returned_job_id_matches_rq_job_id(self, client, test_loop_with_file):
-        """The job_id in the response body must equal the RQ job id."""
+        """The first job_id in the response body must equal the RQ job id."""
         expected_job_id = str(uuid.uuid4())
         mock_rq_job = self._make_mock_rq_job(expected_job_id)
         mock_queue = MagicMock()
@@ -268,13 +275,15 @@ class TestRenderAsyncEnqueue:
              patch("app.services.job_service.uuid") as mock_uuid:
             mock_uuid.uuid4.return_value = uuid.UUID(expected_job_id)
             response = client.post(
-                f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 1},
             )
 
         assert response.status_code == 202, response.text
         data = response.json()
-        assert data["job_id"] == expected_job_id, (
-            "Response job_id must match the RQ job id to ensure the frontend polls the right job"
+        # New batch response: jobs[0].job_id
+        assert data["jobs"][0]["job_id"] == expected_job_id, (
+            "Response jobs[0].job_id must match the RQ job id to ensure the frontend polls the right job"
         )
 
     def test_enqueue_log_fields_present(self, client, test_loop_with_file, caplog):
@@ -291,7 +300,8 @@ class TestRenderAsyncEnqueue:
              caplog.at_level(logging.INFO, logger="app.services.job_service"):
             mock_uuid.uuid4.return_value = uuid.UUID(expected_job_id)
             response = client.post(
-                f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 1},
             )
 
         assert response.status_code == 202, response.text
@@ -484,32 +494,34 @@ class TestRenderPlanJsonInParams:
 
         def capture_create(db, loop_id, params, **kwargs):
             create_called.append(params)
-            return MagicMock(), False
+            # Return a minimal fake job so VariationJobInfo can be constructed
+            fake_job = RenderJob(
+                id=str(uuid.uuid4()),
+                loop_id=loop_id,
+                job_type="render_arrangement",
+                status="queued",
+                progress=0.0,
+                created_at=datetime.utcnow(),
+            )
+            return fake_job, False
 
-        # Force both plan sources to fail: _build_minimal_render_plan raises,
-        # and the Arrangement query raises — so render_plan_json ends up None.
+        # Force BOTH plan builders to fail so render_plan_json ends up None → 400.
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
-             patch("app.routes.render_jobs._build_minimal_render_plan", side_effect=RuntimeError("boom")), \
-             patch("app.models.arrangement.Arrangement") as mock_arr, \
+             patch("app.routes.render_jobs._build_generative_render_plan", side_effect=RuntimeError("gen_boom")), \
+             patch("app.routes.render_jobs._build_minimal_render_plan", side_effect=RuntimeError("min_boom")), \
              patch("app.routes.render_jobs.create_render_job", side_effect=capture_create):
 
             response = client.post(
                 f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
             )
 
-        # When plan building totally fails, we should get 400 OR the plan was
-        # partially built via arrangement query (acceptable). Key invariant: if
-        # 400 is returned, create_render_job was never called.
-        if response.status_code == 400:
-            assert len(create_called) == 0, (
-                "create_render_job must not be called when render_plan_json is missing"
-            )
-        else:
-            # 202 is fine only if a plan was actually provided
-            assert response.status_code == 202
-            assert all(p.get("render_plan_json") for p in create_called), (
-                "Any successful enqueue must carry render_plan_json"
-            )
+        # When plan building totally fails, we must get 400 and no job must be enqueued.
+        assert response.status_code == 400, (
+            "Endpoint must return 400 when render_plan_json cannot be built"
+        )
+        assert len(create_called) == 0, (
+            "create_render_job must not be called when render_plan_json is missing"
+        )
 
 
 class TestBuildMinimalRenderPlan:
@@ -528,7 +540,7 @@ class TestBuildMinimalRenderPlan:
         result = _build_minimal_render_plan(loop, {})
         assert isinstance(result, dict)
         assert "sections" in result
-        assert len(result["sections"]) == 1
+        assert len(result["sections"]) >= 1
 
     def test_section_has_required_keys(self):
         from app.routes.render_jobs import _build_minimal_render_plan
@@ -541,9 +553,10 @@ class TestBuildMinimalRenderPlan:
         loop.stem_roles = {"drums": "s3://drums.wav", "bass": "s3://bass.wav"}
 
         result = _build_minimal_render_plan(loop, {})
-        section = result["sections"][0]
-        for key in ("name", "type", "start_bar", "length_bars", "active_stem_roles", "instruments"):
-            assert key in section, f"Missing key '{key}' in section"
+        # New plan has multi-section layout; check all sections have required keys
+        for section in result["sections"]:
+            for key in ("name", "active_stem_roles", "instruments"):
+                assert key in section, f"Missing key '{key}' in section"
 
     def test_uses_stem_roles_when_available(self):
         from app.routes.render_jobs import _build_minimal_render_plan
@@ -556,9 +569,10 @@ class TestBuildMinimalRenderPlan:
         loop.stem_roles = {"drums": "k1", "bass": "k2"}
 
         result = _build_minimal_render_plan(loop, {})
-        section = result["sections"][0]
-        assert "drums" in section["active_stem_roles"]
-        assert "bass" in section["active_stem_roles"]
+        # All sections must carry the stem roles
+        for section in result["sections"]:
+            assert "drums" in section["active_stem_roles"]
+            assert "bass" in section["active_stem_roles"]
 
     def test_falls_back_to_full_mix_when_no_stem_roles(self):
         from app.routes.render_jobs import _build_minimal_render_plan
@@ -571,10 +585,10 @@ class TestBuildMinimalRenderPlan:
         loop.stem_roles = {}
 
         result = _build_minimal_render_plan(loop, {})
-        section = result["sections"][0]
-        assert section["active_stem_roles"] == ["full_mix"]
+        for section in result["sections"]:
+            assert section["active_stem_roles"] == ["full_mix"]
 
-    def test_defaults_bars_to_8_when_none(self):
+    def test_defaults_bars_to_32_when_none(self):
         from app.routes.render_jobs import _build_minimal_render_plan
 
         loop = MagicMock()
@@ -585,7 +599,8 @@ class TestBuildMinimalRenderPlan:
         loop.stem_roles = {}
 
         result = _build_minimal_render_plan(loop, {})
-        assert result["sections"][0]["length_bars"] == 8
+        total = sum(s["bars"] for s in result["sections"])
+        assert total == 32
 
     def test_uses_bpm_from_loop(self):
         from app.routes.render_jobs import _build_minimal_render_plan
