@@ -57,6 +57,10 @@ _ROLE_GROUPS = {
     "fx": ("fx", "accent", "atmos", "atmosphere"),
 }
 
+# Upper bound for random seed generation; matches common 32-bit signed integer
+# range used by downstream deterministic audio engines.
+_MAX_RANDOM_SEED = 2**31 - 1
+
 
 def _classify_roles(available_roles: List[str]) -> Dict[str, List[str]]:
     """Classify available roles into drum/bass/melody/fx groups."""
@@ -64,7 +68,8 @@ def _classify_roles(available_roles: List[str]) -> Dict[str, List[str]]:
     assigned: set = set()
     for group, keywords in _ROLE_GROUPS.items():
         for role in available_roles:
-            if role.lower() in keywords or any(kw in role.lower() for kw in keywords):
+            role_lower = role.lower()
+            if role_lower in keywords or any(kw in role_lower for kw in keywords):
                 if role not in assigned:
                     groups[group].append(role)
                     assigned.add(role)
@@ -155,6 +160,20 @@ def _layout_sections(loop_length_bars: int) -> List[Dict]:
     return sections
 
 
+def _compute_energy_curve_score(section_names: List[str]) -> float:
+    """Compute a 0–1 score expressing how much the energy varies across sections.
+
+    Based on the variance of the per-section energy values; higher variance
+    means a more dynamic arrangement.
+    """
+    energies = [_SECTION_ENERGY.get(name, 0.5) for name in section_names]
+    if len(energies) < 2:
+        return 0.0
+    mean_e = sum(energies) / len(energies)
+    variance = sum((e - mean_e) ** 2 for e in energies) / len(energies)
+    return round(min(1.0, variance * 10), 4)
+
+
 def _producer_plan_to_render_plan(
     producer_plan,
     section_templates: List[Dict],
@@ -163,6 +182,7 @@ def _producer_plan_to_render_plan(
     bpm: float,
     loop_id: int,
     genre: str,
+    key: str = "C",
 ) -> dict:
     """Convert a ProducerPlan + section templates into render_plan_json dict.
 
@@ -209,19 +229,13 @@ def _producer_plan_to_render_plan(
             "variations": variations,
         })
 
-    # Compute a simple energy_curve score: variance across section energies
-    energies = [_SECTION_ENERGY.get(s["name"], 0.5) for s in sections]
-    if len(energies) > 1:
-        mean_e = sum(energies) / len(energies)
-        variance = sum((e - mean_e) ** 2 for e in energies) / len(energies)
-        energy_curve_score = round(min(1.0, variance * 10), 4)
-    else:
-        energy_curve_score = 0.0
+    # Compute energy_curve score using shared helper
+    energy_curve_score = _compute_energy_curve_score([s["name"] for s in sections])
 
     return {
         "loop_id": loop_id,
         "bpm": bpm,
-        "key": "C",
+        "key": key,
         "total_bars": total_bars,
         "sections": sections,
         "events": [],
@@ -279,7 +293,7 @@ def _build_generative_render_plan(loop: Loop, params: Dict) -> dict:
         correlation_id=f"loop_{loop.id}",
     )
 
-    seed = random.randint(0, 2**31 - 1)
+    seed = random.randint(0, _MAX_RANDOM_SEED)
     producer_plan = orchestrator.run(
         sections=section_templates,
         genre=genre,
@@ -287,17 +301,14 @@ def _build_generative_render_plan(loop: Loop, params: Dict) -> dict:
         seed=seed,
     )
 
+    energy_curve_score = _compute_energy_curve_score([s["name"] for s in section_templates])
     logger.info(
         "producer_plan_generated: loop_id=%s genre=%s section_count=%d "
         "energy_curve_score=%.4f variation_score=%.4f warnings=%d",
         loop.id,
         genre,
         len(section_templates),
-        # Compute energy_curve_score here for log (recomputed below too)
-        min(1.0, sum(
-            (_SECTION_ENERGY.get(s["name"], 0.5) - 0.5) ** 2
-            for s in section_templates
-        ) * 10 / max(1, len(section_templates))),
+        energy_curve_score,
         producer_plan.section_variation_score,
         len(producer_plan.warnings),
     )
@@ -310,6 +321,7 @@ def _build_generative_render_plan(loop: Loop, params: Dict) -> dict:
         bpm=bpm,
         loop_id=loop.id,
         genre=genre,
+        key=getattr(loop, "key", None) or getattr(loop, "musical_key", None) or "C",
     )
 
 
