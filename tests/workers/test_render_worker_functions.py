@@ -244,13 +244,11 @@ class TestWorkerUsesParamsRenderPlanJson:
 
     def test_params_render_plan_json_is_used_when_no_db_arrangement(self, monkeypatch):
         """_select_render_mode gets has_render_plan=True when params has render_plan_json."""
-        import json as _json
-
         minimal_plan = {"loop_id": 1, "sections": [{"name": "full_loop", "type": "VERSE",
                                                       "start_bar": 0, "length_bars": 8,
                                                       "active_stem_roles": ["full_mix"],
                                                       "instruments": ["full_mix"]}]}
-        params = {"render_plan_json": _json.dumps(minimal_plan)}
+        params = {"render_plan_json": json.dumps(minimal_plan)}
 
         # has_render_plan should be True when only params has the plan
         arrangement = None
@@ -262,10 +260,8 @@ class TestWorkerUsesParamsRenderPlanJson:
 
     def test_params_render_plan_json_selected_when_arrangement_has_none(self):
         """When arrangement row has no render_plan_json, params value must be chosen."""
-        import json as _json
-
         minimal_plan = {"loop_id": 2, "sections": []}
-        params = {"render_plan_json": _json.dumps(minimal_plan)}
+        params = {"render_plan_json": json.dumps(minimal_plan)}
 
         arrangement = MagicMock()
         arrangement.render_plan_json = None  # arrangement exists but plan is absent
@@ -276,19 +272,17 @@ class TestWorkerUsesParamsRenderPlanJson:
 
     def test_arrangement_render_plan_json_preferred_over_params(self):
         """When both arrangement and params have a plan, arrangement's plan wins."""
-        import json as _json
-
         arr_plan = {"loop_id": 3, "sections": [{"name": "arr_section"}]}
         params_plan = {"loop_id": 3, "sections": [{"name": "params_section"}]}
 
         arrangement = MagicMock()
-        arrangement.render_plan_json = _json.dumps(arr_plan)
+        arrangement.render_plan_json = json.dumps(arr_plan)
 
-        params = {"render_plan_json": _json.dumps(params_plan)}
+        params = {"render_plan_json": json.dumps(params_plan)}
         params_render_plan_json = params.get("render_plan_json")
 
         chosen = (arrangement and arrangement.render_plan_json) or params_render_plan_json
-        parsed = _json.loads(chosen)
+        parsed = json.loads(chosen)
         assert parsed["sections"][0]["name"] == "arr_section"
 
     def test_no_plan_anywhere_raises_value_error(self, monkeypatch):

@@ -12,6 +12,7 @@ Previously-untested paths in render_jobs.py (lines 31-66):
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -420,8 +421,6 @@ class TestRenderPlanJsonInParams:
         self, client, test_loop_with_file
     ):
         """render_plan_json in params must be a valid JSON string."""
-        import json as _json
-
         captured_params: dict = {}
 
         fake_job = RenderJob(
@@ -443,15 +442,13 @@ class TestRenderPlanJsonInParams:
 
         rpj = captured_params.get("render_plan_json")
         assert rpj is not None
-        parsed = _json.loads(rpj)
+        parsed = json.loads(rpj)
         assert isinstance(parsed, dict), "render_plan_json must parse to a dict"
 
     def test_render_async_minimal_fallback_plan_has_sections(
         self, client, test_loop_with_file
     ):
         """When no existing arrangement exists, the minimal plan must include sections."""
-        import json as _json
-
         captured_params: dict = {}
         fake_job = RenderJob(
             id=str(uuid.uuid4()),
@@ -475,7 +472,7 @@ class TestRenderPlanJsonInParams:
             )
 
         assert response.status_code == 202, response.text
-        rpj = _json.loads(captured_params["render_plan_json"])
+        rpj = json.loads(captured_params["render_plan_json"])
         assert "sections" in rpj, "Minimal plan must have sections"
         assert len(rpj["sections"]) >= 1
 
@@ -495,10 +492,6 @@ class TestRenderPlanJsonInParams:
              patch("app.routes.render_jobs._build_minimal_render_plan", side_effect=RuntimeError("boom")), \
              patch("app.models.arrangement.Arrangement") as mock_arr, \
              patch("app.routes.render_jobs.create_render_job", side_effect=capture_create):
-
-            # Make the Arrangement query inside the route raise too
-            import app.routes.render_jobs as rj
-            orig_import = rj.__builtins__ if hasattr(rj, "__builtins__") else None
 
             response = client.post(
                 f"/api/v1/loops/{test_loop_with_file.id}/render-async", json={}
