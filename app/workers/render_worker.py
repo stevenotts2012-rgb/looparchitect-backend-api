@@ -379,7 +379,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 # here as a belt-and-suspenders guard in case the field was missed.
                 if not arrangement_row.is_saved:
                     logger.info(
-                        "ARRANGEMENT_CREATE_ATTEMPT job_id=%s arrangement_id=%s loop_id=%s",
+                        "ARRANGEMENT_MARK_SAVED_ATTEMPT job_id=%s arrangement_id=%s loop_id=%s",
                         app_job_id,
                         arrangement_id,
                         loop_id,
@@ -388,7 +388,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     arrangement_row.saved_at = datetime.utcnow()
                     db.commit()
                     logger.info(
-                        "ARRANGEMENT_CREATED_SUCCESS job_id=%s arrangement_id=%s loop_id=%s",
+                        "ARRANGEMENT_MARK_SAVED_SUCCESS job_id=%s arrangement_id=%s loop_id=%s",
                         app_job_id,
                         arrangement_id,
                         loop_id,

@@ -594,8 +594,6 @@ class TestWorkerSuccessArrangementVisibility:
 
         created_arrangements: list[object] = []
 
-        real_add = db.add
-
         def _capture_add(obj):
             if hasattr(obj, "is_saved"):
                 created_arrangements.append(obj)
