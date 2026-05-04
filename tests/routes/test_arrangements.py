@@ -437,3 +437,206 @@ class TestArrangementRetrieval:
             data = response.json()
             for field in required_fields:
                 assert field in data, f"Missing field '{field}' for status={arrangement_status}"
+
+
+class TestWorkerSuccessArrangementVisibility:
+    """Regression tests for the render-worker success path.
+
+    Verifies that after a successful render:
+    - The Arrangement row has loop_id, status=done, is_saved=True, saved_at set.
+    - GET /api/v1/arrangements?loop_id=<X> (default filter) returns the arrangement.
+    - The linked RenderJob row exposes arrangement_id.
+    """
+
+    def test_done_arrangement_with_is_saved_visible_in_list(self, test_loop, db, client):
+        """An arrangement marked done + is_saved=True must appear in the default list response.
+
+        This is the core bug guard: the worker now sets is_saved=True on every
+        successful render so the arrangement is not silently excluded from
+        GET /arrangements?loop_id=<loop_id>.
+        """
+        from datetime import datetime as _dt
+
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            output_s3_key="arrangements/worker_success_test.wav",
+            output_url=None,
+            is_saved=True,
+            saved_at=_dt.utcnow(),
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+
+        response = client.get(f"/api/v1/arrangements?loop_id={test_loop.id}")
+        assert response.status_code == 200
+        data = response.json()
+        ids = [item["id"] for item in data]
+        assert arrangement.id in ids, (
+            f"Arrangement {arrangement.id} (status=done, is_saved=True) must appear in "
+            f"GET /arrangements?loop_id={test_loop.id} default response"
+        )
+        item = next(i for i in data if i["id"] == arrangement.id)
+        assert item["loop_id"] == test_loop.id
+        assert item["status"] == "done"
+
+    def test_done_arrangement_without_is_saved_not_visible_in_default_list(self, test_loop, db, client):
+        """An arrangement with is_saved=False must NOT appear in the default list.
+
+        This confirms the filter is working as intended and that the worker fix
+        (setting is_saved=True) is necessary to make arrangements visible.
+        """
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            output_s3_key="arrangements/unsaved_worker.wav",
+            is_saved=False,
+            saved_at=None,
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+
+        response = client.get(f"/api/v1/arrangements?loop_id={test_loop.id}")
+        assert response.status_code == 200
+        ids = [item["id"] for item in response.json()]
+        assert arrangement.id not in ids, (
+            "Unsaved arrangement must be excluded from the default list endpoint"
+        )
+
+    def test_job_arrangement_id_field_propagates_to_job_status(self, test_loop, db, client):
+        """After worker succeeds, the job's arrangement_id must be visible in GET /jobs/{job_id}.
+
+        Regression guard: update_job_status must store arrangement_id on the
+        RenderJob row so the polling endpoint can surface it.
+        """
+        from app.models.job import RenderJob
+        import json as _json
+        from datetime import datetime as _dt
+
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            is_saved=True,
+            saved_at=_dt.utcnow(),
+            output_s3_key="arrangements/job_arr_test.wav",
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+
+        job = RenderJob(
+            id="job-arr-visibility-test",
+            loop_id=test_loop.id,
+            job_type="render_arrangement",
+            params_json=_json.dumps({"arrangement_id": arrangement.id, "length_seconds": 60}),
+            status="succeeded",
+            arrangement_id=arrangement.id,
+            progress=100.0,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.get(f"/api/v1/jobs/{job.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["arrangement_id"] == arrangement.id, (
+            "GET /jobs/{job_id} must include arrangement_id when a render succeeds"
+        )
+
+    def test_legacy_render_worker_sets_is_saved_on_new_arrangement(self):
+        """In the legacy render path, the created Arrangement must have is_saved=True.
+
+        Validates the render_worker.py fix: when a new Arrangement row is
+        created on render success, is_saved and saved_at must be set so the
+        arrangement is visible via GET /arrangements?loop_id=<X>.
+        """
+        from unittest.mock import MagicMock, patch
+        import json as _json
+        from app.workers import render_worker
+        from datetime import datetime as _dt
+
+        loop = MagicMock()
+        loop.id = 99
+        loop.bpm = 120.0
+        loop.genre = "electronic"
+        loop.file_key = "loops/99.wav"
+        loop.file_url = None
+
+        render_plan = _json.dumps(
+            {
+                "bpm": 120,
+                "key": "C",
+                "total_bars": 4,
+                "render_profile": {"genre_profile": "electronic"},
+                "sections": [{"name": "Verse", "type": "verse", "bar_start": 0, "bars": 4}],
+                "events": [],
+                "tracks": [],
+            }
+        )
+
+        job = MagicMock()
+        job.id = "job-legacy-is-saved"
+        job.loop_id = 99
+        job.retry_count = 0
+
+        # No pre-existing arrangement — force the "create new" branch.
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.side_effect = [job, job, loop]
+        db.query.return_value.filter.return_value.order_by.return_value.first.side_effect = [None, None]
+        db.commit.return_value = None
+        db.refresh.return_value = None
+
+        created_arrangements: list[object] = []
+
+        def _capture_add(obj):
+            if hasattr(obj, "is_saved"):
+                created_arrangements.append(obj)
+
+        db.add.side_effect = _capture_add
+
+        fake_audio = MagicMock()
+        fake_render_result = {
+            "timeline_json": "{}",
+            "postprocess": {},
+            "render_observability": {"fallback_triggered_count": 0},
+        }
+        fake_s3_key = "renders/job-legacy-is-saved/arrangement.wav"
+
+        with (
+            patch.object(render_worker, "_ensure_db_models"),
+            patch.object(render_worker, "SessionLocal", return_value=db),
+            patch.object(render_worker, "_resolve_app_job_id", return_value="job-legacy-is-saved"),
+            patch.object(render_worker, "_download_loop_audio", return_value="/tmp/loop99.wav"),
+            patch("pydub.AudioSegment.from_file", return_value=fake_audio),
+            patch.object(render_worker, "score_and_reject"),
+            patch.object(render_worker, "_run_with_timeout", return_value=fake_render_result),
+            patch.object(render_worker, "_upload_render_output", return_value=(fake_s3_key, "audio/wav")),
+            patch.object(render_worker, "update_job_status"),
+            patch.object(render_worker, "_parse_stem_metadata_from_loop", return_value=None),
+            patch.object(render_worker.storage, "create_presigned_get_url", return_value="https://cdn/file.wav"),
+            patch("rq.get_current_job", side_effect=Exception("no rq")),
+        ):
+            render_worker.render_loop_worker(
+                "job-legacy-is-saved", 99, {"length_seconds": 60, "render_plan_json": render_plan}
+            )
+
+        assert created_arrangements, "Worker must create at least one Arrangement row on success"
+        new_arr = created_arrangements[-1]
+        assert getattr(new_arr, "is_saved", None) is True, (
+            "New arrangement created in legacy render path must have is_saved=True"
+        )
+        assert getattr(new_arr, "saved_at", None) is not None, (
+            "New arrangement created in legacy render path must have saved_at set"
+        )
+        assert getattr(new_arr, "loop_id", None) == 99, (
+            "New arrangement must have loop_id matching the render job's loop_id"
+        )
+        assert getattr(new_arr, "status", None) == "done", (
+            "New arrangement must have status=done"
+        )

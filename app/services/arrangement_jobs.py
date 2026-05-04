@@ -14,6 +14,7 @@ import time
 import uuid
 import subprocess
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -7388,6 +7389,8 @@ def run_arrangement_job(arrangement_id: int, arrangement_preset: str | None = No
         arrangement.arrangement_json = timeline_json
         arrangement.render_plan_json = json.dumps(render_plan)
         arrangement.error_message = None
+        arrangement.is_saved = True
+        arrangement.saved_at = datetime.utcnow()
         db.commit()
 
         logger.info(

@@ -374,6 +374,26 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
 
             if arrangement_row and arrangement_row.status == "done":
+                # Ensure the arrangement is visible in GET /arrangements?loop_id=... by
+                # marking it saved.  run_arrangement_job already does this, but we set it
+                # here as a belt-and-suspenders guard in case the field was missed.
+                if not arrangement_row.is_saved:
+                    logger.info(
+                        "ARRANGEMENT_MARK_SAVED_ATTEMPT job_id=%s arrangement_id=%s loop_id=%s",
+                        app_job_id,
+                        arrangement_id,
+                        loop_id,
+                    )
+                    arrangement_row.is_saved = True
+                    arrangement_row.saved_at = datetime.utcnow()
+                    db.commit()
+                    logger.info(
+                        "ARRANGEMENT_MARK_SAVED_SUCCESS job_id=%s arrangement_id=%s loop_id=%s",
+                        app_job_id,
+                        arrangement_id,
+                        loop_id,
+                    )
+
                 # Phase 3: extract observability from the completed arrangement and write to job.
                 try:
                     obs = extract_observability_from_arrangement(arrangement_row)
@@ -458,18 +478,6 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
                 logger.info(
                     "RENDER_OUTPUT_READY job_id=%s arrangement_id=%s loop_id=%s",
-                    app_job_id,
-                    arrangement_id,
-                    loop_id,
-                )
-                logger.info(
-                    "ARRANGEMENT_CREATE_ATTEMPT job_id=%s arrangement_id=%s loop_id=%s",
-                    app_job_id,
-                    arrangement_id,
-                    loop_id,
-                )
-                logger.info(
-                    "ARRANGEMENT_CREATED_SUCCESS job_id=%s arrangement_id=%s loop_id=%s",
                     app_job_id,
                     arrangement_id,
                     loop_id,
@@ -815,6 +823,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     arrangement.progress = 100.0
                     arrangement.progress_message = "Render complete"
                     arrangement.error_message = None
+                    arrangement.is_saved = True
+                    arrangement.saved_at = datetime.utcnow()
                     db.commit()
                     _arr_record_id = arrangement.id
                 else:
@@ -829,6 +839,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         render_plan_json=_final_render_plan_json,
                         progress=100.0,
                         progress_message="Render complete",
+                        is_saved=True,
+                        saved_at=datetime.utcnow(),
                     )
                     db.add(_new_arr)
                     db.commit()
