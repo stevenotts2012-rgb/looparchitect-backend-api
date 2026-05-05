@@ -441,14 +441,17 @@ def _producer_plan_to_render_plan(
         {
             "type": ev.render_action,
             "bar": ev.bar_start,
-            "intensity": ev.intensity,
             "duration_bars": max(1, ev.bar_end - ev.bar_start),
+            "intensity": ev.intensity,
             "description": ev.reason,
-            "params": ev.parameters,
+            "params": ev.parameters or {},
+            "source": "producer_plan",
         }
         for ev in producer_plan.events
     ]
     logger.info("PRODUCER_EVENTS_ATTACHED count=%d loop_id=%s", len(top_level_events), loop_id)
+    logger.info("PRODUCER_PLAN_PRESENT value=%s", "true" if producer_plan.events else "false")
+    logger.info("PRODUCER_PLAN_EVENTS_COUNT count=%d", len(top_level_events))
 
     return {
         "loop_id": loop_id,
@@ -457,6 +460,7 @@ def _producer_plan_to_render_plan(
         "total_bars": total_bars,
         "sections": sections,
         "events": top_level_events,
+        "producer_plan": producer_plan.to_dict(),
         "render_profile": {
             "genre_profile": genre or "generic",
             "source": "generative_producer",

@@ -559,6 +559,10 @@ def render_from_plan(
     output_path = Path(output_path)
     output_audio.export(str(output_path), format="wav")
 
+    # Embed producer_plan and update planned_transition_events in the timeline so that
+    # the arrangement_json persisted to the DB includes the real producer plan data.
+    timeline_json = _enrich_timeline_with_producer_plan(timeline_json, render_plan)
+
     # Build Phase 3 observability from timeline and mastering results.
     render_observability = _build_render_observability(
         timeline_json=timeline_json,
@@ -566,6 +570,7 @@ def render_from_plan(
         source_quality_mode_used=source_quality_mode_used,
         mastering_result=mastering_result,
         render_plan_sections=render_plan.get("sections") or [],
+        render_plan=render_plan,
     )
 
     logger.info(
@@ -599,6 +604,76 @@ def render_from_plan(
             }
         },
     }
+
+
+def _extract_producer_event_types(render_plan: dict) -> list[str]:
+    """Return event type strings for real producer events in the render plan.
+
+    Excludes ``section_start`` structural markers so only actionable
+    transition/variation events are returned.  Only events tagged with
+    ``"source": "producer_plan"`` are included.
+    """
+    return [
+        str(e.get("type") or "")
+        for e in (render_plan.get("events") or [])
+        if e.get("type") and str(e.get("type")) != "section_start"
+        and e.get("source") == "producer_plan"
+    ]
+
+
+def _enrich_timeline_with_producer_plan(timeline_json: str, render_plan: dict) -> str:
+    """Embed the producer_plan and update planned_transition_events in the timeline JSON.
+
+    This ensures that arrangement_json saved to the DB contains:
+    - ``producer_plan``: the full generative producer plan dict (non-null when generated).
+    - ``render_spec_summary.planned_transition_events``: real producer events (excluding
+      ``section_start`` markers) so that plan_vs_actual_transition_match is computable.
+
+    Returns the (possibly updated) timeline JSON string.
+    """
+    producer_plan = render_plan.get("producer_plan")
+    if not producer_plan and not render_plan.get("events"):
+        return timeline_json
+
+    try:
+        tl = json.loads(timeline_json) if isinstance(timeline_json, str) else timeline_json
+
+        # Embed producer_plan in the timeline root so clients can inspect it.
+        if producer_plan:
+            tl["producer_plan"] = producer_plan
+
+        # Compute planned_transition_events from render plan events (real producer events,
+        # excluding section_start structural markers).
+        planned_events: list[str] = _extract_producer_event_types(render_plan)
+
+        if planned_events:
+            rss = tl.get("render_spec_summary") or {}
+            # Only update planned_transition_events when the render_spec_summary didn't
+            # already populate them from boundary_events (avoid overwriting richer data).
+            if not rss.get("planned_transition_events"):
+                rss["planned_transition_events"] = planned_events
+
+                # Recompute plan_vs_actual_transition_match using the real producer events.
+                actual = list(rss.get("actual_transition_events_used") or [])
+                actual_set = set(actual)
+                matched = [e for e in planned_events if e in actual_set]
+                rss["plan_vs_actual_transition_match"] = round(
+                    len(matched) / max(1, len(planned_events)), 3
+                )
+                # Overall plan_coverage at the top-level summary level.
+                rss["plan_coverage"] = rss["plan_vs_actual_transition_match"]
+
+                tl["render_spec_summary"] = rss
+
+
+        return json.dumps(tl)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "_enrich_timeline_with_producer_plan: failed (%s, non-blocking): %s",
+            type(exc).__name__,
+            exc,
+        )
+        return timeline_json
 
 
 def _apply_resolved_plan_primary(
@@ -847,12 +922,18 @@ def _build_render_observability(
     source_quality_mode_used: str,
     mastering_result: Any,
     render_plan_sections: list,
+    render_plan: dict | None = None,
 ) -> dict:
     """Build the Phase 3 observability payload from timeline and execution data.
 
     All values reflect REAL execution — planned stem maps come from the render
     plan, actual stem maps come from what ``_render_producer_arrangement``
     recorded in ``runtime_active_stems``.
+
+    When ``render_plan`` is provided, real producer events (those tagged with
+    ``"source": "producer_plan"`` and excluding ``section_start`` markers) are
+    surfaced as ``planned_transition_events`` so that
+    ``plan_vs_actual_transition_match`` is computable at the observability level.
     """
     import hashlib
 
@@ -958,6 +1039,31 @@ def _build_render_observability(
     mastering_peak_before = getattr(mastering_result, "peak_dbfs_before", None)
     mastering_peak_after = getattr(mastering_result, "peak_dbfs_after", None)
 
+    # --- Planned transition events from producer plan (task 6) ---
+    # Prefer the render_spec_summary values populated by _build_render_spec_summary
+    # (which uses boundary_events from the timeline).  Fall back to reading real
+    # producer events directly from the render plan when the timeline summary is empty.
+    planned_transition_events: list[str] = list(
+        render_spec.get("planned_transition_events") or []
+    )
+    actual_transition_events_used: list[str] = list(
+        render_spec.get("actual_transition_events_used") or []
+    )
+    plan_vs_actual_transition_match: float = float(
+        render_spec.get("plan_vs_actual_transition_match") or 0.0
+    )
+
+    if not planned_transition_events and render_plan:
+        # No boundary-event-derived plan available — use the real producer events from
+        # the render plan, excluding section_start structural markers.
+        planned_transition_events = _extract_producer_event_types(render_plan)
+        if planned_transition_events and actual_transition_events_used:
+            actual_set = set(actual_transition_events_used)
+            matched = [e for e in planned_transition_events if e in actual_set]
+            plan_vs_actual_transition_match = round(
+                len(matched) / max(1, len(planned_transition_events)), 3
+            )
+
     return {
         "render_path_used": render_path_used,
         "source_quality_mode_used": source_quality_mode_used,
@@ -978,4 +1084,7 @@ def _build_render_observability(
         "distinct_stem_set_count": int(render_spec.get("distinct_stem_set_count") or unique_render_signature_count),
         "hook_stages_rendered": list(render_spec.get("hook_stages") or []),
         "transition_event_count": int(render_spec.get("transition_event_count") or 0),
+        "planned_transition_events": planned_transition_events,
+        "actual_transition_events_used": actual_transition_events_used,
+        "plan_vs_actual_transition_match": plan_vs_actual_transition_match,
     }
