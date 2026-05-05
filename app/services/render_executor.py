@@ -215,6 +215,17 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         }
     )
 
+    # Count how many events were actually accepted (not discarded by type filter).
+    applied_event_count = sum(
+        len(section.get("variations") or []) + len(section.get("boundary_events") or [])
+        for section in normalized_sections
+    )
+    logger.info(
+        "RENDER_EVENTS_APPLIED_COUNT total_events=%d applied_to_sections=%d",
+        len(events),
+        applied_event_count,
+    )
+
     summary = {
         "sections_count": len(normalized_sections),
         "events_count": len(events),

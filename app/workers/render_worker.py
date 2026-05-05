@@ -810,6 +810,45 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 except Exception:
                     logger.warning("[%s] Failed to persist worker postprocess metadata", job_id, exc_info=True)
 
+            # Enrich timeline_json with producer fields stored in the render plan
+            # so that arrangement_json (= timeline_json) exposes producer_plan,
+            # decision_log, section_summary, and quality_score for observability.
+            try:
+                _parsed_plan = (
+                    json.loads(render_plan_json)
+                    if isinstance(render_plan_json, str)
+                    else render_plan_json or {}
+                )
+                _producer_plan_data = _parsed_plan.get("_producer_plan")
+                _decision_log = _parsed_plan.get("_decision_log")
+                _section_summary = _parsed_plan.get("_section_summary")
+
+                if _producer_plan_data is not None or _decision_log is not None:
+                    _enriched_tl = json.loads(timeline_json) if isinstance(timeline_json, str) else timeline_json or {}
+                    if _producer_plan_data is not None:
+                        _enriched_tl["producer_plan"] = _producer_plan_data
+                    if _decision_log is not None:
+                        _enriched_tl["decision_log"] = _decision_log
+                    if _section_summary is not None:
+                        _enriched_tl["section_summary"] = _section_summary
+                    # Expose variation score as quality_score for quick health checks.
+                    if isinstance(_producer_plan_data, dict):
+                        _enriched_tl["quality_score"] = _producer_plan_data.get("section_variation_score")
+                    timeline_json = json.dumps(_enriched_tl)
+                    logger.info(
+                        "ARRANGEMENT_PRODUCER_FIELDS_SAVED job_id=%s "
+                        "producer_plan=%s decision_log_len=%d section_summary_keys=%d",
+                        app_job_id,
+                        "non_null" if _producer_plan_data else "null",
+                        len(_decision_log) if _decision_log else 0,
+                        len(_section_summary) if _section_summary else 0,
+                    )
+            except Exception as _enrich_err:
+                logger.warning(
+                    "ARRANGEMENT_PRODUCER_FIELDS_SAVE_FAILED job_id=%s: %s",
+                    app_job_id, _enrich_err,
+                )
+
             logger.info("RENDER_EXECUTION_COMPLETED job_id=%s output=%s", app_job_id, output_path)
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
             logger.info("RENDER_OUTPUT_READY job_id=%s loop_id=%s", app_job_id, loop_id)
