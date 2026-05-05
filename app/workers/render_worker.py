@@ -263,16 +263,22 @@ def _extract_producer_fields_from_plan(
     import json as _json
 
     # ── Producer plan ────────────────────────────────────────────────────────
-    # The render plan embeds the generative producer plan under ``_generative_producer_plan``
-    # or ``_ai_producer_plan`` depending on which engine produced it.  For the
-    # render-async path (most common) the events are stored top-level as ``events``.
+    # Priority order for source of truth:
+    # 1. ``producer_plan`` – embedded by _producer_plan_to_render_plan (render-async path).
+    # 2. ``_generative_producer_plan`` / ``_ai_producer_plan`` – legacy arrangement-jobs path.
+    # 3. Synthesised from top-level events + metadata as a last-resort fallback.
     producer_plan_dict: dict | None = (
-        render_plan.get("_generative_producer_plan")
+        render_plan.get("producer_plan")
+        or render_plan.get("_generative_producer_plan")
         or render_plan.get("_ai_producer_plan")
     )
+    events_list: list = list(render_plan.get("events") or [])
+    producer_plan_present = producer_plan_dict is not None
+
+    logger.info("PRODUCER_PLAN_PRESENT value=%s", "true" if producer_plan_present else "false")
+
     # If not embedded, synthesise a minimal representation from the top-level events
     # and metadata so the field is never null.
-    events_list: list = list(render_plan.get("events") or [])
     if producer_plan_dict is None:
         metadata = render_plan.get("metadata") or {}
         producer_plan_dict = {
@@ -282,16 +288,21 @@ def _extract_producer_fields_from_plan(
             "energy_curve_score": float(metadata.get("energy_curve_score") or 0.0),
             "warnings": metadata.get("warnings") or [],
         }
+
+    # Use events from the embedded producer_plan dict when available (richer data).
+    plan_events = producer_plan_dict.get("events") or events_list
+    logger.info("PRODUCER_PLAN_EVENTS_COUNT count=%d", len(plan_events))
+
     producer_plan_json = _json.dumps(producer_plan_dict)
 
     # ── Decision log ─────────────────────────────────────────────────────────
-    # Build a concise decision log from the events list: one entry per event.
+    # Build a concise decision log from plan_events (richer when producer_plan embedded).
     decision_log: list[dict] = []
-    for ev in events_list:
-        ev_type = str(ev.get("type") or ev.get("event_type") or "")
+    for ev in plan_events:
+        ev_type = str(ev.get("type") or ev.get("event_type") or ev.get("render_action") or "")
         decision_log.append({
             "event_type": ev_type,
-            "bar": ev.get("bar"),
+            "bar": ev.get("bar") or ev.get("bar_start"),
             "intensity": ev.get("intensity"),
             "description": ev.get("description") or ev.get("reason") or "",
         })
@@ -337,7 +348,7 @@ def _extract_producer_fields_from_plan(
         "decision_log_json": decision_log_json,
         "section_summary_json": section_summary_json,
         "quality_score": quality_score,
-        "event_count": len(events_list),
+        "event_count": len(plan_events),
         "decision_log_len": len(decision_log),
         "section_summary_len": len(section_summary),
     }
