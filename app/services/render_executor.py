@@ -127,7 +127,13 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
         if has_events:
             continue
 
-        stype = str(section.get("type") or section.get("name") or "verse").strip().lower()
+        raw_type = section.get("type") or section.get("name")
+        if not raw_type:
+            logger.warning(
+                "_inject_fallback_transition_events: section missing 'type' and 'name'; "
+                "applying generic texture-lift fallback"
+            )
+        stype = str(raw_type or "").strip().lower()
         bar_start = int(section.get("bar_start", 0) or 0)
         bars = int(section.get("bars", 1) or 1)
         mid_bar = bar_start + max(1, bars // 2)
@@ -145,7 +151,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
             })
             injected += 1
 
-        elif stype in {"verse"}:
+        elif stype == "verse":
             # Bass pattern movement mid-verse adds interest without dropouts.
             section.setdefault("variations", []).append({
                 "bar_start": mid_bar,
