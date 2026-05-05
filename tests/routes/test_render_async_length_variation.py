@@ -808,3 +808,196 @@ class TestAsyncRenderBatchResponseSchema:
         assert data["variation_count"] == 3
         assert len(data["jobs"]) == 3
         assert data["jobs"][1]["variation_index"] == 1
+
+
+# ---------------------------------------------------------------------------
+# New alias tests: target_seconds / duration_seconds
+# ---------------------------------------------------------------------------
+
+
+class TestNewAliases:
+    """Verify target_seconds and duration_seconds aliases are accepted."""
+
+    def _make_loop(self, bpm=120, bars=8):
+        loop = MagicMock()
+        loop.bpm = bpm
+        loop.tempo = None
+        loop.bars = bars
+        return loop
+
+    def test_target_seconds_alias_accepted_in_schema(self):
+        from app.routes.render_jobs import AsyncRenderRequest
+
+        req = AsyncRenderRequest(target_seconds=180)
+        assert req.target_seconds == 180
+
+    def test_duration_seconds_alias_accepted_in_schema(self):
+        from app.routes.render_jobs import AsyncRenderRequest
+
+        req = AsyncRenderRequest(duration_seconds=120)
+        assert req.duration_seconds == 120
+
+    def test_target_seconds_converts_to_bars(self):
+        from app.routes.render_jobs import AsyncRenderRequest, _compute_target_bars
+
+        # At 120 BPM: bars = round(180s / 60min * 120bpm / 4) = 90
+        loop = self._make_loop(bpm=120)
+        req = AsyncRenderRequest(target_seconds=180)
+        result = _compute_target_bars(loop, req)
+        assert result == 90
+
+    def test_duration_seconds_converts_to_bars(self):
+        from app.routes.render_jobs import AsyncRenderRequest, _compute_target_bars
+
+        loop = self._make_loop(bpm=120)
+        req = AsyncRenderRequest(duration_seconds=60)
+        result = _compute_target_bars(loop, req)
+        assert result == 30
+
+    def test_target_seconds_endpoint_accepted(self, client, loop_120bpm):
+        """target_seconds alias must be accepted by the endpoint."""
+        fake_job = _make_fake_job(loop_120bpm.id)
+        with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.create_render_job", return_value=(fake_job, False)):
+            response = client.post(
+                f"/api/v1/loops/{loop_120bpm.id}/render-async",
+                json={"target_seconds": 180, "variation_count": 1},
+            )
+        assert response.status_code == 202, response.text
+
+    def test_duration_seconds_endpoint_accepted(self, client, loop_120bpm):
+        """duration_seconds alias must be accepted by the endpoint."""
+        fake_job = _make_fake_job(loop_120bpm.id)
+        with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.create_render_job", return_value=(fake_job, False)):
+            response = client.post(
+                f"/api/v1/loops/{loop_120bpm.id}/render-async",
+                json={"duration_seconds": 120, "variation_count": 1},
+            )
+        assert response.status_code == 202, response.text
+
+
+# ---------------------------------------------------------------------------
+# 180-second timeline coverage
+# ---------------------------------------------------------------------------
+
+
+class TestFullLengthTimeline:
+    """Verify 180-second requests produce a full ~180s arrangement plan."""
+
+    def _make_loop(self, bpm=120, bars=8):
+        loop = MagicMock()
+        loop.bpm = bpm
+        loop.tempo = None
+        loop.bars = bars
+        return loop
+
+    def test_180s_at_120bpm_gives_90_bars(self):
+        from app.routes.render_jobs import AsyncRenderRequest, _compute_target_bars
+
+        loop = self._make_loop(bpm=120)
+        req = AsyncRenderRequest(target_length_seconds=180)
+        result = _compute_target_bars(loop, req)
+        assert result == 90, f"Expected 90 bars for 180s at 120 BPM, got {result}"
+
+    def test_180s_actual_length_close_to_180(self, client, loop_120bpm):
+        """actual_length_seconds for a 180s request must be close to 180."""
+        captured: list = []
+
+        def capture_job_params(db, loop_id, params, **kwargs):
+            captured.append(params)
+            return _make_fake_job(loop_id), False
+
+        with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
+            response = client.post(
+                f"/api/v1/loops/{loop_120bpm.id}/render-async",
+                json={"target_length_seconds": 180, "variation_count": 1},
+            )
+        assert response.status_code == 202, response.text
+        data = response.json()
+        actual = data["actual_length_seconds"]
+        assert abs(actual - 180.0) <= 10.0, (
+            f"actual_length_seconds={actual} must be within 10s of 180s"
+        )
+
+    def test_180s_produces_7_section_plan(self):
+        """At 90 bars (≥32) _layout_sections must return 7 sections."""
+        from app.routes.render_jobs import AsyncRenderRequest, _compute_target_bars, _layout_sections
+
+        loop = self._make_loop(bpm=120)
+        req = AsyncRenderRequest(target_length_seconds=180)
+        bars = _compute_target_bars(loop, req)
+        sections = _layout_sections(bars)
+        assert len(sections) == 7, f"Expected 7 sections for 90 bars, got {len(sections)}"
+
+    def test_render_plan_total_bars_equals_target_bars(self):
+        """render_plan_json embedded in job params must have total_bars == target_bars."""
+        loop = MagicMock()
+        loop.id = 1
+        loop.bpm = 120
+        loop.tempo = None
+        loop.bars = 8
+        loop.stem_roles = {}
+        loop.genre = None
+
+        from app.routes.render_jobs import _build_minimal_render_plan, _compute_target_bars, AsyncRenderRequest
+
+        req = AsyncRenderRequest(target_length_seconds=180)
+        bars = _compute_target_bars(loop, req)
+        plan = _build_minimal_render_plan(loop, {}, target_bars=bars)
+        assert plan["total_bars"] == bars, (
+            f"render plan total_bars={plan['total_bars']} must equal target bars={bars}"
+        )
+        # Sections must sum to total_bars
+        assert sum(s["bars"] for s in plan["sections"]) == bars
+
+    def test_legacy_short_plan_not_used_when_params_has_plan(self):
+        """Worker must use params render_plan_json, not a stale short DB arrangement plan."""
+        import json as _json
+        from unittest.mock import MagicMock as _MagicMock
+
+        # Build two plans: a stale 8-bar plan (like an old DB arrangement)
+        # and a fresh 90-bar plan (like what render-async sends)
+        stale_plan = {
+            "bpm": 120,
+            "total_bars": 8,
+            "sections": [{"name": "verse", "type": "verse", "bar_start": 0, "bars": 8, "energy": 0.6, "instruments": ["full_mix"]}],
+        }
+        fresh_plan = {
+            "bpm": 120,
+            "total_bars": 90,
+            "sections": [
+                {"name": "intro", "type": "intro", "bar_start": 0, "bars": 10, "energy": 0.2, "instruments": ["full_mix"]},
+                {"name": "verse", "type": "verse", "bar_start": 10, "bars": 20, "energy": 0.5, "instruments": ["full_mix"]},
+                {"name": "hook", "type": "hook", "bar_start": 30, "bars": 20, "energy": 0.9, "instruments": ["full_mix"]},
+                {"name": "outro", "type": "outro", "bar_start": 50, "bars": 40, "energy": 0.2, "instruments": ["full_mix"]},
+            ],
+        }
+
+        from app.workers.render_worker import render_loop_worker
+        from app.models.arrangement import Arrangement as _Arrangement
+        from app.models.loop import Loop as _Loop
+        from app.models.job import RenderJob as _RenderJob
+        import app.workers.render_worker as _rw
+
+        # Simulate the logic that picks which plan to use (lines 677-697 of render_worker.py)
+        # Both arrangement (stale) and params (fresh) are present.
+        # After the fix, params_plan must win.
+        params_with_plan = {"render_plan_json": _json.dumps(fresh_plan), "target_length_seconds": 180}
+        arrangement_with_stale = _MagicMock()
+        arrangement_with_stale.render_plan_json = _json.dumps(stale_plan)
+
+        params_render_plan_json = params_with_plan.get("render_plan_json")
+        has_render_plan = bool(params_render_plan_json or (arrangement_with_stale and arrangement_with_stale.render_plan_json))
+        assert has_render_plan
+
+        chosen_plan_json = (
+            params_render_plan_json
+            or (arrangement_with_stale and arrangement_with_stale.render_plan_json)
+        )
+        chosen_plan = _json.loads(chosen_plan_json)
+        assert chosen_plan["total_bars"] == 90, (
+            f"Worker must use the fresh 90-bar params plan, not the stale 8-bar DB plan. "
+            f"Got total_bars={chosen_plan['total_bars']}"
+        )

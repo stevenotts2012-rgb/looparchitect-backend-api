@@ -54,6 +54,18 @@ class AsyncRenderRequest(BaseModel):
         le=_MAX_TARGET_SECONDS,
         description="Desired arrangement length in seconds",
     )
+    target_seconds: Optional[int] = Field(
+        None,
+        ge=1,
+        le=_MAX_TARGET_SECONDS,
+        description="Alias for target_length_seconds",
+    )
+    duration_seconds: Optional[int] = Field(
+        None,
+        ge=1,
+        le=_MAX_TARGET_SECONDS,
+        description="Alias for target_length_seconds",
+    )
     duration: Optional[int] = Field(
         None,
         ge=1,
@@ -602,6 +614,8 @@ def _compute_target_bars(loop: Loop, request: "AsyncRenderRequest") -> int:
 
     length_seconds = (
         request.target_length_seconds
+        or getattr(request, "target_seconds", None)
+        or getattr(request, "duration_seconds", None)
         or request.duration
         or request.length
     )
@@ -652,14 +666,32 @@ async def render_arrangement_async(
     ``total_bars = round(target_length_seconds / 60 * bpm / 4)``
     where *bpm* comes from the loop record (or defaults to 120).
     """
+    _received_length = (
+        request.target_length_seconds
+        or getattr(request, "target_seconds", None)
+        or getattr(request, "duration_seconds", None)
+        or request.duration
+        or request.length
+    )
     logger.info(
         "render_async_request_received: loop_id=%s variation_count=%s target_length_seconds=%s "
         "target_bars=%s seed=%s",
         loop_id,
         request.variation_count,
-        request.target_length_seconds or request.duration or request.length,
+        _received_length,
         request.target_bars,
         request.variation_seed,
+    )
+    logger.info(
+        "TARGET_LENGTH_RECEIVED loop_id=%s target_length_seconds=%s target_bars=%s",
+        loop_id,
+        _received_length,
+        request.target_bars,
+    )
+    logger.info(
+        "VARIATION_COUNT_RECEIVED loop_id=%s variation_count=%s",
+        loop_id,
+        request.variation_count,
     )
 
     # Check Redis availability first
@@ -682,7 +714,11 @@ async def render_arrangement_async(
     # seconds = bars * (4 beats/bar) / (bpm beats/min) * 60 s/min
     actual_length_seconds = round((target_bars * 4 / bpm) * 60, 2)
     requested_length_seconds = (
-        request.target_length_seconds or request.duration or request.length
+        request.target_length_seconds
+        or getattr(request, "target_seconds", None)
+        or getattr(request, "duration_seconds", None)
+        or request.duration
+        or request.length
     )
 
     # Section sequence is identical for all variations (only seed differs)
@@ -764,6 +800,7 @@ async def render_arrangement_async(
             "genre": request.genre,
             "energy": request.energy,
             "target_bars": target_bars,
+            "target_length_seconds": requested_length_seconds,
             "variation_seed": var_seed,
             "variation_index": var_idx,
             "variation_count": request.variation_count,
@@ -780,6 +817,15 @@ async def render_arrangement_async(
             raise HTTPException(status_code=400, detail=str(e))
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
+
+        logger.info(
+            "VARIATION_CREATED loop_id=%s variation_index=%d variation_seed=%d job_id=%s target_bars=%d",
+            loop_id,
+            var_idx,
+            var_seed,
+            job.id,
+            target_bars,
+        )
 
         variation_jobs.append(
             VariationJobInfo(

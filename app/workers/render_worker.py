@@ -672,19 +672,37 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             except Exception as e:
                 raise ValueError(f"Failed to load audio: {e}")
             
-            # Prefer DB arrangement render_plan_json; fall back to the plan
-            # injected into params by the render-async endpoint.
+            # Prefer the render plan freshly built for this job (embedded in params)
+            # over any stale DB arrangement plan.  The params plan was built with the
+            # correct target_bars for the requested duration; a DB arrangement may have
+            # been produced by an earlier, shorter render and must not override it.
             params_render_plan_json = params.get("render_plan_json") if isinstance(params, dict) else None
             has_render_plan = bool(
-                (arrangement and arrangement.render_plan_json) or params_render_plan_json
+                params_render_plan_json or (arrangement and arrangement.render_plan_json)
             )
             render_mode = _select_render_mode(has_render_plan)
 
             if render_mode == "render_plan":
                 render_plan_json = (
-                    (arrangement and arrangement.render_plan_json)
-                    or params_render_plan_json
+                    params_render_plan_json
+                    or (arrangement and arrangement.render_plan_json)
                 )
+                # Log what target length will be applied based on the resolved plan
+                try:
+                    _resolved_plan = json.loads(render_plan_json) if isinstance(render_plan_json, str) else render_plan_json
+                    _plan_total_bars = int(_resolved_plan.get("total_bars") or 0)
+                    _plan_bpm = float(_resolved_plan.get("bpm") or 120.0)
+                    _plan_duration = (_plan_total_bars * 4.0 / _plan_bpm) * 60.0 if _plan_total_bars and _plan_bpm else 0.0
+                    logger.info(
+                        "TARGET_LENGTH_APPLIED job_id=%s total_bars=%d bpm=%.1f expected_duration_seconds=%.2f source=%s",
+                        app_job_id,
+                        _plan_total_bars,
+                        _plan_bpm,
+                        _plan_duration,
+                        "params" if params_render_plan_json else "db_arrangement",
+                    )
+                except Exception as _plan_log_err:
+                    logger.debug("TARGET_LENGTH_APPLIED log failed job_id=%s: %s", app_job_id, _plan_log_err)
             else:
                 logger.warning(
                     "[%s] No render_plan_json found; DEV_FALLBACK_LOOP_ONLY enabled, using synthetic fallback render plan",
@@ -763,6 +781,20 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             logger.info("RENDER_EXECUTION_COMPLETED job_id=%s output=%s", app_job_id, output_path)
             logger.info("[%s] unified_render_complete timeline_bytes=%s", job_id, len(timeline_json or ""))
             logger.info("RENDER_OUTPUT_READY job_id=%s loop_id=%s", app_job_id, loop_id)
+            try:
+                _final_plan = json.loads(render_plan_json) if isinstance(render_plan_json, str) else render_plan_json
+                _final_bars = int(_final_plan.get("total_bars") or 0)
+                _final_bpm = float(_final_plan.get("bpm") or 120.0)
+                _final_dur = (_final_bars * 4.0 / _final_bpm) * 60.0 if _final_bars and _final_bpm else 0.0
+                logger.info(
+                    "FINAL_RENDER_DURATION_SECONDS job_id=%s total_bars=%d bpm=%.1f duration_seconds=%.2f",
+                    app_job_id,
+                    _final_bars,
+                    _final_bpm,
+                    _final_dur,
+                )
+            except Exception as _dur_log_err:
+                logger.debug("FINAL_RENDER_DURATION_SECONDS log failed job_id=%s: %s", app_job_id, _dur_log_err)
 
             update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
             failure_stage = "storage"
@@ -795,8 +827,11 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
                 try:
                     _target_seconds = int(
-                        (params.get("length_seconds") if isinstance(params, dict) else None)
+                        (params.get("target_length_seconds") if isinstance(params, dict) else None)
+                        or (params.get("requested_length_seconds") if isinstance(params, dict) else None)
+                        or (params.get("length_seconds") if isinstance(params, dict) else None)
                         or (params.get("target_seconds") if isinstance(params, dict) else None)
+                        or (params.get("duration_seconds") if isinstance(params, dict) else None)
                         or 60
                     )
                 except (TypeError, ValueError):
