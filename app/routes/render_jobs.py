@@ -400,7 +400,7 @@ def _producer_plan_to_render_plan(
         variations: List[Dict] = []
         for ev in events_by_section.get(section_name, []):
             variations.append({
-                "bar": ev.bar_start,
+                "bar": bar_start + ev.bar_start,
                 "variation_type": ev.render_action,
                 "intensity": ev.intensity,
                 "duration_bars": max(1, ev.bar_end - ev.bar_start),
@@ -437,10 +437,11 @@ def _producer_plan_to_render_plan(
     # Build top-level events list from all ProducerPlan events so that the
     # worker's _build_producer_arrangement_from_render_plan can dispatch them
     # into the correct section's variations or boundary_events.
+    section_starts = {s["name"]: s["bar_start"] for s in section_templates}
     top_level_events: List[Dict] = [
         {
             "type": ev.render_action,
-            "bar": ev.bar_start,
+            "bar": section_starts.get(ev.section_name, 0) + ev.bar_start,
             "duration_bars": max(1, ev.bar_end - ev.bar_start),
             "intensity": ev.intensity,
             "description": ev.reason,
