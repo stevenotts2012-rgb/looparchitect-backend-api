@@ -606,6 +606,21 @@ def render_from_plan(
     }
 
 
+def _extract_producer_event_types(render_plan: dict) -> list[str]:
+    """Return event type strings for real producer events in the render plan.
+
+    Excludes ``section_start`` structural markers so only actionable
+    transition/variation events are returned.  Only events tagged with
+    ``"source": "producer_plan"`` are included.
+    """
+    return [
+        str(e.get("type") or "")
+        for e in (render_plan.get("events") or [])
+        if e.get("type") and str(e.get("type")) != "section_start"
+        and e.get("source") == "producer_plan"
+    ]
+
+
 def _enrich_timeline_with_producer_plan(timeline_json: str, render_plan: dict) -> str:
     """Embed the producer_plan and update planned_transition_events in the timeline JSON.
 
@@ -629,12 +644,7 @@ def _enrich_timeline_with_producer_plan(timeline_json: str, render_plan: dict) -
 
         # Compute planned_transition_events from render plan events (real producer events,
         # excluding section_start structural markers).
-        planned_events: list[str] = [
-            str(e.get("type") or "")
-            for e in (render_plan.get("events") or [])
-            if e.get("type") and str(e.get("type")) != "section_start"
-            and e.get("source") == "producer_plan"
-        ]
+        planned_events: list[str] = _extract_producer_event_types(render_plan)
 
         if planned_events:
             rss = tl.get("render_spec_summary") or {}
@@ -657,9 +667,11 @@ def _enrich_timeline_with_producer_plan(timeline_json: str, render_plan: dict) -
 
 
         return json.dumps(tl)
-    except Exception as exc:
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
         logger.warning(
-            "_enrich_timeline_with_producer_plan: failed (non-blocking): %s", exc
+            "_enrich_timeline_with_producer_plan: failed (%s, non-blocking): %s",
+            type(exc).__name__,
+            exc,
         )
         return timeline_json
 
@@ -1044,12 +1056,7 @@ def _build_render_observability(
     if not planned_transition_events and render_plan:
         # No boundary-event-derived plan available — use the real producer events from
         # the render plan, excluding section_start structural markers.
-        planned_transition_events = [
-            str(e.get("type") or "")
-            for e in (render_plan.get("events") or [])
-            if e.get("type") and str(e.get("type")) != "section_start"
-            and e.get("source") == "producer_plan"
-        ]
+        planned_transition_events = _extract_producer_event_types(render_plan)
         if planned_transition_events and actual_transition_events_used:
             actual_set = set(actual_transition_events_used)
             matched = [e for e in planned_transition_events if e in actual_set]

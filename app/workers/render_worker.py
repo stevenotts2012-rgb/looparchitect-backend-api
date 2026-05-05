@@ -297,6 +297,10 @@ def _extract_producer_fields_from_plan(
 
     # ── Decision log ─────────────────────────────────────────────────────────
     # Build a concise decision log from plan_events (richer when producer_plan embedded).
+    # The field-name fallback chain reflects two different event schemas:
+    #   "type"         – render_plan top-level events (render-async path)
+    #   "event_type"   – legacy arrangement_jobs producer events
+    #   "render_action"– raw ProducerEvent.to_dict() from orchestrator
     decision_log: list[dict] = []
     for ev in plan_events:
         ev_type = str(ev.get("type") or ev.get("event_type") or ev.get("render_action") or "")
