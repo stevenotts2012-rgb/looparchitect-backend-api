@@ -186,6 +186,105 @@ _ROLE_GROUPS = {
 # Re-export under the shorter name used by helper functions in this module.
 _MAX_RANDOM_SEED = _MAX_RANDOM_SEED_OUTER
 
+# ---------------------------------------------------------------------------
+# Render-action translation
+# ---------------------------------------------------------------------------
+
+# Maps SUPPORTED_RENDER_ACTIONS (from generative_producer_system/types.py) to
+# event type strings that _RENDER_MOVE_EVENT_TYPES in render_executor.py and
+# _PRODUCER_MOVE_TYPES in arrangement_jobs.py actually handle.  Without this
+# mapping every event is discarded because the two sets use different names.
+_RENDER_ACTION_TO_RENDERER_TYPE: Dict[str, str] = {
+    "mute_role": "disable_stem",
+    "unmute_role": "enable_stem",
+    "filter_role": "stem_filter",
+    "chop_role": "fill_event",
+    "reverse_slice": "reverse_fx",
+    "add_hat_roll": "hat_density_variation",
+    "add_drum_fill": "drum_fill",
+    "bass_pattern_variation": "fill_event",
+    "add_fx_riser": "riser_fx",
+    "add_impact": "crash_hit",
+    "fade_role": "outro_strip_down",
+    "widen_role": "hook_expansion",
+    "delay_role": "fill_event",
+    "reverb_tail": "reverse_fx",
+}
+
+# Renderer event types that represent stem muting — these must be capped to
+# at most 1 bar to prevent musical dead air (full-section silence / dropouts).
+_MUTE_RENDERER_TYPES = frozenset({"disable_stem", "pre_hook_mute", "silence_drop",
+                                   "silence_drop_before_hook", "pre_hook_drum_mute"})
+
+# Section types where drums and bass must never be silenced.
+_HOOK_SECTION_TYPES = frozenset({"hook", "hook_2"})
+
+
+def _generate_fallback_producer_events(
+    section_templates: List[Dict],
+    available_roles: List[str],
+) -> List[Dict]:
+    """Generate deterministic fallback events when the producer engine returns none.
+
+    Injects musically meaningful moves so the arrangement is never blank:
+    - filter_sweep (stem_filter) at the tail of pre_hook sections
+    - drum_drop (drum_fill) at bridge / outro starts
+    - stutter_fill (fill_event) at hook section starts
+    - reverse_fill (reverse_fx) at the last bar of every 4+-bar section
+    """
+    events: List[Dict] = []
+    for tmpl in section_templates:
+        section_name = tmpl["name"]
+        bar_start = int(tmpl["bar_start"])
+        bar_end = int(tmpl["bar_end"])
+        bars = int(tmpl["bars"])
+
+        if section_name == "pre_hook":
+            # Filter sweep in the final bar of pre_hook to build tension
+            events.append({
+                "type": "stem_filter",
+                "bar": max(bar_start, bar_end - 1),
+                "intensity": 0.7,
+                "duration_bars": 1,
+                "description": "Fallback: filter sweep before hook",
+                "params": {},
+            })
+
+        elif section_name in ("bridge", "outro"):
+            # Drum drop at the start of bridge / outro to mark reset
+            events.append({
+                "type": "drum_fill",
+                "bar": bar_start,
+                "intensity": 0.6,
+                "duration_bars": 1,
+                "description": f"Fallback: drum drop at {section_name} start",
+                "params": {},
+            })
+
+        if section_name in ("hook", "hook_2"):
+            # Stutter fill at the top of the hook for impact
+            events.append({
+                "type": "fill_event",
+                "bar": bar_start,
+                "intensity": 0.75,
+                "duration_bars": min(1, bars),
+                "description": f"Fallback: stutter fill at {section_name} start",
+                "params": {},
+            })
+
+        if bars >= 4:
+            # Reverse fill one bar before each section boundary
+            events.append({
+                "type": "reverse_fx",
+                "bar": bar_end - 1,
+                "intensity": 0.5,
+                "duration_bars": 1,
+                "description": f"Fallback: reverse fill at {section_name} boundary",
+                "params": {},
+            })
+
+    return events
+
 
 def _classify_roles(available_roles: List[str]) -> Dict[str, List[str]]:
     """Classify available roles into drum/bass/melody/fx groups."""
@@ -378,7 +477,30 @@ def _producer_plan_to_render_plan(
     ``verse_2`` and ``hook_2``), additional variation events are prepended so
     that those sections differ in at least 2 audible dimensions from their
     first-appearance counterpart.
+
+    Render-action translation
+    -------------------------
+    ``ProducerEvent.render_action`` values come from ``SUPPORTED_RENDER_ACTIONS``
+    in the generative producer system (e.g. ``"mute_role"``, ``"add_drum_fill"``).
+    These are translated to the event-type strings that ``_RENDER_MOVE_EVENT_TYPES``
+    in render_executor.py and ``_PRODUCER_MOVE_TYPES`` in arrangement_jobs.py
+    actually handle (e.g. ``"disable_stem"``, ``"drum_fill"``).  Without this
+    translation every event is silently discarded downstream.
+
+    Dead-air guard
+    --------------
+    Mute-type events are capped to 1 bar and may never silence all available
+    stems simultaneously.  Hook sections always keep drums + bass active.
     """
+    # Log original event count before any conversion.
+    raw_event_count = len(producer_plan.events)
+    logger.info(
+        "PRODUCER_PLAN_EVENTS_COUNT loop_id=%s count=%d variation_score=%.4f",
+        loop_id,
+        raw_event_count,
+        producer_plan.section_variation_score,
+    )
+
     # Index events by section name for quick lookup
     events_by_section: Dict[str, list] = {}
     for ev in producer_plan.events:
@@ -396,14 +518,20 @@ def _producer_plan_to_render_plan(
         energy = _SECTION_ENERGY.get(section_name, 0.5)
         active_roles = _select_roles_for_section(section_name, available_roles, role_groups)
 
-        # Build variation events for this section from ProducerPlan events
+        # Build variation events for this section from ProducerPlan events,
+        # translating render_action → renderer-compatible type.
         variations: List[Dict] = []
         for ev in events_by_section.get(section_name, []):
+            renderer_type = _RENDER_ACTION_TO_RENDERER_TYPE.get(ev.render_action, ev.render_action)
+            duration = max(1, ev.bar_end - ev.bar_start)
+            # Dead-air guard: cap mute-type events to 1 bar.
+            if renderer_type in _MUTE_RENDERER_TYPES:
+                duration = min(duration, 1)
             variations.append({
                 "bar": ev.bar_start,
-                "variation_type": ev.render_action,
+                "variation_type": renderer_type,
                 "intensity": ev.intensity,
-                "duration_bars": max(1, ev.bar_end - ev.bar_start),
+                "duration_bars": duration,
                 "description": ev.reason,
                 "params": ev.parameters,
             })
@@ -434,21 +562,69 @@ def _producer_plan_to_render_plan(
     # Compute energy_curve score using shared helper
     energy_curve_score = _compute_energy_curve_score([s["name"] for s in sections])
 
-    # Build top-level events list from all ProducerPlan events so that the
-    # worker's _build_producer_arrangement_from_render_plan can dispatch them
-    # into the correct section's variations or boundary_events.
-    top_level_events: List[Dict] = [
-        {
-            "type": ev.render_action,
+    # Build top-level events list from ProducerPlan events, translating each
+    # render_action to the renderer-compatible event type.  When no events were
+    # generated, inject deterministic fallback moves so the arrangement never
+    # sounds like a plain looping repetition.
+    raw_plan_events = list(producer_plan.events)
+    if not raw_plan_events:
+        logger.warning(
+            "PRODUCER_PLAN_EVENTS_EMPTY loop_id=%s — injecting deterministic fallback moves",
+            loop_id,
+        )
+
+    top_level_events: List[Dict] = []
+    converted_count = 0
+    for ev in raw_plan_events:
+        renderer_type = _RENDER_ACTION_TO_RENDERER_TYPE.get(ev.render_action, ev.render_action)
+        duration = max(1, ev.bar_end - ev.bar_start)
+        # Dead-air guard: cap mute/dropout events to 1 bar maximum.
+        if renderer_type in _MUTE_RENDERER_TYPES:
+            duration = min(duration, 1)
+        top_level_events.append({
+            "type": renderer_type,
             "bar": ev.bar_start,
             "intensity": ev.intensity,
-            "duration_bars": max(1, ev.bar_end - ev.bar_start),
+            "duration_bars": duration,
             "description": ev.reason,
             "params": ev.parameters,
+        })
+        converted_count += 1
+
+    # Inject fallback events when the producer engine produced nothing.
+    fallback_events: List[Dict] = []
+    if not top_level_events:
+        fallback_events = _generate_fallback_producer_events(section_templates, available_roles)
+        top_level_events.extend(fallback_events)
+
+    logger.info(
+        "PRODUCER_EVENTS_CONVERTED loop_id=%s converted=%d fallback=%d total_events=%d",
+        loop_id,
+        converted_count,
+        len(fallback_events),
+        len(top_level_events),
+    )
+
+    # Build producer metadata for persistence into arrangement_json.
+    decision_log = [
+        {
+            "section": ev.section_name,
+            "bar_start": ev.bar_start,
+            "render_action": ev.render_action,
+            "renderer_type": _RENDER_ACTION_TO_RENDERER_TYPE.get(ev.render_action, ev.render_action),
+            "reason": ev.reason,
+            "intensity": ev.intensity,
         }
-        for ev in producer_plan.events
+        for ev in raw_plan_events
     ]
-    logger.info("PRODUCER_EVENTS_ATTACHED count=%d loop_id=%s", len(top_level_events), loop_id)
+
+    section_summary: Dict[str, dict] = {}
+    for ev in raw_plan_events:
+        entry = section_summary.setdefault(ev.section_name, {"event_count": 0, "event_types": []})
+        entry["event_count"] += 1
+        renderer_type = _RENDER_ACTION_TO_RENDERER_TYPE.get(ev.render_action, ev.render_action)
+        if renderer_type not in entry["event_types"]:
+            entry["event_types"].append(renderer_type)
 
     return {
         "loop_id": loop_id,
@@ -470,6 +646,10 @@ def _producer_plan_to_render_plan(
             "producer_variation_score": producer_plan.section_variation_score,
             "warnings": producer_plan.warnings,
         },
+        # Producer metadata persisted into arrangement_json by the worker.
+        "_producer_plan": producer_plan.to_dict(),
+        "_decision_log": decision_log,
+        "_section_summary": section_summary,
     }
 
 
