@@ -57,6 +57,23 @@ _RENDER_MOVE_EVENT_TYPES = {
     "silence_gap",
     "subtractive_entry",
     "re_entry_accent",
+    # Producer SUPPORTED_RENDER_ACTIONS — these are emitted by the
+    # GenerativeProducerOrchestrator and must be preserved here so that
+    # _build_producer_arrangement_from_render_plan does not silently discard them.
+    "mute_role",
+    "unmute_role",
+    "filter_role",
+    "chop_role",
+    "reverse_slice",
+    "add_hat_roll",
+    "add_drum_fill",
+    "bass_pattern_variation",
+    "add_fx_riser",
+    "add_impact",
+    "fade_role",
+    "widen_role",
+    "delay_role",
+    "reverb_tail",
 }
 
 # Subset of _RENDER_MOVE_EVENT_TYPES that represent section-boundary transitions
@@ -158,10 +175,17 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         }
         normalized_sections.append(normalized)
 
+    logger.info(
+        "PRODUCER_PLAN_EVENTS_COUNT total=%d recognized=%d",
+        len(events),
+        sum(1 for e in events if str(e.get("type", "")).strip().lower() in _RENDER_MOVE_EVENT_TYPES),
+    )
+    converted_count = 0
     for event in events:
         event_type = str(event.get("type", "")).strip().lower()
         if event_type not in _RENDER_MOVE_EVENT_TYPES:
             continue
+        converted_count += 1
         event_bar = int(event.get("bar", 0) or 0)
         target = None
         for section in sorted(normalized_sections, key=lambda s: int(s["bar_start"])):
@@ -213,6 +237,12 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
             for section in normalized_sections
             if section.get("loop_variant")
         }
+    )
+
+    logger.info(
+        "PRODUCER_EVENTS_CONVERTED count=%d out_of=%d",
+        converted_count,
+        len(events),
     )
 
     summary = {

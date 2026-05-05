@@ -45,6 +45,15 @@ class Arrangement(Base):
     
     error_message = Column(Text, nullable=True)
     
+    # Producer system persistence fields
+    # These record the generative producer system's decisions so the arrangement
+    # response can surface producer_plan, decision_log, section_summary, and
+    # quality_score without re-parsing the full arrangement_json on every request.
+    producer_plan_json = Column(Text, nullable=True)   # ProducerPlan as JSON dict
+    decision_log_json = Column(Text, nullable=True)    # JSON array of producer decisions
+    section_summary_json = Column(Text, nullable=True) # JSON array of per-section summaries
+    quality_score = Column(Float, nullable=True)       # 0–1 arrangement quality score
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
