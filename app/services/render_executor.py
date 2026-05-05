@@ -102,6 +102,150 @@ _BOUNDARY_TRANSITION_EVENT_TYPES: frozenset[str] = frozenset({
 })
 
 
+def _inject_fallback_transition_events(sections: list[dict]) -> int:
+    """Inject deterministic per-section-type producer events when a section has none.
+
+    This is the safety net for the render-async path (render_jobs.py), where
+    ``_apply_stem_primary_section_states`` is **not** called and a generative
+    producer plan may be empty.  Without this guard every section would render
+    with ``applied_events: []`` and ``transition_event_count: 0``.
+
+    Rules (mirror the problem-statement requirements):
+    - filter_sweep (``filter_role``) on entry to every hook section.
+    - short stutter_fill (``snare_roll``) as a boundary event for pre_hook.
+    - reverse_fill (``reverse_fx``) as a boundary event before bridge/breakdown.
+    - 1-bar drum_drop (``drum_fill``) as a boundary event before bridge/outro.
+    - Never mute all stems: ``mute_role`` is intentionally excluded here.
+    - Hooks keep drums + bass: we only inject texture/FX events, not stem-mutes.
+    - Max dropout length enforced by the individual effect implementations.
+
+    Returns the number of fallback events injected across all sections.
+    """
+    injected = 0
+    for section in sections:
+        has_events = bool(section.get("variations")) or bool(section.get("boundary_events"))
+        if has_events:
+            continue
+
+        stype = str(section.get("type") or section.get("name") or "verse").strip().lower()
+        bar_start = int(section.get("bar_start", 0) or 0)
+        bars = int(section.get("bars", 1) or 1)
+        mid_bar = bar_start + max(1, bars // 2)
+        last_bar = bar_start + max(0, bars - 1)
+
+        if stype == "intro":
+            # Lowpass filter-sweep eases in the intro without dead air.
+            section.setdefault("variations", []).append({
+                "bar_start": bar_start,
+                "variation_type": "filter_role",
+                "intensity": 0.6,
+                "duration_bars": bars,
+                "description": "Fallback: filter-sweep intro entry",
+                "params": {},
+            })
+            injected += 1
+
+        elif stype in {"verse"}:
+            # Bass pattern movement mid-verse adds interest without dropouts.
+            section.setdefault("variations", []).append({
+                "bar_start": mid_bar,
+                "variation_type": "bass_pattern_variation",
+                "intensity": 0.5,
+                "duration_bars": 1,
+                "description": "Fallback: bass pattern variation in verse",
+                "params": {},
+            })
+            injected += 1
+
+        elif stype in {"pre_hook", "buildup", "build_up", "build"}:
+            # Short snare stutter on the last bar builds tension before the hook.
+            section.setdefault("boundary_events", []).append({
+                "type": "snare_roll",
+                "bar": last_bar,
+                "placement": "end_of_section",
+                "intensity": 0.75,
+                "params": {},
+            })
+            injected += 1
+
+        elif stype in {"hook", "chorus", "drop"}:
+            # Filter sweep variation throughout + impact accent at start.
+            section.setdefault("variations", []).append({
+                "bar_start": bar_start,
+                "variation_type": "filter_role",
+                "intensity": 0.55,
+                "duration_bars": 1,
+                "description": "Fallback: filter-sweep hook entry",
+                "params": {},
+            })
+            section.setdefault("boundary_events", []).append({
+                "type": "add_impact",
+                "bar": bar_start,
+                "placement": "on_downbeat",
+                "intensity": 0.8,
+                "params": {},
+            })
+            injected += 2
+
+        elif stype in {"bridge", "breakdown", "break"}:
+            # 1-bar drum fill at section start signals the density drop.
+            section.setdefault("boundary_events", []).append({
+                "type": "drum_fill",
+                "bar": bar_start,
+                "placement": "on_downbeat",
+                "intensity": 0.7,
+                "params": {},
+            })
+            # Reverse FX sweep adds drama at the bridge boundary.
+            section.setdefault("boundary_events", []).append({
+                "type": "reverse_fx",
+                "bar": last_bar,
+                "placement": "end_of_section",
+                "intensity": 0.65,
+                "params": {},
+            })
+            injected += 2
+
+        elif stype == "outro":
+            # 1-bar drum fill at outro entry, then a gentle strip-down.
+            section.setdefault("boundary_events", []).append({
+                "type": "drum_fill",
+                "bar": bar_start,
+                "placement": "on_downbeat",
+                "intensity": 0.6,
+                "params": {},
+            })
+            section.setdefault("variations", []).append({
+                "bar_start": bar_start,
+                "variation_type": "outro_strip_down",
+                "intensity": 0.7,
+                "duration_bars": bars,
+                "description": "Fallback: outro strip-down",
+                "params": {},
+            })
+            injected += 2
+
+        else:
+            # Generic fallback: subtle texture lift so applied_events is never empty.
+            section.setdefault("variations", []).append({
+                "bar_start": mid_bar,
+                "variation_type": "texture_lift",
+                "intensity": 0.5,
+                "duration_bars": 1,
+                "description": "Fallback: generic texture lift",
+                "params": {},
+            })
+            injected += 1
+
+    if injected:
+        logger.info(
+            "PRODUCER_PLAN_EVENTS_COUNT fallback_injected=%d sections_total=%d",
+            injected,
+            len(sections),
+        )
+    return injected
+
+
 def extract_producer_moves(events: list[dict]) -> list[str]:
     """Extract producer move hints from render plan events."""
     moves: list[str] = []
@@ -244,6 +388,19 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
         converted_count,
         len(events),
     )
+
+    # Inject deterministic fallback events for any section that still has neither
+    # variations nor boundary_events after the producer-plan distribution pass.
+    # This guarantees applied_events is never empty and transition_event_count > 0
+    # even when the generative producer plan was empty or the render-async path
+    # skipped _apply_stem_primary_section_states().
+    fallback_injected = _inject_fallback_transition_events(normalized_sections)
+    if fallback_injected:
+        logger.info(
+            "PRODUCER_EVENTS_CONVERTED fallback_events=%d (producer_plan_empty=%s)",
+            fallback_injected,
+            converted_count == 0,
+        )
 
     summary = {
         "sections_count": len(normalized_sections),
