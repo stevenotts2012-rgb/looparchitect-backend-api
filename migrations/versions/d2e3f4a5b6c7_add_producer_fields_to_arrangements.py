@@ -7,7 +7,7 @@ Adds columns for recording the generative producer system's decisions:
 - quality_score      : 0–1 arrangement quality score
 
 Revision ID: d2e3f4a5b6c7
-Revises: c1d2e3f4a5b6
+Revises: 75fa8cee31c7
 Branch Labels: None
 Depends On: None
 """
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 
 revision: str = "d2e3f4a5b6c7"
-down_revision: Union[str, Sequence[str], None] = "c1d2e3f4a5b6"
+down_revision: Union[str, Sequence[str], None] = "75fa8cee31c7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
