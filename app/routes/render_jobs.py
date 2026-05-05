@@ -530,6 +530,15 @@ def _build_generative_render_plan(loop: Loop, params: Dict, target_bars: Optiona
         seed=effective_seed,
     )
 
+    logger.info(
+        "PRODUCER_PLAN_EVENTS_COUNT loop_id=%s genre=%s seed=%s events=%d skipped=%d",
+        loop.id,
+        genre,
+        effective_seed,
+        len(producer_plan.events),
+        len(producer_plan.skipped_events),
+    )
+
     energy_curve_score = _compute_energy_curve_score([s["name"] for s in section_templates])
     logger.info(
         "producer_plan_generated: loop_id=%s genre=%s section_count=%d "

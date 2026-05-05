@@ -245,6 +245,104 @@ def _resolve_app_job_id(db: Session, incoming_job_id: str) -> str:
     return incoming_job_id
 
 
+def _extract_producer_fields_from_plan(
+    render_plan: dict,
+    timeline_json: str | None,
+) -> dict:
+    """Extract producer-system fields from the render plan and timeline for DB persistence.
+
+    Returns a dict with:
+        producer_plan_json   – JSON string of the producer plan (events, scores, metadata)
+        decision_log_json    – JSON string of the per-event decision log
+        section_summary_json – JSON string of the per-section summary from the timeline
+        quality_score        – float 0–1 energy curve / variation score
+        event_count          – int (for logging)
+        decision_log_len     – int (for logging)
+        section_summary_len  – int (for logging)
+    """
+    import json as _json
+
+    # ── Producer plan ────────────────────────────────────────────────────────
+    # The render plan embeds the generative producer plan under ``_generative_producer_plan``
+    # or ``_ai_producer_plan`` depending on which engine produced it.  For the
+    # render-async path (most common) the events are stored top-level as ``events``.
+    producer_plan_dict: dict | None = (
+        render_plan.get("_generative_producer_plan")
+        or render_plan.get("_ai_producer_plan")
+    )
+    # If not embedded, synthesise a minimal representation from the top-level events
+    # and metadata so the field is never null.
+    events_list: list = list(render_plan.get("events") or [])
+    if producer_plan_dict is None:
+        metadata = render_plan.get("metadata") or {}
+        producer_plan_dict = {
+            "genre": render_plan.get("render_profile", {}).get("genre_profile") or metadata.get("genre") or "generic",
+            "events": events_list,
+            "section_variation_score": float(metadata.get("producer_variation_score") or 0.0),
+            "energy_curve_score": float(metadata.get("energy_curve_score") or 0.0),
+            "warnings": metadata.get("warnings") or [],
+        }
+    producer_plan_json = _json.dumps(producer_plan_dict)
+
+    # ── Decision log ─────────────────────────────────────────────────────────
+    # Build a concise decision log from the events list: one entry per event.
+    decision_log: list[dict] = []
+    for ev in events_list:
+        ev_type = str(ev.get("type") or ev.get("event_type") or "")
+        decision_log.append({
+            "event_type": ev_type,
+            "bar": ev.get("bar"),
+            "intensity": ev.get("intensity"),
+            "description": ev.get("description") or ev.get("reason") or "",
+        })
+    decision_log_json = _json.dumps(decision_log)
+
+    # ── Section summary ───────────────────────────────────────────────────────
+    # Extract from the timeline (arrangement_json) so it reflects actual render output.
+    section_summary: list[dict] = []
+    try:
+        timeline = _json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
+        for ts in (timeline.get("sections") or []):
+            section_summary.append({
+                "name": ts.get("name") or ts.get("type") or "",
+                "type": ts.get("type") or "",
+                "applied_events": list(ts.get("applied_events") or []),
+                "boundary_events": list(ts.get("boundary_events") or []),
+                "transition_out": ts.get("transition_out"),
+                "energy": ts.get("energy"),
+            })
+    except Exception:
+        pass
+    section_summary_json = _json.dumps(section_summary)
+
+    # ── Quality score ─────────────────────────────────────────────────────────
+    quality_score: float | None = None
+    try:
+        metadata = render_plan.get("metadata") or {}
+        q_candidates = [
+            render_plan.get("quality_score"),
+            (render_plan.get("render_profile") or {}).get("energy_curve_score"),
+            metadata.get("energy_curve_score"),
+            metadata.get("producer_variation_score"),
+        ]
+        for q in q_candidates:
+            if q is not None:
+                quality_score = float(q)
+                break
+    except Exception:
+        pass
+
+    return {
+        "producer_plan_json": producer_plan_json,
+        "decision_log_json": decision_log_json,
+        "section_summary_json": section_summary_json,
+        "quality_score": quality_score,
+        "event_count": len(events_list),
+        "decision_log_len": len(decision_log),
+        "section_summary_len": len(section_summary),
+    }
+
+
 def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     """
     Worker function: process a single render job.
@@ -891,6 +989,9 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 # Variation jobs always create a NEW Arrangement row so each of the
                 # N requested variations is independently retrievable via loop history.
                 # Non-variation legacy jobs may still update an existing row.
+                _producer_fields = _extract_producer_fields_from_plan(
+                    parsed_plan, timeline_json
+                )
                 if arrangement and not _is_variation_job:
                     from app.models.arrangement import Arrangement
                     arrangement.status = "done"
@@ -903,6 +1004,10 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     arrangement.error_message = None
                     arrangement.is_saved = True
                     arrangement.saved_at = datetime.utcnow()
+                    arrangement.producer_plan_json = _producer_fields["producer_plan_json"]
+                    arrangement.decision_log_json = _producer_fields["decision_log_json"]
+                    arrangement.section_summary_json = _producer_fields["section_summary_json"]
+                    arrangement.quality_score = _producer_fields["quality_score"]
                     db.commit()
                     _arr_record_id = arrangement.id
                 else:
@@ -919,11 +1024,26 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         progress_message="Render complete",
                         is_saved=True,
                         saved_at=datetime.utcnow(),
+                        producer_plan_json=_producer_fields["producer_plan_json"],
+                        decision_log_json=_producer_fields["decision_log_json"],
+                        section_summary_json=_producer_fields["section_summary_json"],
+                        quality_score=_producer_fields["quality_score"],
                     )
                     db.add(_new_arr)
                     db.commit()
                     db.refresh(_new_arr)
                     _arr_record_id = _new_arr.id
+
+                logger.info(
+                    "ARRANGEMENT_PRODUCER_FIELDS_SAVED arrangement_id=%s "
+                    "producer_plan_events=%s decision_log_len=%s section_summary_len=%s "
+                    "quality_score=%s",
+                    _arr_record_id,
+                    _producer_fields.get("event_count"),
+                    _producer_fields.get("decision_log_len"),
+                    _producer_fields.get("section_summary_len"),
+                    _producer_fields.get("quality_score"),
+                )
 
                 logger.info(
                     "ARRANGEMENT_CREATED_SUCCESS job_id=%s arrangement_id=%s",

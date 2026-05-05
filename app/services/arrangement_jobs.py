@@ -1394,6 +1394,23 @@ _PRODUCER_MOVE_TYPES = {
     "silence_gap",
     "subtractive_entry",
     "re_entry_accent",
+    # Aliases for GenerativeProducerOrchestrator SUPPORTED_RENDER_ACTIONS.
+    # These are emitted as render_action values on ProducerEvent objects and
+    # must be present here so _apply_producer_move_effect handles them.
+    "mute_role",
+    "unmute_role",
+    "filter_role",
+    "chop_role",
+    "reverse_slice",
+    "add_hat_roll",
+    "add_drum_fill",
+    "bass_pattern_variation",
+    "add_fx_riser",
+    "add_impact",
+    "fade_role",
+    "widen_role",
+    "delay_role",
+    "reverb_tail",
 }
 
 
@@ -1712,6 +1729,144 @@ def _apply_producer_move_effect(
         accent = segment[:accent_ms].high_pass_filter(1800) + (5 + 3 * intensity)
         accent = _apply_headroom_ceiling(accent, -1.5)
         return accent + segment[accent_ms:]
+
+    # ------------------------------------------------------------------
+    # GenerativeProducerOrchestrator render_action aliases
+    # Each maps to a musically equivalent effect already implemented above
+    # so that events produced by the generative system are audibly applied
+    # rather than silently ignored.
+    # ------------------------------------------------------------------
+    if move_type == "mute_role":
+        # Brief level dip (0.25 bars at minimum intensity, up to 1 bar at maximum) —
+        # never fully silence all stems or exceed 1 bar to prevent dead air.
+        # Mirrors pre_hook_drum_mute semantics with an intensity-proportional window.
+        dip_bars = min(1.0, 0.25 + 0.75 * intensity)
+        dip_ms = int(min(len(segment), bar_duration_ms * dip_bars))
+        dip_ms = max(1, dip_ms)
+        dip = segment[:dip_ms] - _HEAVY_ATTENUATION_DB
+        return dip + segment[dip_ms:]
+
+    if move_type == "unmute_role":
+        # Re-introduce a reduced layer — mirrors enable_stem.
+        boosted = segment + (2 + 2 * intensity)
+        return boosted
+
+    if move_type == "filter_role":
+        # Lowpass sweep — mirrors stem_filter lowpass.
+        cutoff = max(400, int(3500 - 2500 * intensity))
+        return segment.low_pass_filter(cutoff)
+
+    if move_type == "chop_role":
+        # Rhythmic gate chop — mirrors fill_event with chop_fill.
+        # 40 ms is the minimum grid size: shorter grids produce inaudible clicks.
+        # The denominator (8 + 8*intensity) scales from 8 (slower chop) to
+        # ~16 (faster 16th-note chop) as intensity increases.
+        chop_len = int(min(len(segment), bar_duration_ms * 0.75))
+        grid = max(40, int(bar_duration_ms / (8 + int(8 * intensity))))
+        chop_seg = segment[-chop_len:] if chop_len < len(segment) else segment
+        chopped = AudioSegment.silent(duration=0)
+        for pos in range(0, len(chop_seg), grid):
+            chunk = chop_seg[pos: pos + grid]
+            chopped += chunk + (4 if (pos // grid) % 2 == 0 else -4)
+        result = _apply_headroom_ceiling(chopped, -1.5)
+        return segment[: len(segment) - len(result)] + result
+
+    if move_type == "reverse_slice":
+        # Reverse tail — mirrors reverse_cymbal.
+        rev_len = int(min(len(segment), bar_duration_ms * 0.75))
+        start = max(0, len(segment) - rev_len)
+        rev = segment[start:].reverse().high_pass_filter(1600)
+        return segment[:start] + rev
+
+    if move_type == "add_hat_roll":
+        # Hi-hat roll — mirrors hat_density_variation.
+        return _apply_producer_move_effect(
+            segment=segment,
+            move_type="hat_density_variation",
+            intensity=intensity,
+            stem_available=stem_available,
+            bar_duration_ms=bar_duration_ms,
+            params=params,
+        )
+
+    if move_type == "add_drum_fill":
+        # Drum fill — mirrors drum_fill.
+        return _apply_producer_move_effect(
+            segment=segment,
+            move_type="drum_fill",
+            intensity=intensity,
+            stem_available=stem_available,
+            bar_duration_ms=bar_duration_ms,
+            params=params,
+        )
+
+    if move_type == "bass_pattern_variation":
+        # Bass movement — lighter than bass_pause; a brief HPF accentuates movement.
+        snap_len = int(min(len(segment), bar_duration_ms * 0.15))
+        if snap_len <= 0:
+            return segment
+        snap = segment[:snap_len].high_pass_filter(200) - 2
+        return snap + segment[snap_len:]
+
+    if move_type == "add_fx_riser":
+        # FX riser — mirrors riser_fx.
+        return _apply_producer_move_effect(
+            segment=segment,
+            move_type="riser_fx",
+            intensity=intensity,
+            stem_available=stem_available,
+            bar_duration_ms=bar_duration_ms,
+            params=params,
+        )
+
+    if move_type == "add_impact":
+        # Impact accent — mirrors crash_hit.
+        return _apply_producer_move_effect(
+            segment=segment,
+            move_type="crash_hit",
+            intensity=intensity,
+            stem_available=stem_available,
+            bar_duration_ms=bar_duration_ms,
+            params=params,
+        )
+
+    if move_type == "fade_role":
+        # Fade out then back in over the window.
+        half = max(1, len(segment) // 2)
+        faded = segment[:half].fade_out(half) + segment[half:].fade_in(max(1, half // 2))
+        return faded
+
+    if move_type == "widen_role":
+        # Gentle stereo widening — mirrors hook_expansion but lighter.
+        widened = segment.overlay(
+            segment.high_pass_filter(3000) + (1 + 1.5 * intensity),
+            gain_during_overlay=-4,
+        )
+        return _apply_headroom_ceiling(widened, -1.5)
+
+    if move_type == "delay_role":
+        # Slapback-style delay: quick echo offset by 1/8 bar (~60 ms at 120 BPM).
+        # The gain reduction (6 + 3*(1-intensity)) gives 6 dB at full intensity
+        # (subtle echo) down to 9 dB at zero intensity (barely audible ghost).
+        delay_ms = max(20, int(bar_duration_ms / 8))
+        delay_ms = min(delay_ms, len(segment) - 1)
+        if delay_ms <= 0:
+            return segment
+        echo = segment - (6 + 3 * (1 - intensity))
+        padded = AudioSegment.silent(duration=delay_ms) + echo
+        result = segment.overlay(padded[: len(segment)], gain_during_overlay=-3)
+        return _apply_headroom_ceiling(result, -1.5)
+
+    if move_type == "reverb_tail":
+        # Reverb simulation: low-pass tail layer with a slight fade in.
+        tail_len = int(min(len(segment), bar_duration_ms * 0.5))
+        if tail_len <= 0:
+            return segment
+        tail = segment[-tail_len:].low_pass_filter(3000).fade_in(max(1, tail_len // 4))
+        tail = tail - (4 + 2 * (1 - intensity))
+        padded = AudioSegment.silent(duration=len(segment) - tail_len) + tail
+        result = segment.overlay(padded, gain_during_overlay=-3)
+        return _apply_headroom_ceiling(result, -1.5)
 
     return segment
 
@@ -2521,6 +2676,12 @@ def _render_producer_arrangement(
             section_bars,
             section_applied_events,
             "stems" if use_stems else "stereo_fallback",
+        )
+        logger.info(
+            "RENDER_EVENTS_APPLIED_COUNT section=%s applied=%d events=%s",
+            section_name,
+            len(section_applied_events),
+            section_applied_events,
         )
         
         # Use a short crossfade when appending this section to the growing mix so that
