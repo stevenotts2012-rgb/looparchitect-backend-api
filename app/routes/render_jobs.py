@@ -434,13 +434,29 @@ def _producer_plan_to_render_plan(
     # Compute energy_curve score using shared helper
     energy_curve_score = _compute_energy_curve_score([s["name"] for s in sections])
 
+    # Build top-level events list from all ProducerPlan events so that the
+    # worker's _build_producer_arrangement_from_render_plan can dispatch them
+    # into the correct section's variations or boundary_events.
+    top_level_events: List[Dict] = [
+        {
+            "type": ev.render_action,
+            "bar": ev.bar_start,
+            "intensity": ev.intensity,
+            "duration_bars": max(1, ev.bar_end - ev.bar_start),
+            "description": ev.reason,
+            "params": ev.parameters,
+        }
+        for ev in producer_plan.events
+    ]
+    logger.info("PRODUCER_EVENTS_ATTACHED count=%d loop_id=%s", len(top_level_events), loop_id)
+
     return {
         "loop_id": loop_id,
         "bpm": bpm,
         "key": key,
         "total_bars": total_bars,
         "sections": sections,
-        "events": [],
+        "events": top_level_events,
         "render_profile": {
             "genre_profile": genre or "generic",
             "source": "generative_producer",
