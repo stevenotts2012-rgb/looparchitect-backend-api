@@ -869,11 +869,14 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 except (TypeError, ValueError):
                     _target_seconds = 60
 
-                # Prefer the variation-specific params plan (most accurate for render-async
-                # jobs) over the stale DB plan.  For non-variation jobs fall back to the DB
-                # plan when no params plan is present so postprocess metadata is preserved.
-                # Note: for variation jobs, `arrangement` is always None (set above), so
-                # the elif branch can never match for them — the guard is not needed.
+                # Priority order for _final_render_plan_json:
+                # 1. params_render_plan_json — the freshly built variation-specific plan
+                #    embedded by render_arrangement_async; always present for render-async
+                #    jobs so variation jobs always take this branch.
+                # 2. arrangement.render_plan_json — stale DB plan for legacy single-render
+                #    jobs where no params plan was built (arrangement is None for variation
+                #    jobs so this branch is never reached by them).
+                # 3. render_plan_json from the render execution (fallback only).
                 if params_render_plan_json:
                     _final_render_plan_json = params_render_plan_json
                 elif arrangement and arrangement.render_plan_json:

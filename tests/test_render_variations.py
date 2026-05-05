@@ -12,8 +12,6 @@ Covers:
 import json
 import logging
 import sys
-from datetime import datetime
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -256,7 +254,8 @@ class TestWorkerCreatesDistinctArrangements:
 
     def test_variation_job_skips_existing_arrangement_lookup(self):
         """When variation_index is present, the worker must skip querying for
-        an existing arrangement so each job creates a fresh row."""
+        an existing arrangement so each job creates a fresh row.
+        """
         is_variation = self._run_worker_with_variation(MagicMock(), 0, 1000)
         assert is_variation is True
 
@@ -268,7 +267,8 @@ class TestWorkerCreatesDistinctArrangements:
 
     def test_three_variation_jobs_would_create_three_arrangements(self):
         """For variation_count=3, all three jobs have variation_index set,
-        so all three will create new arrangement rows (never update shared row)."""
+        so all three will create new arrangement rows (never update shared row).
+        """
         for idx in range(3):
             params = {"variation_index": idx, "variation_seed": 42 + idx}
             _is_variation_job = params.get("variation_index") is not None
