@@ -458,9 +458,11 @@ class AudioArrangementGenerateResponse(BaseModel):
         default_factory=list,
         description="Human-readable producer decision notes from the V2 plan",
     )
-    quality_score: Optional[QualityScoreSchema] = Field(
+    quality_score: Optional[float] = Field(
         default=None,
-        description="Heuristic quality score for the generated arrangement plan",
+        ge=0.0,
+        le=1.0,
+        description="Heuristic quality score for the generated arrangement plan (0–1)",
     )
     section_summary: List[ProducerSectionSummaryItem] = Field(
         default_factory=list,
@@ -554,9 +556,11 @@ class ArrangementResponse(BaseModel):
         default=None,
         description="V2 producer plan (present when PRODUCER_ENGINE_V2=true)",
     )
-    quality_score: Optional[QualityScoreSchema] = Field(
+    quality_score: Optional[float] = Field(
         default=None,
-        description="Heuristic quality score for the generated arrangement plan",
+        ge=0.0,
+        le=1.0,
+        description="Heuristic quality score for the generated arrangement plan (0–1)",
     )
     section_summary: List[ProducerSectionSummaryItem] = Field(
         default_factory=list,
