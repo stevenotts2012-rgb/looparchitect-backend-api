@@ -701,8 +701,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         _plan_duration,
                         "params" if params_render_plan_json else "db_arrangement",
                     )
-                except Exception:
-                    pass
+                except Exception as _plan_log_err:
+                    logger.debug("TARGET_LENGTH_APPLIED log failed job_id=%s: %s", app_job_id, _plan_log_err)
             else:
                 logger.warning(
                     "[%s] No render_plan_json found; DEV_FALLBACK_LOOP_ONLY enabled, using synthetic fallback render plan",
@@ -793,8 +793,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     _final_bpm,
                     _final_dur,
                 )
-            except Exception:
-                pass
+            except Exception as _dur_log_err:
+                logger.debug("FINAL_RENDER_DURATION_SECONDS log failed job_id=%s: %s", app_job_id, _dur_log_err)
 
             update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
             failure_stage = "storage"
