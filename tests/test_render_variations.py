@@ -184,25 +184,23 @@ class TestBuildGenerativeRenderPlan:
         assert "hook" in names or "hook_2" in names, f"No hook section: {names}"
 
     def test_different_seeds_produce_different_metadata(self):
-        """Plans with seed 0 vs seed 1 must differ in at least metadata or events."""
+        """Plans with seed 0 vs seed 1 must have the same structure but different events."""
         loop = _make_loop(bpm=120.0)
         plan_a = self._build_plan(loop, {"genre": "trap", "energy": "high"}, target_bars=90, seed=0)
         plan_b = self._build_plan(loop, {"genre": "trap", "energy": "high"}, target_bars=90, seed=1)
 
-        # At minimum the metadata.producer_variation_score may differ,
-        # or the sections may contain different variation events.
-        # Serialise both plans and check they are not identical.
-        json_a = json.dumps(plan_a, sort_keys=True)
-        json_b = json.dumps(plan_b, sort_keys=True)
-        # Different seeds → ProducerOrchestrator should produce different event sets
-        # in at least one section.  This is a best-effort check; if the orchestrator
-        # is deterministic at seed level, the plans CAN differ only in events.
-        # We check total_bars and structure match (same template), but events differ.
+        # Section count and total_bars must be identical (same layout template).
         assert plan_a.get("total_bars") == plan_b.get("total_bars"), "total_bars should be equal"
-        # At least one field should differ between the two plans
-        # (events, variation_score, etc.)
-        assert json_a != json_b or plan_a.get("metadata", {}) != plan_b.get("metadata", {}), \
-            "Plans with different seeds should not be identical"
+        assert len(plan_a.get("sections") or []) == len(plan_b.get("sections") or []), \
+            "Section count must be identical for the same target_bars"
+
+        # At least the producer_variation_score or section events should differ between seeds.
+        score_a = (plan_a.get("metadata") or {}).get("producer_variation_score")
+        score_b = (plan_b.get("metadata") or {}).get("producer_variation_score")
+        sections_a = json.dumps(plan_a.get("sections") or [], sort_keys=True)
+        sections_b = json.dumps(plan_b.get("sections") or [], sort_keys=True)
+        assert score_a != score_b or sections_a != sections_b, \
+            "Plans with different seeds must differ in producer_variation_score or section events"
 
     def test_plan_energy_varies_across_sections(self):
         """Energy values must not be uniform across all sections."""
@@ -368,8 +366,6 @@ class TestVariationCountLog:
 
     def test_variation_count_received_log_present(self, caplog):
         """render_arrangement_async must emit VARIATION_COUNT_RECEIVED with the count."""
-        import logging
-
         # Simulate the log call that already exists in render_jobs.py
         logger = logging.getLogger("app.routes.render_jobs")
         with caplog.at_level(logging.INFO, logger="app.routes.render_jobs"):

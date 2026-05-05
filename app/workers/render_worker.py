@@ -872,9 +872,11 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 # Prefer the variation-specific params plan (most accurate for render-async
                 # jobs) over the stale DB plan.  For non-variation jobs fall back to the DB
                 # plan when no params plan is present so postprocess metadata is preserved.
+                # Note: for variation jobs, `arrangement` is always None (set above), so
+                # the elif branch can never match for them — the guard is not needed.
                 if params_render_plan_json:
                     _final_render_plan_json = params_render_plan_json
-                elif arrangement and arrangement.render_plan_json and not _is_variation_job:
+                elif arrangement and arrangement.render_plan_json:
                     _final_render_plan_json = arrangement.render_plan_json
                 elif render_plan_json is None:
                     _final_render_plan_json = None
