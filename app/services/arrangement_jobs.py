@@ -1351,6 +1351,11 @@ def _build_varied_section_audio(
             min(len(section_audio), bar_duration_ms)
         )
 
+    logger.debug(
+        "PRODUCER_TRANSFORMS_APPLIED section_type=%s bars=%d transform_applied=dsp_shaping",
+        section_type,
+        section_bars,
+    )
     return section_audio
 
 
@@ -2508,6 +2513,15 @@ def _render_producer_arrangement(
         )
         section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
         previous_section_audio = section_audio
+
+        logger.debug(
+            "PRODUCER_TRANSFORMS_APPLIED section=%s type=%s bars=%d events=%s stem_mode=%s",
+            section_name,
+            section_type,
+            section_bars,
+            section_applied_events,
+            "stems" if use_stems else "stereo_fallback",
+        )
         
         # Use a short crossfade when appending this section to the growing mix so that
         # sample-level discontinuities at section boundaries don't create audible
