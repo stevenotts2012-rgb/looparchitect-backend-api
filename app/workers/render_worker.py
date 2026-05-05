@@ -610,6 +610,19 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
         logger.info("[%s] Legacy render-mode job detected for loop_id=%s", app_job_id, loop_id)
 
+        # Detect whether this is a render-async variation job.
+        # Variation jobs each have their own render_plan_json and must produce a
+        # separate Arrangement row — never share/update an existing one.
+        _variation_index = params.get("variation_index") if isinstance(params, dict) else None
+        _variation_seed = params.get("variation_seed") if isinstance(params, dict) else None
+        _is_variation_job = _variation_index is not None
+
+        if _is_variation_job:
+            logger.info(
+                "VARIATION_RENDER_STARTED job_id=%s loop_id=%s variation_index=%s variation_seed=%s",
+                app_job_id, loop_id, _variation_index, _variation_seed,
+            )
+
         # Load job and loop
         job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
         if not job:
@@ -627,29 +640,36 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
             return
         
-        # Load arrangement with producer data (if available)
+        # Load arrangement with producer data (if available).
+        # Variation jobs always create a fresh row so they never overwrite each
+        # other.  Only legacy single-render jobs may reuse an existing row.
         from app.models.arrangement import Arrangement
         
-        arrangement = (
-            db.query(Arrangement)
-            .filter(
-                Arrangement.loop_id == loop_id,
-                Arrangement.render_plan_json.isnot(None),
-            )
-            .order_by(Arrangement.created_at.desc())
-            .first()
-        )
-        if not arrangement:
+        if _is_variation_job:
+            # Variation jobs own their own Arrangement row — skip the lookup.
+            arrangement = None
+        else:
             arrangement = (
                 db.query(Arrangement)
-                .filter(Arrangement.loop_id == loop_id)
+                .filter(
+                    Arrangement.loop_id == loop_id,
+                    Arrangement.render_plan_json.isnot(None),
+                )
                 .order_by(Arrangement.created_at.desc())
                 .first()
             )
+            if not arrangement:
+                arrangement = (
+                    db.query(Arrangement)
+                    .filter(Arrangement.loop_id == loop_id)
+                    .order_by(Arrangement.created_at.desc())
+                    .first()
+                )
         
         logger.info(
             f"[{job_id}] Starting render for loop {loop_id} "
-            f"(render_plan={'YES' if arrangement and arrangement.render_plan_json else 'NO'})"
+            f"(render_plan={'YES' if arrangement and arrangement.render_plan_json else 'NO'}, "
+            f"variation_job={_is_variation_job})"
         )
         
         # Mark as processing
@@ -700,6 +720,18 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         _plan_bpm,
                         _plan_duration,
                         "params" if params_render_plan_json else "db_arrangement",
+                    )
+                    # Log section timeline for observability
+                    _plan_sections = _resolved_plan.get("sections") or []
+                    logger.info(
+                        "PRODUCER_SECTION_TIMELINE job_id=%s loop_id=%s variation_index=%s "
+                        "total_bars=%d section_count=%d sections=%s",
+                        app_job_id,
+                        loop_id,
+                        _variation_index,
+                        _plan_total_bars,
+                        len(_plan_sections),
+                        [s.get("name") for s in _plan_sections],
                     )
                 except Exception as _plan_log_err:
                     logger.debug("TARGET_LENGTH_APPLIED log failed job_id=%s: %s", app_job_id, _plan_log_err)
@@ -837,9 +869,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 except (TypeError, ValueError):
                     _target_seconds = 60
 
-                # Prefer arrangement.render_plan_json when available (it includes postprocess
-                # metadata).  Only serialise render_plan_json when it is a non-None non-str value.
-                if arrangement and arrangement.render_plan_json:
+                # Prefer the variation-specific params plan (most accurate for render-async
+                # jobs) over the stale DB plan.  For non-variation jobs fall back to the DB
+                # plan when no params plan is present so postprocess metadata is preserved.
+                if params_render_plan_json:
+                    _final_render_plan_json = params_render_plan_json
+                elif arrangement and arrangement.render_plan_json and not _is_variation_job:
                     _final_render_plan_json = arrangement.render_plan_json
                 elif render_plan_json is None:
                     _final_render_plan_json = None
@@ -848,7 +883,10 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 else:
                     _final_render_plan_json = json.dumps(render_plan_json)
 
-                if arrangement:
+                # Variation jobs always create a NEW Arrangement row so each of the
+                # N requested variations is independently retrievable via loop history.
+                # Non-variation legacy jobs may still update an existing row.
+                if arrangement and not _is_variation_job:
                     from app.models.arrangement import Arrangement
                     arrangement.status = "done"
                     arrangement.output_s3_key = s3_key
@@ -887,6 +925,16 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     app_job_id,
                     _arr_record_id,
                 )
+                if _is_variation_job:
+                    logger.info(
+                        "VARIATION_RENDER_DONE job_id=%s loop_id=%s variation_index=%s "
+                        "variation_seed=%s arrangement_id=%s",
+                        app_job_id,
+                        loop_id,
+                        _variation_index,
+                        _variation_seed,
+                        _arr_record_id,
+                    )
             except Exception as _arr_err:
                 logger.error(
                     "ARRANGEMENT_CREATE_FAILED job_id=%s error=%s",
