@@ -148,10 +148,13 @@ class TestApplyProducerMoveEffect:
 
     @pytest.fixture(autouse=True)
     def _audio(self):
-        """Build a 2-second 44.1 kHz silent AudioSegment for testing."""
+        """Build a 2-second 44.1 kHz silent AudioSegment for testing.
+
+        At 120 BPM: 1 bar = 4 beats = (60/120) * 4 = 2 seconds = 2000 ms.
+        """
         from pydub import AudioSegment
         self.seg = AudioSegment.silent(duration=2000, frame_rate=44100)
-        self.bar_ms = 500  # 120 BPM, 4 beats = 2 s → 1 bar = 500 ms
+        self.bar_ms = 2000  # 120 BPM: 1 bar = 4 beats × 500 ms/beat = 2000 ms
 
     def _apply(self, move_type: str, intensity: float = 0.7, params: dict | None = None):
         from app.services.arrangement_jobs import _apply_producer_move_effect
@@ -171,7 +174,9 @@ class TestApplyProducerMoveEffect:
     def test_mute_role_max_duration_one_bar(self):
         """mute_role must not silence more than 1 bar of audio."""
         from pydub import AudioSegment
-        # Use 4-bar segment to measure dropout length
+
+        # Use a 4-bar segment so there is headroom to measure the dropout window.
+        # bar_ms comes from the fixture: 2000 ms at 120 BPM.
         seg4 = AudioSegment.silent(duration=4 * self.bar_ms)
 
         from app.services.arrangement_jobs import _apply_producer_move_effect
@@ -244,8 +249,8 @@ class TestApplyProducerMoveEffect:
         from app.services.arrangement_jobs import _apply_producer_move_effect
         from pydub import AudioSegment
 
-        # Use a non-silent segment so we can detect no-ops
-        seg = AudioSegment.silent(duration=2000) + 3  # +3 dB so it's not silence
+        # Use a non-silent segment (+3 dB) so we can detect no-ops
+        seg = AudioSegment.silent(duration=2000) + 3
 
         for action in SUPPORTED_RENDER_ACTIONS:
             result = _apply_producer_move_effect(

@@ -1737,9 +1737,10 @@ def _apply_producer_move_effect(
     # rather than silently ignored.
     # ------------------------------------------------------------------
     if move_type == "mute_role":
-        # Brief level dip (max 1 bar at intensity) — never silence all stems.
+        # Brief level dip (0.25 bars at minimum intensity, up to 1 bar at maximum) —
+        # never fully silence all stems or exceed 1 bar to prevent dead air.
         # Mirrors pre_hook_drum_mute semantics with an intensity-proportional window.
-        dip_bars = min(1.0, 0.25 + 0.25 * intensity)
+        dip_bars = min(1.0, 0.25 + 0.75 * intensity)
         dip_ms = int(min(len(segment), bar_duration_ms * dip_bars))
         dip_ms = max(1, dip_ms)
         dip = segment[:dip_ms] - _HEAVY_ATTENUATION_DB
@@ -1757,6 +1758,9 @@ def _apply_producer_move_effect(
 
     if move_type == "chop_role":
         # Rhythmic gate chop — mirrors fill_event with chop_fill.
+        # 40 ms is the minimum grid size: shorter grids produce inaudible clicks.
+        # The denominator (8 + 8*intensity) scales from 8 (slower chop) to
+        # ~16 (faster 16th-note chop) as intensity increases.
         chop_len = int(min(len(segment), bar_duration_ms * 0.75))
         grid = max(40, int(bar_duration_ms / (8 + int(8 * intensity))))
         chop_seg = segment[-chop_len:] if chop_len < len(segment) else segment
@@ -1841,7 +1845,9 @@ def _apply_producer_move_effect(
         return _apply_headroom_ceiling(widened, -1.5)
 
     if move_type == "delay_role":
-        # Slapback-style delay: quick echo offset by ~1/16 bar.
+        # Slapback-style delay: quick echo offset by 1/8 bar (~60 ms at 120 BPM).
+        # The gain reduction (6 + 3*(1-intensity)) gives 6 dB at full intensity
+        # (subtle echo) down to 9 dB at zero intensity (barely audible ghost).
         delay_ms = max(20, int(bar_duration_ms / 8))
         delay_ms = min(delay_ms, len(segment) - 1)
         if delay_ms <= 0:
