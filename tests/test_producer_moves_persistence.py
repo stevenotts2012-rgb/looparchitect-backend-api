@@ -452,5 +452,221 @@ class TestRenderExecutorEventConversion:
         )
 
 
+# ---------------------------------------------------------------------------
+# Fallback event injection tests
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackTransitionEventInjection:
+    """Verify deterministic fallback events are injected when producer plan is empty.
+
+    The render-async path does not call _apply_stem_primary_section_states, so
+    when the generative producer plan is empty sections would otherwise render
+    with applied_events=[] and transition_event_count=0.  The fallback injector
+    inside _build_producer_arrangement_from_render_plan ensures at least one
+    event is present per section.
+    """
+
+    _SECTION_TYPES = ["intro", "verse", "pre_hook", "hook", "bridge", "outro"]
+
+    def _make_empty_sections(self):
+        cursor = 0
+        sections = []
+        bar_counts = {"intro": 8, "verse": 8, "pre_hook": 4, "hook": 8, "bridge": 4, "outro": 4}
+        for stype in self._SECTION_TYPES:
+            bars = bar_counts[stype]
+            sections.append({
+                "name": stype,
+                "type": stype,
+                "bar_start": cursor,
+                "bars": bars,
+                "energy": 0.5,
+                "instruments": ["drums", "bass", "melody"],
+                "variations": [],
+                "boundary_events": [],
+            })
+            cursor += bars
+        return sections
+
+    def _make_render_plan(self, events=None):
+        sections = self._make_empty_sections()
+        total_bars = sum(s["bars"] for s in sections)
+        return {
+            "bpm": 120.0,
+            "total_bars": total_bars,
+            "events": events or [],
+            "sections": sections,
+        }
+
+    # --- _inject_fallback_transition_events unit tests -----------------------
+
+    def test_fallback_injected_when_no_producer_events(self):
+        """Every section must receive at least one event when producer plan is empty."""
+        from app.services.render_executor import _inject_fallback_transition_events
+
+        sections = self._make_empty_sections()
+        injected = _inject_fallback_transition_events(sections)
+        assert injected > 0, "Fallback should inject events when sections are empty"
+        for section in sections:
+            total = len(section.get("variations") or []) + len(section.get("boundary_events") or [])
+            assert total > 0, (
+                f"Section {section['type']} still has no events after fallback injection"
+            )
+
+    def test_fallback_not_applied_when_section_has_variations(self):
+        """Sections with existing variations must NOT receive fallback events."""
+        from app.services.render_executor import _inject_fallback_transition_events
+
+        sections = [
+            {
+                "name": "hook", "type": "hook", "bar_start": 0, "bars": 8,
+                "variations": [{"variation_type": "add_drum_fill"}],
+                "boundary_events": [],
+            }
+        ]
+        original_len = len(sections[0]["variations"])
+        injected = _inject_fallback_transition_events(sections)
+        assert injected == 0, "Should not inject into a section that already has variations"
+        assert len(sections[0]["variations"]) == original_len
+
+    def test_fallback_not_applied_when_section_has_boundary_events(self):
+        """Sections with existing boundary_events must NOT receive fallback events."""
+        from app.services.render_executor import _inject_fallback_transition_events
+
+        sections = [
+            {
+                "name": "bridge", "type": "bridge", "bar_start": 0, "bars": 4,
+                "variations": [],
+                "boundary_events": [{"type": "crash_hit"}],
+            }
+        ]
+        injected = _inject_fallback_transition_events(sections)
+        assert injected == 0
+        assert len(sections[0]["boundary_events"]) == 1
+
+    def test_hook_fallback_does_not_add_mute_role(self):
+        """Hook sections must never receive a mute_role fallback (drums + bass preserved)."""
+        from app.services.render_executor import _inject_fallback_transition_events
+
+        sections = [
+            {
+                "name": "hook", "type": "hook", "bar_start": 0, "bars": 8,
+                "variations": [],
+                "boundary_events": [],
+            }
+        ]
+        _inject_fallback_transition_events(sections)
+        all_types = (
+            [v.get("variation_type") for v in sections[0].get("variations") or []]
+            + [e.get("type") for e in sections[0].get("boundary_events") or []]
+        )
+        assert "mute_role" not in all_types, (
+            "mute_role must never be injected into hook sections"
+        )
+
+    def test_fallback_event_types_are_in_render_move_types(self):
+        """All fallback event types must be in _RENDER_MOVE_EVENT_TYPES."""
+        from app.services.render_executor import (
+            _inject_fallback_transition_events,
+            _RENDER_MOVE_EVENT_TYPES,
+        )
+
+        sections = self._make_empty_sections()
+        _inject_fallback_transition_events(sections)
+        for section in sections:
+            for var in section.get("variations") or []:
+                vtype = var.get("variation_type", "")
+                assert vtype in _RENDER_MOVE_EVENT_TYPES, (
+                    f"Fallback variation_type={vtype!r} not in _RENDER_MOVE_EVENT_TYPES"
+                )
+            for bev in section.get("boundary_events") or []:
+                btype = bev.get("type", "")
+                assert btype in _RENDER_MOVE_EVENT_TYPES, (
+                    f"Fallback boundary event type={btype!r} not in _RENDER_MOVE_EVENT_TYPES"
+                )
+
+    # --- _build_producer_arrangement_from_render_plan integration tests ------
+
+    def test_pipeline_all_sections_have_events_after_empty_plan(self):
+        """When events=[], all sections must have variations or boundary_events after pipeline."""
+        from app.services.render_executor import _build_producer_arrangement_from_render_plan
+
+        render_plan = self._make_render_plan(events=[])
+        arrangement, _ = _build_producer_arrangement_from_render_plan(render_plan, fallback_bpm=120.0)
+        for section in arrangement["sections"]:
+            total = len(section.get("variations") or []) + len(section.get("boundary_events") or [])
+            assert total > 0, (
+                f"Section {section['type']} has no events after pipeline with empty producer plan"
+            )
+
+    def test_transition_event_count_nonzero_after_empty_plan(self):
+        """transition_event_count must be > 0 even with an empty producer plan.
+
+        This simulates the full render pipeline: the fallback events must survive
+        from _build_producer_arrangement_from_render_plan through to the
+        _build_render_spec_summary applied_events accounting.
+        """
+        from app.services.render_executor import _build_producer_arrangement_from_render_plan
+        from app.services.arrangement_jobs import _build_render_spec_summary
+
+        render_plan = self._make_render_plan(events=[])
+        arrangement, _ = _build_producer_arrangement_from_render_plan(render_plan, fallback_bpm=120.0)
+
+        # Simulate what _render_producer_arrangement does: accumulate applied_events
+        # per section.  For this test we mimic the fallback event accumulation by
+        # reading the variations/boundary_events injected by the pipeline.
+        simulated_sections = []
+        for sec in arrangement["sections"]:
+            applied = (
+                [v.get("variation_type", "") for v in (sec.get("variations") or [])]
+                + [e.get("type", "") for e in (sec.get("boundary_events") or [])]
+            )
+            simulated_sections.append({
+                "name": sec["name"],
+                "type": sec["type"],
+                "applied_events": [e for e in applied if e],
+                "boundary_events": sec.get("boundary_events") or [],
+            })
+
+        summary = _build_render_spec_summary(simulated_sections)
+        assert summary["transition_event_count"] > 0, (
+            f"transition_event_count must be > 0 but got {summary['transition_event_count']}"
+        )
+
+    def test_applied_events_nonempty_per_section_after_empty_plan(self):
+        """Every section must have at least one applied_events entry after the pipeline."""
+        from app.services.render_executor import _build_producer_arrangement_from_render_plan
+        from app.services.arrangement_jobs import _build_render_spec_summary
+
+        render_plan = self._make_render_plan(events=[])
+        arrangement, _ = _build_producer_arrangement_from_render_plan(render_plan, fallback_bpm=120.0)
+
+        for sec in arrangement["sections"]:
+            total = (
+                len(sec.get("variations") or [])
+                + len(sec.get("boundary_events") or [])
+            )
+            assert total > 0, (
+                f"Section '{sec['type']}' applied_events will be empty — fallback injection failed"
+            )
+
+    def test_existing_events_win_over_fallback(self):
+        """When producer plan provides real events, fallback is skipped for those sections."""
+        from app.services.render_executor import _build_producer_arrangement_from_render_plan
+
+        render_plan = self._make_render_plan(events=[
+            {"type": "add_drum_fill", "bar": 0, "intensity": 0.7},
+        ])
+        arrangement, _ = _build_producer_arrangement_from_render_plan(render_plan, fallback_bpm=120.0)
+
+        # Intro section (bar 0) should have the real event, not need fallback
+        intro_section = next(
+            (s for s in arrangement["sections"] if s.get("type") == "intro"), None
+        )
+        assert intro_section is not None
+        var_types = [v.get("variation_type") for v in (intro_section.get("variations") or [])]
+        assert "add_drum_fill" in var_types
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
