@@ -359,6 +359,47 @@ def _compute_energy_curve_score(section_names: List[str]) -> float:
     return round(min(1.0, variance * 10), 4)
 
 
+def _normalize_event_bar(event_bar_start: int, event_section_name: str, section_templates: List[Dict]) -> int:
+    """Normalize producer event bars to absolute timeline bars.
+
+    Producer events may be emitted in either:
+    - absolute bars (already in global timeline coordinates), or
+    - section-relative bars (0 <= bar_start < section.bars).
+
+    We preserve absolute values when they already fall in any section range,
+    and only offset section-relative values by the event's section start.
+    """
+    section_ranges: list[tuple[int, int]] = []
+    section_by_name: dict[str, dict] = {}
+    for section in section_templates:
+        start = int(section.get("bar_start", 0) or 0)
+        bars = max(1, int(section.get("bars", 1) or 1))
+        end = start + bars
+        section_ranges.append((start, end))
+        section_by_name[str(section.get("name") or "").strip().lower()] = section
+
+    section = section_by_name.get(str(event_section_name or "").strip().lower())
+    if section:
+        section_start = int(section.get("bar_start", 0) or 0)
+        local_bars = max(1, int(section.get("bars", 1) or 1))
+        section_end = section_start + local_bars
+        # If already inside the referenced section's global range, keep absolute.
+        if section_start <= event_bar_start < section_end:
+            return event_bar_start
+        # Otherwise, local-range values are section-relative and need one offset.
+        if 0 <= event_bar_start < local_bars:
+            return section_start + event_bar_start
+        # With a section hint but out of local range, preserve as absolute.
+        return event_bar_start
+
+    # No section hint: absolute only if it falls in any known section range.
+    if any(start <= event_bar_start < end for start, end in section_ranges):
+        return event_bar_start
+
+    # Fallback: leave unchanged.
+    return event_bar_start
+
+
 def _producer_plan_to_render_plan(
     producer_plan,
     section_templates: List[Dict],
@@ -399,8 +440,9 @@ def _producer_plan_to_render_plan(
         # Build variation events for this section from ProducerPlan events
         variations: List[Dict] = []
         for ev in events_by_section.get(section_name, []):
+            normalized_bar = _normalize_event_bar(int(ev.bar_start), ev.section_name, section_templates)
             variations.append({
-                "bar": bar_start + ev.bar_start,
+                "bar": normalized_bar,
                 "variation_type": ev.render_action,
                 "intensity": ev.intensity,
                 "duration_bars": max(1, ev.bar_end - ev.bar_start),
@@ -437,11 +479,10 @@ def _producer_plan_to_render_plan(
     # Build top-level events list from all ProducerPlan events so that the
     # worker's _build_producer_arrangement_from_render_plan can dispatch them
     # into the correct section's variations or boundary_events.
-    section_starts = {s["name"]: s["bar_start"] for s in section_templates}
     top_level_events: List[Dict] = [
         {
             "type": ev.render_action,
-            "bar": section_starts.get(ev.section_name, 0) + ev.bar_start,
+            "bar": _normalize_event_bar(int(ev.bar_start), ev.section_name, section_templates),
             "duration_bars": max(1, ev.bar_end - ev.bar_start),
             "intensity": ev.intensity,
             "description": ev.reason,
