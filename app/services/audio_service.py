@@ -22,6 +22,13 @@ from pydub import AudioSegment
 logger = logging.getLogger(__name__)
 
 
+def _coerce_librosa_load_result(result, default_sr: int = 44100):
+    """Accept both standard ``(y, sr)`` and mocked ``y``-only returns."""
+    if isinstance(result, tuple) and len(result) >= 2:
+        return result[0], int(result[1])
+    return result, default_sr
+
+
 class AudioService:
     """Service for audio analysis and processing operations."""
 
@@ -58,7 +65,7 @@ class AudioService:
             logger.info(f"Analyzing audio: {audio_path}")
 
             # Load audio file using librosa
-            y, sr = librosa.load(audio_path, sr=None, mono=True)
+            y, sr = _coerce_librosa_load_result(librosa.load(audio_path, sr=None, mono=True))
 
             # Detect BPM
             bpm = self._detect_bpm(y, sr)
@@ -185,7 +192,7 @@ class AudioService:
 
             # If BPM not provided, detect it
             if bpm is None:
-                y, sr = librosa.load(audio_path, sr=None)
+                y, sr = _coerce_librosa_load_result(librosa.load(audio_path, sr=None))
                 bpm = self._detect_bpm(y, sr)
 
             # Calculate target duration

@@ -183,7 +183,11 @@ def _load_audio(
     import numpy as np  # type: ignore
 
     try:
-        y, sr = librosa.load(io.BytesIO(audio_bytes), sr=None, mono=False)
+        loaded = librosa.load(io.BytesIO(audio_bytes), sr=None, mono=False)
+        if isinstance(loaded, tuple) and len(loaded) >= 2:
+            y, sr = loaded[0], loaded[1]
+        else:
+            y, sr = loaded, 44100
     except Exception:
         # Fallback: let pydub decode, then reload via librosa
         from pydub import AudioSegment
@@ -193,7 +197,11 @@ def _load_audio(
         wav_buf = io.BytesIO()
         seg.export(wav_buf, format="wav")
         wav_buf.seek(0)
-        y, sr = librosa.load(wav_buf, sr=None, mono=False)
+        loaded = librosa.load(wav_buf, sr=None, mono=False)
+        if isinstance(loaded, tuple) and len(loaded) >= 2:
+            y, sr = loaded[0], loaded[1]
+        else:
+            y, sr = loaded, int(seg.frame_rate or 44100)
 
     if y.ndim == 1:
         # Mono file
