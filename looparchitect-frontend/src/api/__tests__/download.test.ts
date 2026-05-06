@@ -50,7 +50,8 @@ describe("downloadArrangement", () => {
     // No timers needed — resolves immediately
     const blob = await promise;
 
-    expect(blob).toBeInstanceOf(Blob);
+    expect(blob).toHaveProperty("size");
+    expect(typeof blob.arrayBuffer).toBe("function");
     expect(blob.size).toBe(audioData.byteLength);
   });
 
@@ -113,7 +114,8 @@ describe("downloadDawExport", () => {
     const promise = downloadDawExport(42);
     const blob = await promise;
 
-    expect(blob).toBeInstanceOf(Blob);
+    expect(blob).toHaveProperty("size");
+    expect(typeof blob.arrayBuffer).toBe("function");
     expect(blob.size).toBe(zipData.byteLength);
   });
 

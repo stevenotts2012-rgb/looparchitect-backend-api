@@ -6,9 +6,10 @@ Uses moto for realistic S3 mocking without requiring real AWS credentials.
 import io
 import json
 from unittest.mock import patch
+import pytest
+moto = pytest.importorskip("moto")
 from moto import mock_s3
 import boto3
-import pytest
 from fastapi.testclient import TestClient
 
 from main import app
