@@ -2509,6 +2509,7 @@ def _render_producer_arrangement(
         # APPLY VARIATIONS (FILLS, ROLLS, DROPS)
         # ====================================================================
         section_applied_events: list[str] = []
+        section_skipped_events: list[dict] = []
         
         # stem_available drives DSP intensity in producer-move effects.
         # Derive from the actual stems argument (use_stems), not only from render
@@ -2541,6 +2542,7 @@ def _render_producer_arrangement(
             var_start_ms = (var_bar_start - bar_start) * bar_duration_ms
             var_end_ms = (var_bar_end - bar_start) * bar_duration_ms
             
+            logger.info("RUNTIME_EVENT_DISPATCHED section=%s action=%s bar=%d", section_name, var_type, var_bar_start)
             # Apply variation effects
             if var_end_ms > var_start_ms and var_start_ms >= 0 and var_end_ms <= len(section_audio):
                 variation_segment = section_audio[var_start_ms:var_end_ms]
@@ -2569,17 +2571,39 @@ def _render_producer_arrangement(
                         params=var_params,
                     )
                     section_applied_events.append(var_type)
+                    logger.info("RUNTIME_EVENT_APPLIED section=%s action=%s", section_name, var_type)
+                else:
+                    # Never silently drop unknown producer actions. Apply a safe,
+                    # audible approximation and persist why.
+                    reason = "approximated_to_texture_lift"
+                    section_skipped_events.append({"action": var_type, "reason": reason, "bar": var_bar_start})
+                    logger.warning("RUNTIME_EVENT_SKIPPED section=%s action=%s reason=%s", section_name, var_type, reason)
+                    variation_segment = _apply_producer_move_effect(
+                        segment=variation_segment,
+                        move_type="texture_lift",
+                        intensity=float(var_intensity or 0.6),
+                        stem_available=stem_available,
+                        bar_duration_ms=bar_duration_ms,
+                        params={},
+                    )
+                    section_applied_events.append(var_type)
+                    logger.info("RUNTIME_EVENT_APPLIED section=%s action=%s", section_name, var_type)
 
                 # Always cap variation segment level before splicing back to prevent spikes.
                 variation_segment = _apply_headroom_ceiling(variation_segment, target_peak_dbfs=-1.5)
 
                 # Splice back in
                 section_audio = section_audio[:var_start_ms] + variation_segment + section_audio[var_end_ms:]
+            else:
+                reason = "event_out_of_section_bounds"
+                section_skipped_events.append({"action": var_type, "reason": reason, "bar": var_bar_start})
+                logger.warning("RUNTIME_EVENT_SKIPPED section=%s action=%s reason=%s", section_name, var_type, reason)
 
         section_boundary_events = section.get("boundary_events") if isinstance(section.get("boundary_events"), list) else []
         for boundary_event in section_boundary_events:
             event_type = str(boundary_event.get("type") or "").strip().lower()
             event_bar = int(boundary_event.get("bar", bar_start) or bar_start)
+            logger.info("RUNTIME_EVENT_DISPATCHED section=%s action=%s bar=%d", section_name, event_type, event_bar)
             relative_bar = max(0, min(section_bars - 1, event_bar - bar_start))
             placement = str(boundary_event.get("placement") or "end_of_section").strip().lower()
             intensity = float(boundary_event.get("intensity", 0.7) or 0.7)
@@ -2599,6 +2623,9 @@ def _render_producer_arrangement(
                 event_start_ms = max(0, event_end_ms - bar_duration_ms)
 
             if event_end_ms <= event_start_ms:
+                reason = "invalid_boundary_window"
+                section_skipped_events.append({"action": event_type, "reason": reason, "bar": event_bar})
+                logger.warning("RUNTIME_EVENT_SKIPPED section=%s action=%s reason=%s", section_name, event_type, reason)
                 continue
 
             boundary_segment = section_audio[event_start_ms:event_end_ms]
@@ -2615,6 +2642,7 @@ def _render_producer_arrangement(
             # (e.g. crash_hit + re_entry_accent on the same bar) from causing clipping.
             boundary_segment = _apply_headroom_ceiling(boundary_segment, target_peak_dbfs=-1.5)
             section_applied_events.append(event_type)
+            logger.info("RUNTIME_EVENT_APPLIED section=%s action=%s", section_name, event_type)
             section_audio = section_audio[:event_start_ms] + boundary_segment + section_audio[event_end_ms:]
         
         # ====================================================================
@@ -2683,6 +2711,8 @@ def _render_producer_arrangement(
             len(section_applied_events),
             section_applied_events,
         )
+        if section_type == "bridge":
+            logger.info("BRIDGE_EVENTS_APPLIED count=%d", len(section_applied_events))
         
         # Use a short crossfade when appending this section to the growing mix so that
         # sample-level discontinuities at section boundaries don't create audible
@@ -2705,6 +2735,7 @@ def _render_producer_arrangement(
             "active_stem_roles": section.get("active_stem_roles") or section.get("instruments") or [],
             "runtime_active_stems": active_role_snapshot,
             "applied_events": section_applied_events,
+            "skipped_events": section_skipped_events,
             "transition_out": section.get("transition_out") or (
                 (transition_info.get("transition_type") or transition_info.get("type")) if transition_info else "none"
             ),
