@@ -624,6 +624,41 @@ def _events_overlap_section(event_start: int, event_end: int, section_start: int
     return event_start < section_end and event_end > section_start
 
 
+def _normalize_event_bar(
+    event_bar_start: int,
+    event_section_key: str,
+    section_start_by_name: dict[str, int],
+    section_start_by_type: dict[str, int],
+    section_bounds_by_name: dict[str, int],
+    section_bounds_by_type: dict[str, int],
+    all_section_ranges: list[tuple[int, int]],
+) -> int:
+    """Normalize producer event bars to absolute timeline bars.
+
+    If bar_start already appears absolute (inside any section global range),
+    keep it unchanged. Only apply section-start offset when the value is clearly
+    section-relative within the referenced section's local bar span.
+    """
+    section_key = str(event_section_key or "").strip().lower()
+    if section_key:
+        base = section_start_by_name.get(section_key, section_start_by_type.get(section_key))
+        bars = section_bounds_by_name.get(section_key, section_bounds_by_type.get(section_key))
+        if base is not None and bars is not None:
+            start = int(base)
+            local_bars = max(1, int(bars))
+            end = start + local_bars
+            if start <= event_bar_start < end:
+                return event_bar_start
+            if 0 <= event_bar_start < local_bars:
+                return start + int(event_bar_start)
+            return event_bar_start
+
+    if any(start <= event_bar_start < end for start, end in all_section_ranges):
+        return event_bar_start
+
+    return event_bar_start
+
+
 def _reconcile_transition_plan_by_section(timeline: dict, render_plan: dict) -> dict:
     """Reconcile section-level transition accounting using producer_plan events."""
     sections = list(timeline.get("sections") or [])
@@ -637,6 +672,18 @@ def _reconcile_transition_plan_by_section(timeline: dict, render_plan: dict) -> 
         str(s.get("name") or "").strip().lower(): int(s.get("bar_start") or 0)
         for s in sections
     }
+    section_bars_by_type = {
+        str(s.get("type") or "").strip().lower(): max(1, int(s.get("bars") or 1))
+        for s in sections
+    }
+    section_bars_by_name = {
+        str(s.get("name") or "").strip().lower(): max(1, int(s.get("bars") or 1))
+        for s in sections
+    }
+    all_section_ranges = [
+        (int(s.get("bar_start") or 0), int(s.get("bar_start") or 0) + max(1, int(s.get("bars") or 1)))
+        for s in sections
+    ]
 
     section_entries: list[dict] = []
     plan_match_count = 0
@@ -657,10 +704,15 @@ def _reconcile_transition_plan_by_section(timeline: dict, render_plan: dict) -> 
                 continue
             ev_section_key = str(ev.get("section_name") or ev.get("section") or "").strip().lower()
             ev_start_raw = int(ev.get("bar_start", ev.get("bar", 0)) or 0)
-            # Producer-plan bars can be section-relative; map to absolute bars when a
-            # section hint is present. Fall back to raw absolute bars otherwise.
-            base = section_start_by_name.get(ev_section_key, section_start_by_type.get(ev_section_key, 0))
-            ev_start = base + ev_start_raw if ev_section_key else ev_start_raw
+            ev_start = _normalize_event_bar(
+                event_bar_start=ev_start_raw,
+                event_section_key=ev_section_key,
+                section_start_by_name=section_start_by_name,
+                section_start_by_type=section_start_by_type,
+                section_bounds_by_name=section_bars_by_name,
+                section_bounds_by_type=section_bars_by_type,
+                all_section_ranges=all_section_ranges,
+            )
             ev_end = int(ev.get("bar_end", ev_start + max(1, int(ev.get("duration_bars") or 1))) or (ev_start + 1))
             if ev_end <= ev_start:
                 ev_end = ev_start + 1
