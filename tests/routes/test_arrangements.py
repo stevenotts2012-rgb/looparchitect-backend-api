@@ -439,6 +439,53 @@ class TestArrangementRetrieval:
                 assert field in data, f"Missing field '{field}' for status={arrangement_status}"
 
 
+    def test_list_arrangements_serializes_legacy_float_json_fields(self, test_loop, db, client):
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            is_saved=True,
+            saved_at=datetime.utcnow(),
+            output_s3_key="arrangements/legacy.wav",
+            quality_score=0.81,
+            producer_plan_json="0.92",
+            section_summary_json="0.1",
+            decision_log_json="{}",
+            render_plan_json='{"render_profile": 0.5}',
+        )
+        db.add(arrangement)
+        db.commit()
+
+        response = client.get(f"/api/v1/arrangements?loop_id={test_loop.id}")
+        assert response.status_code == 200
+        item = next(row for row in response.json() if row["id"] == arrangement.id)
+        assert item["producer_plan"] is None
+        assert item["section_summary"] == []
+        assert item["decision_log"] == []
+
+    def test_list_arrangements_serializes_missing_optional_payloads(self, test_loop, db, client):
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="queued",
+            target_seconds=60,
+            is_saved=True,
+            saved_at=datetime.utcnow(),
+            producer_plan_json=None,
+            section_summary_json=None,
+            decision_log_json=None,
+            render_plan_json=None,
+        )
+        db.add(arrangement)
+        db.commit()
+
+        response = client.get(f"/api/v1/arrangements?loop_id={test_loop.id}")
+        assert response.status_code == 200
+        item = next(row for row in response.json() if row["id"] == arrangement.id)
+        assert item["producer_plan"] is None
+        assert item["section_summary"] == []
+        assert item["decision_log"] == []
+
+
 class TestWorkerSuccessArrangementVisibility:
     """Regression tests for the render-worker success path.
 
