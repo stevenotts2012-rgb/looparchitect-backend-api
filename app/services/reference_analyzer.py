@@ -218,7 +218,11 @@ class ReferenceAnalyzer:
 
         # Try direct librosa load from bytes
         try:
-            y, sr = librosa.load(io.BytesIO(audio_bytes), sr=None, mono=True)
+            loaded = librosa.load(io.BytesIO(audio_bytes), sr=None, mono=True)
+            if isinstance(loaded, tuple) and len(loaded) >= 2:
+                y, sr = loaded[0], loaded[1]
+            else:
+                y, sr = loaded, 44100
             return y, sr
         except Exception as load_err:
             logger.debug("librosa direct load failed (%s), trying pydub decode", load_err)
@@ -233,7 +237,11 @@ class ReferenceAnalyzer:
             wav_buf = io.BytesIO()
             seg.set_channels(1).export(wav_buf, format="wav")
             wav_buf.seek(0)
-            y, sr = librosa.load(wav_buf, sr=None, mono=True)
+            loaded = librosa.load(wav_buf, sr=None, mono=True)
+            if isinstance(loaded, tuple) and len(loaded) >= 2:
+                y, sr = loaded[0], loaded[1]
+            else:
+                y, sr = loaded, int(seg.frame_rate or 44100)
             return y, sr
         except Exception as pydub_err:
             raise RuntimeError(

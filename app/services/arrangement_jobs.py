@@ -1471,16 +1471,16 @@ def _apply_producer_move_effect(
 
     if move_type == "pre_hook_silence_drop":
         # Use a short attenuation window (≤ 1/4 bar) rather than literal silence.
-        gap_ms = int(min(len(segment), bar_duration_ms * (0.15 if stem_available else 0.10)))
+        gap_ms = int(min(len(segment), bar_duration_ms * (0.22 if stem_available else 0.60)))
         gap_ms = max(1, gap_ms)
         lead = segment[:-gap_ms] if gap_ms < len(segment) else AudioSegment.silent(duration=0)
         source_tail = segment[-gap_ms:] if gap_ms < len(segment) else segment
+        # Strong subtractive entry cue: keep a short breath then very quiet tail.
+        silence_ms = min(gap_ms // 2, int(bar_duration_ms * 0.12))
         if stem_available:
-            tail = source_tail.high_pass_filter(240) - 10
+            tail = source_tail.high_pass_filter(280) - 18
         else:
-            tail = source_tail.reverse().fade_in(max(1, gap_ms // 4)).low_pass_filter(1800) - 8
-        # Use a tiny silent gap (≤ 1/16 bar) rather than half-bar dead air
-        silence_ms = min(gap_ms // 4, int(bar_duration_ms * 0.06))
+            tail = source_tail.low_pass_filter(1600) - 18
         return lead + AudioSegment.silent(duration=silence_ms) + tail[: max(0, gap_ms - silence_ms)]
 
     if move_type == "riser_fx":
@@ -2688,12 +2688,13 @@ def _render_producer_arrangement(
                     section_audio = section_audio[:-impact_gap] + AudioSegment.silent(duration=impact_gap)
                 section_applied_events.append(f"transition:{trans_type}")
 
-        section_audio = _stabilize_section_loudness(
-            current=section_audio,
-            previous=previous_section_audio,
-            section_type=section_type,
-            previous_section_type=(previous_section_context or {}).get("section_type"),
-        )
+        if "pre_hook_silence_drop" not in section_applied_events:
+            section_audio = _stabilize_section_loudness(
+                current=section_audio,
+                previous=previous_section_audio,
+                section_type=section_type,
+                previous_section_type=(previous_section_context or {}).get("section_type"),
+            )
         section_audio = _apply_headroom_ceiling(section_audio, target_peak_dbfs=-1.5)
         previous_section_audio = section_audio
 
@@ -2818,6 +2819,15 @@ def _render_producer_arrangement(
             "time_seconds": round(start_seconds, 3),
             "energy": section_energy,
         })
+        for applied_event in sorted(set(section_applied_events)):
+            timeline_events.append({
+                "type": "runtime_event",
+                "section_name": section_name,
+                "section_type": section_type,
+                "bar": bar_start,
+                "time_seconds": round(start_seconds, 3),
+                "event": applied_event,
+            })
 
     # Build render-spec summary (Phase 6 — production-safe debug inspection).
     render_spec_summary = _build_render_spec_summary(timeline_sections)
@@ -3386,9 +3396,17 @@ def attach_loops_to_sections(render_plan: dict, loop_variation_manifest: dict | 
     available_names: list[str] = manifest.get("names") or []
 
     if not available_names:
-        raise ValueError(
-            "loop_variation_manifest has no variant names — cannot attach loop variations to sections"
-        )
+        # Degraded runtime path (e.g. single stereo fallback without ffmpeg):
+        # keep rendering truthfully by binding every section to the base loop.
+        available_names = ["full_mix"]
+        manifest = {
+            **manifest,
+            "active": False,
+            "count": 1,
+            "names": available_names,
+            "files": manifest.get("files") or {},
+            "stems_used": False,
+        }
 
     # Assign loop_variant / loop_variant_file to any sections that are missing
     # them.  This occurs when arranger_v2 builds the plan without calling
