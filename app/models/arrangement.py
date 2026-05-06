@@ -63,6 +63,37 @@ class Arrangement(Base):
     # Index for efficient status queries
     __table_args__ = (Index("idx_arrangement_loop_status", "loop_id", "status"),)
 
+
+
+    @property
+    def producer_plan(self):
+        if not self.producer_plan_json:
+            return None
+        try:
+            return json.loads(self.producer_plan_json)
+        except Exception:
+            return None
+
+    @property
+    def decision_log(self):
+        if not self.decision_log_json:
+            return []
+        try:
+            parsed = json.loads(self.decision_log_json)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+
+    @property
+    def section_summary(self):
+        if not self.section_summary_json:
+            return []
+        try:
+            parsed = json.loads(self.section_summary_json)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+
     @property
     def mastering_metadata(self):
         if not self.render_plan_json:

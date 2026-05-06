@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
+
+
+class StrEnum(str, Enum):
+    """Py3.10-compatible StrEnum shim."""
+
 from typing import Any, Mapping
 
 
