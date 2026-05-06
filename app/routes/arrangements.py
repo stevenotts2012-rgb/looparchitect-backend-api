@@ -241,6 +241,142 @@ def _ensure_arrangements_schema(db: Session) -> None:
         logger.warning("Could not auto-reconcile arrangements schema on request path", exc_info=True)
 
 
+
+
+def _coerce_json_value(value, *, default, expected_type: type, field_name: str, arrangement_id: int):
+    """Coerce legacy/invalid JSON payloads into safe response shapes."""
+    if value is None:
+        return default
+
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            logger.warning(
+                "ARRANGEMENTS_SERIALIZATION_ERROR field=%s arrangement_id=%s value_type=%s",
+                field_name,
+                arrangement_id,
+                type(value).__name__,
+                exc_info=True,
+            )
+            return default
+
+    if expected_type is list:
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, (int, float, bool)):
+            logger.warning(
+                "ARRANGEMENTS_SCHEMA_MISMATCH field=%s arrangement_id=%s expected=list got=%s",
+                field_name,
+                arrangement_id,
+                type(parsed).__name__,
+            )
+            return []
+        if isinstance(parsed, dict):
+            return [parsed]
+        return []
+
+    if expected_type is dict:
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, (int, float, bool, list)):
+            logger.warning(
+                "ARRANGEMENTS_SCHEMA_MISMATCH field=%s arrangement_id=%s expected=dict got=%s",
+                field_name,
+                arrangement_id,
+                type(parsed).__name__,
+            )
+            return default
+        return default
+
+    return parsed
+
+
+def _normalize_typed_list(items: list, model_cls: type[object], *, field_name: str, arrangement_id: int) -> list:
+    normalized: list = []
+    for idx, item in enumerate(items):
+        try:
+            validated = model_cls.model_validate(item)
+            normalized.append(validated.model_dump())
+        except Exception:
+            logger.warning(
+                "ARRANGEMENTS_SCHEMA_MISMATCH field=%s arrangement_id=%s index=%s invalid_item_type=%s",
+                field_name,
+                arrangement_id,
+                idx,
+                type(item).__name__,
+            )
+    return normalized
+
+
+def _normalize_arrangement_for_response(arrangement: Arrangement) -> dict:
+    payload = {
+        "id": arrangement.id,
+        "loop_id": arrangement.loop_id,
+        "status": arrangement.status,
+        "progress": arrangement.progress,
+        "progress_message": arrangement.progress_message,
+        "error_message": arrangement.error_message,
+        "output_s3_key": arrangement.output_s3_key,
+        "output_url": arrangement.output_url,
+        "output_file_url": arrangement.output_file_url,
+        "stems_zip_url": arrangement.stems_zip_url,
+        "mastering_metadata": arrangement.mastering_metadata,
+        "arrangement_json": arrangement.arrangement_json,
+        "created_at": arrangement.created_at,
+        "updated_at": arrangement.updated_at,
+        "duration_seconds": arrangement.target_seconds,
+    }
+
+    payload["quality_score"] = None
+    if arrangement.quality_score is not None:
+        try:
+            payload["quality_score"] = float(arrangement.quality_score)
+        except (TypeError, ValueError):
+            logger.warning(
+                "ARRANGEMENTS_SCHEMA_MISMATCH field=quality_score arrangement_id=%s expected=float got=%s",
+                arrangement.id,
+                type(arrangement.quality_score).__name__,
+            )
+
+    payload["producer_plan"] = _coerce_json_value(
+        arrangement.producer_plan_json,
+        default=None,
+        expected_type=dict,
+        field_name="producer_plan",
+        arrangement_id=arrangement.id,
+    )
+
+    raw_section_summary = _coerce_json_value(
+        arrangement.section_summary_json,
+        default=[],
+        expected_type=list,
+        field_name="section_summary",
+        arrangement_id=arrangement.id,
+    )
+    payload["section_summary"] = _normalize_typed_list(
+        raw_section_summary,
+        ProducerSectionSummaryItem,
+        field_name="section_summary",
+        arrangement_id=arrangement.id,
+    )
+
+    raw_decision_log = _coerce_json_value(
+        arrangement.decision_log_json,
+        default=[],
+        expected_type=list,
+        field_name="decision_log",
+        arrangement_id=arrangement.id,
+    )
+    payload["decision_log"] = _normalize_typed_list(
+        raw_decision_log,
+        ProducerDecisionLogEntry,
+        field_name="decision_log",
+        arrangement_id=arrangement.id,
+    )
+
+    return payload
 def _build_arrangement_response(arrangement: Arrangement) -> "ArrangementResponse":
     """Build a normalized ArrangementResponse with a fresh presigned audio URL.
 
@@ -261,7 +397,13 @@ def _build_arrangement_response(arrangement: Arrangement) -> "ArrangementRespons
     on every read — never persisted as the canonical client-facing source of
     truth.
     """
-    response = ArrangementResponse.from_orm(arrangement)
+    normalized_payload = _normalize_arrangement_for_response(arrangement)
+
+    try:
+        response = ArrangementResponse.model_validate(normalized_payload)
+    except Exception:
+        logger.exception("ARRANGEMENTS_422_RESPONSE arrangement_id=%s payload_keys=%s", arrangement.id, sorted(normalized_payload.keys()))
+        raise
 
     # Populate duration_seconds from the arrangement's target_seconds column so the
     # frontend player can show expected length without a separate API call.
@@ -523,7 +665,13 @@ def create_arrangement(
         )
 
     # Attach layering plan and arrangement_json to response
-    response = ArrangementResponse.from_orm(arrangement)
+    normalized_payload = _normalize_arrangement_for_response(arrangement)
+
+    try:
+        response = ArrangementResponse.model_validate(normalized_payload)
+    except Exception:
+        logger.exception("ARRANGEMENTS_422_RESPONSE arrangement_id=%s payload_keys=%s", arrangement.id, sorted(normalized_payload.keys()))
+        raise
     if hasattr(arrangement, 'layering_plan') and arrangement.layering_plan:
         response.layering_plan = [l.__dict__ for l in arrangement.layering_plan]
     # Optionally include arrangement_json
