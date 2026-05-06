@@ -148,6 +148,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "duration_bars": bars,
                 "description": "Fallback: filter-sweep intro entry",
                 "params": {},
+                "source": "fallback",
             })
             injected += 1
 
@@ -160,6 +161,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "duration_bars": 1,
                 "description": "Fallback: bass pattern variation in verse",
                 "params": {},
+                "source": "fallback",
             })
             injected += 1
 
@@ -171,6 +173,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "placement": "end_of_section",
                 "intensity": 0.75,
                 "params": {},
+                "source": "fallback",
             })
             injected += 1
 
@@ -183,6 +186,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "duration_bars": 1,
                 "description": "Fallback: filter-sweep hook entry",
                 "params": {},
+                "source": "fallback",
             })
             section.setdefault("boundary_events", []).append({
                 "type": "add_impact",
@@ -190,6 +194,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "placement": "on_downbeat",
                 "intensity": 0.8,
                 "params": {},
+                "source": "fallback",
             })
             injected += 2
 
@@ -201,6 +206,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "placement": "on_downbeat",
                 "intensity": 0.7,
                 "params": {},
+                "source": "fallback",
             })
             # Reverse FX sweep adds drama at the bridge boundary.
             section.setdefault("boundary_events", []).append({
@@ -209,6 +215,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "placement": "end_of_section",
                 "intensity": 0.65,
                 "params": {},
+                "source": "fallback",
             })
             injected += 2
 
@@ -220,6 +227,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "placement": "on_downbeat",
                 "intensity": 0.6,
                 "params": {},
+                "source": "fallback",
             })
             section.setdefault("variations", []).append({
                 "bar_start": bar_start,
@@ -228,6 +236,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "duration_bars": bars,
                 "description": "Fallback: outro strip-down",
                 "params": {},
+                "source": "fallback",
             })
             injected += 2
 
@@ -240,6 +249,7 @@ def _inject_fallback_transition_events(sections: list[dict]) -> int:
                 "duration_bars": 1,
                 "description": "Fallback: generic texture lift",
                 "params": {},
+                "source": "fallback",
             })
             injected += 1
 
@@ -365,6 +375,7 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
                             "boundary": event.get("boundary"),
                             "intensity": float(event.get("intensity", 0.7) or 0.7),
                             "params": event.get("params") if isinstance(event.get("params"), dict) else {},
+                            "source": str(event.get("source") or "producer_plan"),
                         }
                     )
             else:
@@ -378,6 +389,7 @@ def _build_producer_arrangement_from_render_plan(render_plan: dict, fallback_bpm
                         "duration_bars": event.get("duration_bars"),
                         "description": event.get("description", ""),
                         "params": event.get("params") if isinstance(event.get("params"), dict) else {},
+                        "source": str(event.get("source") or "producer_plan"),
                     }
                 )
 
@@ -606,6 +618,85 @@ def render_from_plan(
     }
 
 
+
+def _events_overlap_section(event_start: int, event_end: int, section_start: int, section_end: int) -> bool:
+    """Return True when an event bar range overlaps a section bar range."""
+    return event_start < section_end and event_end > section_start
+
+
+def _reconcile_transition_plan_by_section(timeline: dict, render_plan: dict) -> dict:
+    """Reconcile section-level transition accounting using producer_plan events."""
+    sections = list(timeline.get("sections") or [])
+    render_spec = dict(timeline.get("render_spec_summary") or {})
+    producer_events = list((render_plan.get("producer_plan") or {}).get("events") or [])
+
+    section_entries: list[dict] = []
+    plan_match_count = 0
+    plan_total_count = 0
+    missing_sections: list[str] = []
+
+    for section in sections:
+        section_name = str(section.get("name") or section.get("type") or "")
+        section_type = str(section.get("type") or "")
+        section_start = int(section.get("bar_start") or 0)
+        section_bars = int(section.get("bars") or 0)
+        section_end = section_start + max(1, section_bars)
+
+        planned_events: list[str] = []
+        for ev in producer_events:
+            ev_type = str(ev.get("render_action") or ev.get("type") or "").strip()
+            if not ev_type:
+                continue
+            ev_start = int(ev.get("bar_start", ev.get("bar", 0)) or 0)
+            ev_end = int(ev.get("bar_end", ev_start + max(1, int(ev.get("duration_bars") or 1))) or (ev_start + 1))
+            if ev_end <= ev_start:
+                ev_end = ev_start + 1
+            if _events_overlap_section(ev_start, ev_end, section_start, section_end):
+                planned_events.append(ev_type)
+
+        applied_events = [str(ev) for ev in (section.get("applied_events") or []) if ev]
+        applied_set = set(applied_events)
+        matched_count = sum(1 for ev in planned_events if ev in applied_set)
+        coverage = round(matched_count / len(planned_events), 3) if planned_events else 0.0
+
+        plan_match_count += matched_count
+        plan_total_count += len(planned_events)
+
+        if planned_events and not applied_events:
+            reason = "planned_events_not_applied"
+            missing_sections.append(section_name)
+            logger.warning("SECTION_TRANSITION_MISSING section=%s reason=%s", section_name or section_type or "unknown", reason)
+
+        logger.info(
+            "SECTION_PLAN_RECONCILED section=%s planned=%d applied=%d matched=%d coverage=%.3f",
+            section_name or section_type or "unknown",
+            len(planned_events),
+            len(applied_events),
+            matched_count,
+            coverage,
+        )
+
+        section_entries.append({
+            "section": section_name,
+            "section_type": section_type,
+            "planned_events": planned_events,
+            "applied_events": applied_events,
+            "matched_count": matched_count,
+            "plan_coverage": coverage,
+        })
+
+    render_spec["transition_plan_by_section"] = section_entries
+    render_spec["sections_missing_transitions"] = missing_sections
+    render_spec["sections_with_no_transition"] = missing_sections
+    render_spec["planned_transition_events"] = [e for row in section_entries for e in row.get("planned_events") or []]
+    render_spec["actual_transition_events_used"] = list(dict.fromkeys([e for row in section_entries for e in row.get("applied_events") or []]))
+    render_spec["plan_vs_actual_transition_match"] = round(plan_match_count / plan_total_count, 3) if plan_total_count else 0.0
+    render_spec["plan_coverage"] = render_spec["plan_vs_actual_transition_match"]
+
+    timeline["render_spec_summary"] = render_spec
+    return timeline
+
+
 def _extract_producer_event_types(render_plan: dict) -> list[str]:
     """Return event type strings for real producer events in the render plan.
 
@@ -647,24 +738,7 @@ def _enrich_timeline_with_producer_plan(timeline_json: str, render_plan: dict) -
         planned_events: list[str] = _extract_producer_event_types(render_plan)
 
         if planned_events:
-            rss = tl.get("render_spec_summary") or {}
-            # Only update planned_transition_events when the render_spec_summary didn't
-            # already populate them from boundary_events (avoid overwriting richer data).
-            if not rss.get("planned_transition_events"):
-                rss["planned_transition_events"] = planned_events
-
-                # Recompute plan_vs_actual_transition_match using the real producer events.
-                actual = list(rss.get("actual_transition_events_used") or [])
-                actual_set = set(actual)
-                matched = [e for e in planned_events if e in actual_set]
-                rss["plan_vs_actual_transition_match"] = round(
-                    len(matched) / max(1, len(planned_events)), 3
-                )
-                # Overall plan_coverage at the top-level summary level.
-                rss["plan_coverage"] = rss["plan_vs_actual_transition_match"]
-
-                tl["render_spec_summary"] = rss
-
+            tl = _reconcile_transition_plan_by_section(tl, render_plan)
 
         return json.dumps(tl)
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
