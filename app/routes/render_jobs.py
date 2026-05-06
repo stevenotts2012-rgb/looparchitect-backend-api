@@ -16,6 +16,7 @@ from app.queue import is_redis_available
 from app.routes.render import RenderConfig
 from app.schemas.job import RenderJobRequest, RenderJobResponse, RenderJobStatusResponse, RenderJobHistoryResponse
 from app.services.job_service import create_render_job, get_job_status, list_loop_jobs
+from app.services.producer_event_bar_normalizer import normalize_producer_event_bar
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -383,14 +384,13 @@ def _normalize_event_bar(event_bar_start: int, event_section_name: str, section_
         section_start = int(section.get("bar_start", 0) or 0)
         local_bars = max(1, int(section.get("bars", 1) or 1))
         section_end = section_start + local_bars
-        # If already inside the referenced section's global range, keep absolute.
-        if section_start <= event_bar_start < section_end:
-            return event_bar_start
-        # Otherwise, local-range values are section-relative and need one offset.
-        if 0 <= event_bar_start < local_bars:
-            return section_start + event_bar_start
-        # With a section hint but out of local range, preserve as absolute.
-        return event_bar_start
+        normalized_bar, _invalid_event_bar = normalize_producer_event_bar(
+            event_bar=event_bar_start,
+            section_start=section_start,
+            section_end=section_end,
+            section_bars=local_bars,
+        )
+        return normalized_bar
 
     # No section hint: absolute only if it falls in any known section range.
     if any(start <= event_bar_start < end for start, end in section_ranges):
