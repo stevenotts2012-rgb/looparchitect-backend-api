@@ -7,6 +7,7 @@ from typing import Any
 
 from pydub import AudioSegment
 from app.services.mastering import apply_mastering
+from app.services.producer_event_bar_normalizer import normalize_producer_event_bar
 
 logger = logging.getLogger(__name__)
 
@@ -647,11 +648,13 @@ def _normalize_event_bar(
             start = int(base)
             local_bars = max(1, int(bars))
             end = start + local_bars
-            if start <= event_bar_start < end:
-                return event_bar_start
-            if 0 <= event_bar_start < local_bars:
-                return start + int(event_bar_start)
-            return event_bar_start
+            normalized_bar, _invalid_event_bar = normalize_producer_event_bar(
+                event_bar=event_bar_start,
+                section_start=start,
+                section_end=end,
+                section_bars=local_bars,
+            )
+            return normalized_bar
 
     if any(start <= event_bar_start < end for start, end in all_section_ranges):
         return event_bar_start
