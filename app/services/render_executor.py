@@ -629,6 +629,14 @@ def _reconcile_transition_plan_by_section(timeline: dict, render_plan: dict) -> 
     sections = list(timeline.get("sections") or [])
     render_spec = dict(timeline.get("render_spec_summary") or {})
     producer_events = list((render_plan.get("producer_plan") or {}).get("events") or [])
+    section_start_by_type = {
+        str(s.get("type") or "").strip().lower(): int(s.get("bar_start") or 0)
+        for s in sections
+    }
+    section_start_by_name = {
+        str(s.get("name") or "").strip().lower(): int(s.get("bar_start") or 0)
+        for s in sections
+    }
 
     section_entries: list[dict] = []
     plan_match_count = 0
@@ -647,7 +655,12 @@ def _reconcile_transition_plan_by_section(timeline: dict, render_plan: dict) -> 
             ev_type = str(ev.get("render_action") or ev.get("type") or "").strip()
             if not ev_type:
                 continue
-            ev_start = int(ev.get("bar_start", ev.get("bar", 0)) or 0)
+            ev_section_key = str(ev.get("section_name") or ev.get("section") or "").strip().lower()
+            ev_start_raw = int(ev.get("bar_start", ev.get("bar", 0)) or 0)
+            # Producer-plan bars can be section-relative; map to absolute bars when a
+            # section hint is present. Fall back to raw absolute bars otherwise.
+            base = section_start_by_name.get(ev_section_key, section_start_by_type.get(ev_section_key, 0))
+            ev_start = base + ev_start_raw if ev_section_key else ev_start_raw
             ev_end = int(ev.get("bar_end", ev_start + max(1, int(ev.get("duration_bars") or 1))) or (ev_start + 1))
             if ev_end <= ev_start:
                 ev_end = ev_start + 1
@@ -736,8 +749,9 @@ def _enrich_timeline_with_producer_plan(timeline_json: str, render_plan: dict) -
         # Compute planned_transition_events from render plan events (real producer events,
         # excluding section_start structural markers).
         planned_events: list[str] = _extract_producer_event_types(render_plan)
+        producer_events = list((producer_plan or {}).get("events") or [])
 
-        if planned_events:
+        if planned_events or producer_events:
             tl = _reconcile_transition_plan_by_section(tl, render_plan)
 
         return json.dumps(tl)

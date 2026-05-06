@@ -19,9 +19,10 @@ def test_section_reconciliation_populates_bridge_and_coverage():
         ],
         "producer_plan": {
             "events": [
+                # section-relative bars as emitted by producer plan
                 {"section_name": "verse", "bar_start": 1, "bar_end": 2, "render_action": "drum_fill"},
-                {"section_name": "bridge", "bar_start": 9, "bar_end": 10, "render_action": "mute_role"},
-                {"section_name": "bridge", "bar_start": 12, "bar_end": 13, "render_action": "delay_role"},
+                {"section_name": "bridge", "bar_start": 1, "bar_end": 2, "render_action": "mute_role"},
+                {"section_name": "bridge", "bar_start": 4, "bar_end": 5, "render_action": "delay_role"},
             ]
         },
     }
@@ -44,6 +45,7 @@ def test_section_reconciliation_populates_bridge_and_coverage():
     assert by_section["bridge"]["matched_count"] > 0
     assert by_section["bridge"]["plan_coverage"] > 0
     assert "bridge" not in summary["sections_missing_transitions"]
+    assert by_section["verse"]["planned_events"], "sections with producer events must have planned_events"
 
 
 def test_fallback_source_does_not_replace_producer_source():
