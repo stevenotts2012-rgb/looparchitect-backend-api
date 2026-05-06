@@ -177,6 +177,15 @@ def extract_observability_from_arrangement(arrangement_row: Any) -> dict[str, An
     distinct_stem_set_count = int(render_spec.get("distinct_stem_set_count") or 0)
     hook_stages_rendered = list(render_spec.get("hook_stages") or [])
     transition_event_count = int(render_spec.get("transition_event_count") or 0)
+    variation_uniqueness_score = float(render_spec.get("variation_uniqueness_score") or 0.0)
+    variation_energy_curve = list(render_spec.get("variation_energy_curve") or [])
+    variation_transition_style = list(render_spec.get("variation_transition_style") or [])
+    producer_memory_state = dict(render_spec.get("producer_memory_state") or {})
+    event_repetition_score = float(render_spec.get("event_repetition_score") or 0.0)
+    section_similarity_score = float(render_spec.get("section_similarity_score") or 0.0)
+    transition_overlap_rendered = bool(render_spec.get("transition_overlap_rendered"))
+    hook_escalation_applied = bool(render_spec.get("hook_escalation_applied"))
+    final_producer_score = float(render_spec.get("final_producer_score") or 0.0)
 
     # Planned stem map from render_plan_json
     planned_stem_map: list[dict] = []
@@ -250,6 +259,15 @@ def extract_observability_from_arrangement(arrangement_row: Any) -> dict[str, An
         "distinct_stem_set_count": distinct_stem_set_count or unique_render_signature_count,
         "hook_stages_rendered": hook_stages_rendered,
         "transition_event_count": transition_event_count,
+        "variation_uniqueness_score": variation_uniqueness_score,
+        "variation_energy_curve": variation_energy_curve,
+        "variation_transition_style": variation_transition_style,
+        "producer_memory_state": producer_memory_state,
+        "event_repetition_score": event_repetition_score,
+        "section_similarity_score": section_similarity_score,
+        "transition_overlap_rendered": transition_overlap_rendered,
+        "hook_escalation_applied": hook_escalation_applied,
+        "final_producer_score": final_producer_score,
     }
 
 
@@ -347,6 +365,15 @@ def assemble_render_metadata(
         "distinct_stem_set_count": observability.get("distinct_stem_set_count", 0),
         "hook_stages_rendered": observability.get("hook_stages_rendered", []),
         "transition_event_count": observability.get("transition_event_count", 0),
+        "variation_uniqueness_score": observability.get("variation_uniqueness_score", 0.0),
+        "variation_energy_curve": observability.get("variation_energy_curve", []),
+        "variation_transition_style": observability.get("variation_transition_style", []),
+        "producer_memory_state": observability.get("producer_memory_state", {}),
+        "event_repetition_score": observability.get("event_repetition_score", 0.0),
+        "section_similarity_score": observability.get("section_similarity_score", 0.0),
+        "transition_overlap_rendered": observability.get("transition_overlap_rendered", False),
+        "hook_escalation_applied": observability.get("hook_escalation_applied", False),
+        "final_producer_score": observability.get("final_producer_score", 0.0),
     }
 
     if mastering_info:

@@ -1943,6 +1943,9 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     hook_stages: list[str] = []
     transition_event_count = 0
     section_role_rows: list[dict] = []
+    section_energy_curve: list[float] = []
+    transition_overlap_rendered_count = 0
+    transition_silence_window_count = 0
 
     # Transition observability accumulators.
     transition_plan_by_section: list[dict] = []
@@ -1965,6 +1968,10 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
 
         applied = section.get("applied_events") or []
         transition_event_count += len(applied)
+
+        section_energy_curve.append(float(section.get("energy_level") or 0.0))
+        transition_overlap_rendered_count += sum(1 for e in applied if "transition:" in str(e))
+        transition_silence_window_count += sum(1 for e in applied if "silence" in str(e))
 
         # Track actual transition types used.
         for ev in applied:
@@ -2016,6 +2023,12 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
 
     plan_vs_actual_match = round(plan_match_count / max(1, plan_total_count), 3)
 
+    unique_signatures = max(1, distinct_count)
+    section_similarity_score = round(max(0.0, 1.0 - (unique_signatures / max(1, len(timeline_sections)))), 3)
+    event_repetition_score = round(max(0.0, 1.0 - (len(actual_transition_events_used) / max(1, transition_event_count))), 3)
+    energy_range = (max(section_energy_curve) - min(section_energy_curve)) if section_energy_curve else 0.0
+    variation_uniqueness_score = round(min(1.0, (unique_signatures / max(1, len(timeline_sections))) + (energy_range * 0.35)), 3)
+
     # Flat list of every planned transition event type (one entry per planned event,
     # ordered by section then by event position within the section).
     planned_transition_events: list[str] = []
@@ -2063,6 +2076,23 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         "plan_vs_actual_transition_match": plan_vs_actual_match,
         # Per-section boundary audio signature for post-render audits.
         "boundary_audio_signature": boundary_audio_signature,
+        # Producer evolution and divergence metrics.
+        "variation_uniqueness_score": variation_uniqueness_score,
+        "variation_energy_curve": [round(v, 3) for v in section_energy_curve],
+        "variation_transition_style": sorted(actual_transition_events_used),
+        "producer_memory_state": {
+            "recent_render_signature_count": len(stem_sets),
+            "unique_render_signature_count": distinct_count,
+            "reuse_pressure": round(most_reused / max(1, len(stem_sets)), 3),
+            "novelty_forced": bool(most_reused >= 3),
+        },
+        "event_repetition_score": event_repetition_score,
+        "section_similarity_score": section_similarity_score,
+        "transition_overlap_rendered": transition_overlap_rendered_count > 0,
+        "transition_overlap_rendered_count": transition_overlap_rendered_count,
+        "transition_silence_windows": transition_silence_window_count,
+        "hook_escalation_applied": len(set(hook_stages)) >= 2,
+        "final_producer_score": round((variation_uniqueness_score * 0.45) + ((1.0 - section_similarity_score) * 0.35) + ((1.0 - event_repetition_score) * 0.20), 3),
     }
 
 
