@@ -201,9 +201,10 @@ export default function GeneratePage() {
 
       setGenerateResponse(response);
 
-      if (response.job_id) {
-        setJobId(response.job_id);
-        startPolling(response.job_id);
+      const primaryJob = response.jobs?.[0];
+      if (primaryJob?.job_id) {
+        setJobId(primaryJob.job_id);
+        startPolling(primaryJob.job_id);
       }
     } catch (err) {
       setGenerateError(

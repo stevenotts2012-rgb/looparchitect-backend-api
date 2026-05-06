@@ -175,7 +175,7 @@ export interface GenerateArrangementResponse {
  * response normalises this to "completed" so the frontend only needs to
  * handle: queued | processing | completed | failed
  */
-export type JobStatus = "queued" | "processing" | "completed" | "failed";
+export type JobStatus = "queued" | "running" | "processing" | "success" | "done" | "completed" | "failed" | "error" | "cancelled";
 
 export interface JobStatusResponse {
   job_id: string;
@@ -241,16 +241,22 @@ export interface RenderAsyncConfig {
  * Maps to the backend `RenderJobResponse` Pydantic model.
  * Use `job_id` with `getJobStatus()` to poll for progress.
  */
-export interface RenderAsyncResponse {
+export interface RenderAsyncVariationJob {
   job_id: string;
-  loop_id: number;
-  /** queued | processing | completed | failed */
+  variation_index: number;
+  variation_seed: number;
   status: string;
-  created_at: string;
-  /** Convenience URL: /api/v1/jobs/{job_id} */
   poll_url: string;
-  /** True when the request was deduplicated against an existing active job. */
   deduplicated: boolean;
+}
+
+export interface RenderAsyncResponse {
+  loop_id: number;
+  variation_count: number;
+  requested_length_seconds: number | null;
+  actual_length_seconds: number | null;
+  section_sequence: string[];
+  jobs: RenderAsyncVariationJob[];
 }
 
 /**
@@ -333,7 +339,7 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
  * Returns true when a job has reached a terminal state and polling should stop.
  */
 export function isTerminalJobStatus(status: JobStatus): boolean {
-  return status === "completed" || status === "failed";
+  return ["success", "done", "completed", "failed", "error", "cancelled"].includes(status);
 }
 
 // ---------------------------------------------------------------------------
