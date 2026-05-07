@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     feature_llm_style_parsing: bool = Field(default=False, validation_alias="FEATURE_LLM_STYLE_PARSING")
 
     # Producer Engine V2 — deterministic section planning with decision log
-    feature_producer_engine_v2: bool = Field(default=False, validation_alias="PRODUCER_ENGINE_V2")
+    feature_producer_engine_v2: bool = Field(default=True, validation_alias="PRODUCER_ENGINE_V2")
 
     # AI Co-Producer Assist — AI proposes, rules validate, engine executes
     feature_ai_producer_assist: bool = Field(default=False, validation_alias="AI_PRODUCER_ASSIST")
@@ -178,7 +178,7 @@ class Settings(BaseSettings):
     # Gates the V2 plan builder in arrangement_plan_v2.py.
     # Enable with ARRANGEMENT_PLAN_V2=true.
     feature_arrangement_plan_v2: bool = Field(
-        default=False,
+        default=True,
         validation_alias="ARRANGEMENT_PLAN_V2",
     )
 
@@ -188,7 +188,7 @@ class Settings(BaseSettings):
     # Requires ARRANGEMENT_PLAN_V2=true to take full effect.
     # Enable with ARRANGEMENT_MEMORY_V2=true.
     feature_arrangement_memory_v2: bool = Field(
-        default=False,
+        default=True,
         validation_alias="ARRANGEMENT_MEMORY_V2",
     )
 
@@ -197,7 +197,7 @@ class Settings(BaseSettings):
     # subtractive_entry, re_entry_accent). Requires ARRANGEMENT_PLAN_V2=true.
     # Enable with ARRANGEMENT_TRANSITIONS_V2=true.
     feature_arrangement_transitions_v2: bool = Field(
-        default=False,
+        default=True,
         validation_alias="ARRANGEMENT_TRANSITIONS_V2",
     )
 
@@ -206,7 +206,7 @@ class Settings(BaseSettings):
     # info so audits can prove the plan survived to render output.
     # Enable with ARRANGEMENT_TRUTH_OBSERVABILITY_V2=true.
     feature_arrangement_truth_observability_v2: bool = Field(
-        default=False,
+        default=True,
         validation_alias="ARRANGEMENT_TRUTH_OBSERVABILITY_V2",
     )
 
