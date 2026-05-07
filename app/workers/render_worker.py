@@ -70,8 +70,13 @@ MODELS_TO_REGISTER = [
 
 
 def _should_use_dev_fallback() -> bool:
-    """Dev fallback is opt-in only and never on in production."""
-    return bool(settings.dev_fallback_loop_only and not settings.is_production)
+    """Dev fallback is opt-in only and limited to explicit local/dev environments."""
+    env = str(getattr(settings, "environment", "") or "").strip().lower()
+    return bool(
+        settings.dev_fallback_loop_only
+        and env in {"dev", "development", "local", "test", "testing"}
+        and not settings.is_production
+    )
 
 
 def _select_render_mode(has_render_plan: bool) -> str:
