@@ -630,6 +630,15 @@ def render_from_plan(
         render_plan_sections=render_plan.get("sections") or [],
         render_plan=render_plan,
     )
+    try:
+        _timeline_for_obs = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
+    except Exception:
+        _timeline_for_obs = {}
+    logger.info(
+        "OBSERVABILITY_BUILT section_count=%d signature_count=%d",
+        len(_timeline_for_obs.get("sections") or []),
+        len(render_observability.get("render_signatures") or []),
+    )
     logger.info(
         "OBSERVABILITY_BUILT section_count=%d signature_count=%d",
         len((json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})).get("sections") or []),
@@ -730,14 +739,16 @@ def _assert_dynamic_arrangement(
     energy_curve = list(render_spec.get("variation_energy_curve") or [])
     phrase_splits = int(render_spec.get("phrase_split_count") or 0)
     transition_overlap_count = int(render_spec.get("transition_overlap_rendered_count") or 0)
+    transition_event_count = int(render_spec.get("transition_event_count") or 0)
     hook_escalation_applied = bool(render_spec.get("hook_escalation_applied"))
     uniqueness_score = float(render_spec.get("variation_uniqueness_score") or 0.0)
     section_signatures = int(render_observability.get("unique_render_signature_count") or 0)
     logger.info(
-        "DYNAMIC_VALIDATION_INPUT section_count=%d phrase_split_count=%d transition_count=%d",
+        "DYNAMIC_VALIDATION_INPUT section_count=%d phrase_split_count=%d transition_overlap_count=%d transition_event_count=%d",
         len(sections),
         phrase_splits,
         transition_overlap_count,
+        transition_event_count,
     )
 
     validations: list[tuple[str, bool, str]] = [

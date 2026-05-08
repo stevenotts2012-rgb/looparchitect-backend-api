@@ -99,3 +99,31 @@ def test_render_from_plan_passes_post_render_timeline_and_observability(monkeypa
 
     assert len(observed["timeline"].get("sections") or []) == 1
     assert observed["observability"]["unique_render_signature_count"] == 2
+
+
+def test_dynamic_validation_passes_when_producer_metrics_present():
+    timeline_json = json.dumps(
+        {
+            "sections": [{"name": "hook", "type": "hook"}],
+            "render_spec_summary": {
+                "variation_energy_curve": [0.3, 0.2, 0.5],
+                "phrase_split_count": 2,
+                "transition_overlap_rendered_count": 1,
+                "transition_event_count": 2,
+                "hook_escalation_applied": True,
+                "variation_uniqueness_score": 0.85,
+            },
+        }
+    )
+    render_observability = {
+        "unique_render_signature_count": 3,
+        "planned_stem_map_by_section": [{"section_index": 0}],
+        "actual_stem_map_by_section": [{"section_index": 0}],
+        "render_signatures": ["a", "b"],
+    }
+
+    render_executor._assert_dynamic_arrangement(
+        timeline_json=timeline_json,
+        render_observability=render_observability,
+        render_path_used="stem_render_executor",
+    )
