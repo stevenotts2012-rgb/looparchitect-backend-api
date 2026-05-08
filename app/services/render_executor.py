@@ -640,6 +640,11 @@ def render_from_plan(
         len(render_observability.get("render_signatures") or []),
     )
     logger.info(
+        "OBSERVABILITY_BUILT section_count=%d signature_count=%d",
+        len((json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})).get("sections") or []),
+        len(render_observability.get("render_signatures") or []),
+    )
+    logger.info(
         "RENDER_SIGNATURE_CAPTURED count=%d unique=%d",
         len(render_observability.get("render_signatures") or []),
         int(render_observability.get("unique_render_signature_count") or 0),
@@ -739,9 +744,10 @@ def _assert_dynamic_arrangement(
     uniqueness_score = float(render_spec.get("variation_uniqueness_score") or 0.0)
     section_signatures = int(render_observability.get("unique_render_signature_count") or 0)
     logger.info(
-        "DYNAMIC_VALIDATION_INPUT section_count=%d phrase_split_count=%d transition_count=%d",
+        "DYNAMIC_VALIDATION_INPUT section_count=%d phrase_split_count=%d transition_overlap_count=%d transition_event_count=%d",
         len(sections),
         phrase_splits,
+        transition_overlap_count,
         transition_event_count,
     )
 
