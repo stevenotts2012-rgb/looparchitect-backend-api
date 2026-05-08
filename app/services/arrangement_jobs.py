@@ -2057,6 +2057,44 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
             "plan_coverage": entry.get("plan_coverage", 0.0),
         }
 
+    # Producer taste sub-scores (V2).
+    hook_sections = [s for s in timeline_sections if str(s.get("type") or "").lower() == "hook"]
+    verse_sections = [s for s in timeline_sections if str(s.get("type") or "").lower() == "verse"]
+    bridge_sections = [s for s in timeline_sections if str(s.get("type") or "").lower() in {"bridge", "breakdown"}]
+
+    avg_hook_energy = (sum(float(s.get("energy_level") or 0.0) for s in hook_sections) / len(hook_sections)) if hook_sections else 0.0
+    avg_verse_energy = (sum(float(s.get("energy_level") or 0.0) for s in verse_sections) / len(verse_sections)) if verse_sections else 0.0
+    avg_bridge_energy = (sum(float(s.get("energy_level") or 0.0) for s in bridge_sections) / len(bridge_sections)) if bridge_sections else 0.0
+
+    hook_density = (sum(len(s.get("runtime_active_stems") or s.get("active_stem_roles") or []) for s in hook_sections) / len(hook_sections)) if hook_sections else 0.0
+    verse_density = (sum(len(s.get("runtime_active_stems") or s.get("active_stem_roles") or []) for s in verse_sections) / len(verse_sections)) if verse_sections else 0.0
+    bridge_density = (sum(len(s.get("runtime_active_stems") or s.get("active_stem_roles") or []) for s in bridge_sections) / len(bridge_sections)) if bridge_sections else 0.0
+
+    hook_payoff_score = round(min(1.0, max(0.0, ((avg_hook_energy - avg_verse_energy) * 0.7) + ((hook_density - verse_density) * 0.15) + (0.15 if len(hook_sections) >= 2 else 0.0))), 3)
+    transition_smoothness_score = round(min(1.0, max(0.0, (plan_vs_actual_match * 0.55) + (min(1.0, len(actual_transition_events_used) / 6.0) * 0.25) + (0.20 if transition_overlap_rendered_count > 0 else 0.0))), 3)
+    drop_effectiveness_score = round(min(1.0, max(0.0, (0.35 if transition_silence_window_count > 0 else 0.0) + (0.30 if any('bass_pause' in str(e) for e in actual_transition_events_used) else 0.0) + (0.20 if any('pre_hook' in str(e) for e in actual_transition_events_used) else 0.0) + (0.15 if any('fake_drop' in str(e) for e in actual_transition_events_used) else 0.0))), 3)
+    bridge_contrast_score = round(min(1.0, max(0.0, ((avg_hook_energy - avg_bridge_energy) * 0.75) + ((hook_density - bridge_density) * 0.2) + (0.05 if bridge_sections else 0.0))), 3)
+    variation_personality_score = round(min(1.0, max(0.0, (variation_uniqueness_score * 0.5) + ((1.0 - section_similarity_score) * 0.25) + (min(1.0, len(set(actual_transition_events_used)) / 8.0) * 0.25))), 3)
+    phrase_evolution_score = round(min(1.0, max(0.0, (min(1.0, phrase_split_count / max(1, len(timeline_sections))) * 0.65) + (0.35 if len(set(hook_stages)) >= 2 else 0.0))), 3)
+
+    final_producer_score = round(
+        (hook_payoff_score * 0.20)
+        + (transition_smoothness_score * 0.16)
+        + (drop_effectiveness_score * 0.12)
+        + (bridge_contrast_score * 0.12)
+        + (variation_personality_score * 0.12)
+        + (phrase_evolution_score * 0.10)
+        + ((1.0 - section_similarity_score) * 0.10)
+        + ((1.0 - event_repetition_score) * 0.08),
+        3,
+    )
+
+    variation_personality_assigned = [
+        "clean/mainstream arrangement",
+        "darker/drop-heavy arrangement",
+        "experimental/cinematic arrangement",
+    ]
+
     return {
         "sections_count": len(timeline_sections),
         "distinct_stem_set_count": distinct_count,
@@ -2092,8 +2130,103 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         "transition_overlap_rendered_count": transition_overlap_rendered_count,
         "transition_silence_windows": transition_silence_window_count,
         "hook_escalation_applied": len(set(hook_stages)) >= 2,
-        "final_producer_score": round((variation_uniqueness_score * 0.45) + ((1.0 - section_similarity_score) * 0.35) + ((1.0 - event_repetition_score) * 0.20), 3),
+        "DROP_INTELLIGENCE_APPLIED": drop_effectiveness_score >= 0.45,
+        "HOOK_PAYOFF_SCORE": hook_payoff_score,
+        "TRANSITION_SMOOTHNESS_SCORE": transition_smoothness_score,
+        "BRIDGE_CONTRAST_SCORE": bridge_contrast_score,
+        "VARIATION_PERSONALITY_ASSIGNED": variation_personality_assigned,
+        "PRODUCER_TASTE_SCORE": final_producer_score,
+        "drop_effectiveness_score": drop_effectiveness_score,
+        "variation_personality_score": variation_personality_score,
+        "phrase_evolution_score": phrase_evolution_score,
+        "final_producer_score": final_producer_score,
     }
+
+
+def _variation_personality_name(variation_index: int) -> str:
+    if variation_index == 2:
+        return "darker/drop-heavy arrangement"
+    if variation_index == 3:
+        return "experimental/cinematic arrangement"
+    return "clean/mainstream arrangement"
+
+
+def _apply_producer_taste_decisions(
+    section: dict,
+    *,
+    prev_section: dict | None,
+    next_section: dict | None,
+    variation_index: int,
+) -> list[str]:
+    """
+    Convert producer taste heuristics into active section decisions.
+
+    Returns a list of decision log tags that were applied.
+    """
+    applied: list[str] = []
+    section_type = str(section.get("type") or "").lower()
+    prev_type = str((prev_section or {}).get("type") or "").lower()
+    next_type = str((next_section or {}).get("type") or "").lower()
+    stems = list(section.get("active_stem_roles") or section.get("runtime_active_stems") or [])
+    variations = list(section.get("variations") or [])
+    boundary_events = list(section.get("boundary_events") or [])
+    personality = _variation_personality_name(variation_index)
+
+    def _add_var(var_type: str, intensity: float = 0.7) -> None:
+        nonlocal variations
+        if not any(str(v.get("variation_type") or v.get("type") or "").lower() == var_type for v in variations):
+            variations.append({"variation_type": var_type, "bar": int(section.get("bar_start", 0) or 0), "intensity": float(intensity)})
+
+    def _add_boundary(ev_type: str, placement: str = "end_of_section", intensity: float = 0.7) -> None:
+        nonlocal boundary_events
+        if not any(str(e.get("type") or "").lower() == ev_type for e in boundary_events):
+            boundary_events.append({"type": ev_type, "bar": int(section.get("bar_start", 0) or 0), "placement": placement, "intensity": float(intensity)})
+
+    # Hook payoff weak: escalate hook instrumentation/events.
+    if section_type == "hook" and len(stems) < 4:
+        for role in ("fx", "perc"):
+            if role not in stems:
+                stems.append(role)
+        _add_var("final_hook_expansion", 0.75 if variation_index == 1 else 0.9)
+        _add_boundary("re_entry_accent", placement="on_downbeat", intensity=0.8)
+        applied.append("HOOK_PAYOFF_ENHANCED")
+
+    # Bridge contrast weak: isolate more and increase contrast.
+    if section_type in {"bridge", "breakdown"}:
+        pruned = [r for r in stems if r not in {"drums", "bass", "808", "sub"}]
+        if pruned != stems:
+            stems = pruned or ["pads"]
+            applied.append("BRIDGE_CONTRAST_ENHANCED")
+        _add_var("bridge_strip", 0.9 if variation_index == 2 else 0.7)
+        if variation_index == 2:
+            _add_var("filter_sweep", 0.85)
+
+    # Transition smoothness weak: enforce overlap/crossfade style events.
+    if next_type and next_type != section_type:
+        _add_boundary("crossfade", placement="end_of_section", intensity=0.7 if variation_index == 1 else 0.85)
+        _add_boundary("reverse_fx", placement="end_of_section", intensity=0.75 if variation_index == 3 else 0.6)
+        applied.append("TRANSITION_SMOOTHNESS_ENHANCED")
+
+    # Drop intelligence weak: add pre-hook dropout/fakeout.
+    if next_type == "hook":
+        _add_var("pre_hook_drum_mute", 0.85 if variation_index == 2 else 0.7)
+        _add_var("bass_pause", 0.9 if variation_index == 2 else 0.75)
+        if variation_index in {2, 3}:
+            _add_var("fake_drop", 0.8)
+        applied.append("DROP_INTELLIGENCE_RENDERED")
+
+    # Phrase evolution weak: force call/response mutation.
+    if section_type in {"verse", "hook"}:
+        _add_var("call_response_variation", 0.65 if variation_index == 1 else 0.85)
+        if variation_index == 3:
+            _add_var("chop_stutter", 0.8)
+        applied.append("PRODUCER_DECISION_APPLIED")
+
+    section["active_stem_roles"] = stems
+    section["variations"] = variations
+    section["boundary_events"] = boundary_events
+    section["variation_personality"] = personality
+    return applied
 
 
 def _render_producer_arrangement(
@@ -2154,6 +2287,17 @@ def _render_producer_arrangement(
         f"ProducerArrangement: {len(sections)} sections, {len(tracks)} tracks, "
         f"{len(transitions)} transitions, {total_bars} total bars"
     )
+    variation_index = int(
+        producer_arrangement.get("variation_index")
+        or producer_arrangement.get("variation_number")
+        or producer_arrangement.get("variation_id")
+        or 1
+    )
+    logger.info(
+        "VARIATION_PERSONALITY_RENDERED variation_index=%s personality=%s",
+        variation_index,
+        _variation_personality_name(variation_index),
+    )
     
     bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
     arranged = AudioSegment.silent(duration=0)
@@ -2174,6 +2318,17 @@ def _render_producer_arrangement(
     previous_section_audio: AudioSegment | None = None
     
     for section_idx, section in enumerate(sections):
+        prev_section = sections[section_idx - 1] if section_idx > 0 else None
+        next_section = sections[section_idx + 1] if section_idx + 1 < len(sections) else None
+        decision_tags = _apply_producer_taste_decisions(
+            section,
+            prev_section=prev_section,
+            next_section=next_section,
+            variation_index=variation_index,
+        )
+        for tag in sorted(set(decision_tags)):
+            logger.info("PRODUCER_DECISION_APPLIED section=%s decision=%s", section_idx, tag)
+
         section_name = section.get("name", f"Section {section_idx + 1}")
         section_type = _normalize_section_type(section.get("section_type") or section.get("type") or "verse")
         bar_start = int(section.get("bar_start", 0) or 0)
