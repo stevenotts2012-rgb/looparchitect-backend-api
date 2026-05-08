@@ -127,3 +127,35 @@ def test_dynamic_validation_passes_when_producer_metrics_present():
         render_observability=render_observability,
         render_path_used="stem_render_executor",
     )
+
+
+def test_dynamic_validation_failure_exposes_metadata():
+    timeline_json = json.dumps(
+        {
+            "sections": [{"name": "hook", "type": "hook"}],
+            "render_spec_summary": {
+                "variation_energy_curve": [0.4, 0.4],
+                "phrase_split_count": 0,
+                "transition_overlap_rendered_count": 1,
+                "hook_escalation_applied": False,
+                "variation_uniqueness_score": 0.0,
+            },
+        }
+    )
+    render_observability = {
+        "unique_render_signature_count": 1,
+        "planned_stem_map_by_section": [{"section_index": 0}],
+        "actual_stem_map_by_section": [{"section_index": 0}],
+        "section_execution_report": [{"section_index": 0}],
+        "render_signatures": ["a"],
+    }
+    try:
+        render_executor._assert_dynamic_arrangement(
+            timeline_json=timeline_json,
+            render_observability=render_observability,
+            render_path_used="stem_render_executor",
+        )
+        assert False, "Expected dynamic validation failure"
+    except render_executor.DynamicArrangementValidationError as exc:
+        assert exc.render_metadata["render_observability"]["planned_stem_map_by_section"]
+        assert exc.render_metadata["render_spec_summary"]["variation_energy_curve"] == [0.4, 0.4]
