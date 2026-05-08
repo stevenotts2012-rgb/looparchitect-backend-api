@@ -18,6 +18,7 @@ import pytest
 from app.services.job_service import update_job_status, get_job_status
 from app.models.job import RenderJob
 from app.schemas.job import RenderJobStatusResponse
+from app.services.render_executor import DynamicArrangementValidationError
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +398,67 @@ class TestArrangementModePathStoresArrangementId:
         assert kwargs.get("arrangement_id") == arrangement_id, (
             f"Expected arrangement_id={arrangement_id} but got {kwargs.get('arrangement_id')}"
         )
+
+
+def test_dynamic_validation_failure_preserves_render_metadata():
+    from app.workers import render_worker
+
+    loop = MagicMock()
+    loop.id = 85
+    loop.bpm = 120.0
+    loop.genre = "trap"
+    loop.file_key = "loops/85.wav"
+    loop.file_url = None
+
+    job = _make_job(loop_id=85)
+    arrangement = MagicMock()
+    arrangement.render_plan_json = json.dumps(
+        {"bpm": 120, "key": "C", "total_bars": 4, "sections": [{"name": "A", "type": "hook", "bars": 4}]}
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.side_effect = [job, loop, arrangement]
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = arrangement
+
+    failure_metadata = {
+        "render_observability": {
+            "render_path_used": "stem_render_executor",
+            "source_quality_mode_used": "high",
+            "planned_stem_map_by_section": [{"section_index": 0, "roles": ["drums", "bass"]}],
+            "actual_stem_map_by_section": [{"section_index": 0, "roles": ["drums"]}],
+            "section_execution_report": [{"section_index": 0, "fallback_used": False}],
+            "render_signatures": ["sig1"],
+            "phrase_split_count": 1,
+            "hook_stages_rendered": ["base", "max"],
+            "variation_uniqueness_score": 0.42,
+            "final_producer_score": 0.51,
+        },
+        "render_spec_summary": {"variation_energy_curve": [0.22, 0.79]},
+        "failed_validations": [{"check": "variation_uniqueness_score", "reason": "variation_uniqueness_below_threshold"}],
+    }
+
+    with (
+        patch.object(render_worker, "_ensure_db_models"),
+        patch.object(render_worker, "SessionLocal", return_value=db),
+        patch.object(render_worker, "_resolve_app_job_id", return_value="job-test-001"),
+        patch.object(render_worker, "_download_loop_audio", return_value="/tmp/loop.wav"),
+        patch("pydub.AudioSegment.from_file", return_value=MagicMock()),
+        patch.object(render_worker, "score_and_reject"),
+        patch.object(
+            render_worker,
+            "_run_with_timeout",
+            side_effect=DynamicArrangementValidationError("validation failed", render_metadata=failure_metadata),
+        ),
+        patch.object(render_worker, "update_job_status") as mock_update,
+        patch.object(render_worker, "_parse_stem_metadata_from_loop", return_value=None),
+        patch("rq.get_current_job", side_effect=Exception("no rq")),
+    ):
+        render_worker.render_loop_worker("job-test-001", 85, {"length_seconds": 60})
+
+    failed_calls = [c for c in mock_update.call_args_list if c.args[2] == "failed"]
+    assert failed_calls
+    persisted = failed_calls[-1].kwargs["render_metadata"]
+    assert persisted["planned_stem_map_by_section"]
+    assert persisted["actual_stem_map_by_section"]
+    assert persisted["section_execution_report"]
+    assert persisted["render_signatures"]
+    assert persisted["phrase_split_count"] == 1

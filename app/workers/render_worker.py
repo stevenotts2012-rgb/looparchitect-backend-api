@@ -34,7 +34,7 @@ from app.db import SessionLocal, engine
 from app.models.job import RenderJob
 from app.models.loop import Loop
 from app.services.job_service import update_job_status
-from app.services.render_executor import render_from_plan
+from app.services.render_executor import DynamicArrangementValidationError, render_from_plan
 from app.services.storage import storage
 from app.schemas.job import OutputFile
 from app.services.arrangement_jobs import _parse_stem_metadata_from_loop
@@ -1177,9 +1177,32 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             if job:
                 job.retry_count = (job.retry_count or 0) + 1
                 _err_str = str(e)
+                _failure_observability = {}
+                _failure_render_path_used = "unknown"
+                _failure_source_quality_mode = "unknown"
+                if isinstance(e, DynamicArrangementValidationError):
+                    _failure_meta = dict(getattr(e, "render_metadata", {}) or {})
+                    _failure_observability = dict(_failure_meta.get("render_observability") or {})
+                    _spec_summary = dict(_failure_meta.get("render_spec_summary") or {})
+                    _failure_render_path_used = str(
+                        _failure_observability.get("render_path_used")
+                        or _spec_summary.get("render_path_used")
+                        or "unknown"
+                    )
+                    _failure_source_quality_mode = str(
+                        _failure_observability.get("source_quality_mode_used")
+                        or _spec_summary.get("source_quality_mode_used")
+                        or "unknown"
+                    )
+                    logger.error(
+                        "FAILED_JOB_METADATA_PRESERVED job_id=%s failed_checks=%s observability_keys=%s",
+                        app_job_id,
+                        _failure_meta.get("failed_validations"),
+                        list(_failure_observability.keys()),
+                    )
                 _terminal_state = determine_job_terminal_state(
                     success=False,
-                    fallback_triggered_count=0,
+                    fallback_triggered_count=int(_failure_observability.get("fallback_triggered_count", 0)),
                     failure_stage=failure_stage,
                     error_message=_err_str,
                 )
@@ -1192,9 +1215,9 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         worker_mode=worker_mode,
                         job_terminal_state=_terminal_state,
                         failure_stage=failure_stage,
-                        render_path_used="unknown",
-                        source_quality_mode_used="unknown",
-                        observability={},
+                        render_path_used=_failure_render_path_used,
+                        source_quality_mode_used=_failure_source_quality_mode,
+                        observability=_failure_observability,
                         feature_flags_snapshot=feature_flags,
                     ),
                 )

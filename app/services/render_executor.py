@@ -12,6 +12,14 @@ from app.services.producer_event_bar_normalizer import normalize_producer_event_
 logger = logging.getLogger(__name__)
 
 
+class DynamicArrangementValidationError(RuntimeError):
+    """Raised when dynamic arrangement validation fails with render metadata."""
+
+    def __init__(self, message: str, render_metadata: dict[str, Any]):
+        super().__init__(message)
+        self.render_metadata = render_metadata
+
+
 def _apply_master_headroom(audio: AudioSegment, target_peak_dbfs: float = -6.0) -> AudioSegment:
     peak = float(audio.max_dBFS)
     if peak == float("-inf") or peak <= target_peak_dbfs:
@@ -751,8 +759,16 @@ def _assert_dynamic_arrangement(
         transition_event_count,
     )
 
+    logger.info("ENERGY_CURVE_COMPUTED_FROM_RENDER values=%s", energy_curve)
+    logger.info("HOOK_ESCALATION_FLAG_SET hook_escalation_applied=%s", hook_escalation_applied)
+    logger.info("PHRASE_MUTATION_COUNT_SET phrase_split_count=%s", phrase_splits)
+    logger.info(
+        "VARIATION_UNIQUENESS_COMPUTED_FROM_RENDER variation_uniqueness_score=%.3f",
+        uniqueness_score,
+    )
+
     validations: list[tuple[str, bool, str]] = [
-        ("energy_curve_non_flat", any(abs(float(v)) > 1e-6 for v in energy_curve), "flat_energy_curve"),
+        ("energy_curve_non_flat", (max(energy_curve) - min(energy_curve)) > 1e-6 if energy_curve else False, "flat_energy_curve"),
         ("transition_overlap_present", transition_overlap_count > 0, "missing_overlap_transition_audio"),
         ("hook_escalation_present", hook_escalation_applied, "hook_escalation_not_applied"),
         ("phrase_mutation_present", phrase_splits > 0, "phrase_mutation_not_applied"),
@@ -763,14 +779,26 @@ def _assert_dynamic_arrangement(
 
     failed = [item for item in validations if not item[1]]
     if failed:
+        validation_metadata = {
+            "render_observability": render_observability,
+            "render_spec_summary": render_spec,
+            "failed_validations": [{"check": c, "reason": r} for c, _ok, r in failed],
+        }
+        logger.error(
+            "VALIDATION_FAILED_WITH_METADATA render_path=%s failed_validations=%s metadata_keys=%s",
+            render_path_used,
+            validation_metadata["failed_validations"],
+            list(render_observability.keys()),
+        )
         logger.error(
             "ARRANGEMENT_STATIC_REJECTED render_path=%s failed_validations=%s",
             render_path_used,
             [{"check": c, "reason": r} for c, _ok, r in failed],
         )
-        raise RuntimeError(
+        raise DynamicArrangementValidationError(
             "Dynamic arrangement validation failed: "
-            + ", ".join(f"{c}({r})" for c, _ok, r in failed)
+            + ", ".join(f"{c}({r})" for c, _ok, r in failed),
+            render_metadata=validation_metadata,
         )
 
     logger.info("ENERGY_CURVE_COMPUTED values=%s", energy_curve)
