@@ -2331,6 +2331,7 @@ def _render_producer_arrangement(
 
         section_name = section.get("name", f"Section {section_idx + 1}")
         section_type = _normalize_section_type(section.get("section_type") or section.get("type") or "verse")
+        logger.info("PRODUCER_SECTION_RENDER index=%s name=%s type=%s", section_idx, section_name, section_type)
         bar_start = int(section.get("bar_start", 0) or 0)
         section_bars = int(section.get("bars", 0) or 0)
         if section_bars <= 0:

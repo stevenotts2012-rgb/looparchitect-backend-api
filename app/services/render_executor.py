@@ -542,6 +542,12 @@ def render_from_plan(
         render_plan=render_plan,
         fallback_bpm=float(render_plan.get("bpm") or 120.0),
     )
+    logger.info(
+        "PRODUCER_PLAN_CREATED sections=%d events=%d transitions=%d",
+        len(producer_payload.get("sections") or []),
+        len(render_plan.get("events") or []),
+        len(producer_payload.get("transitions") or []),
+    )
 
     logger.info(
         "render_plan loaded: section_count=%s event_count=%s producer_moves=%s stems=%s loop_variants=%s",
@@ -561,6 +567,28 @@ def render_from_plan(
         stems=stems,
         loop_variations=loop_variations,
     )
+    try:
+        _tl = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
+        _sections = list(_tl.get("sections") or [])
+        _events = list(_tl.get("events") or [])
+        logger.info("PRODUCER_EVENTS_APPLIED timeline_sections=%d timeline_events=%d", len(_sections), len(_events))
+        logger.info(
+            "TRANSITION_RENDER_EXECUTED transition_events=%d",
+            sum(1 for _e in _events if str(_e.get("type") or "").lower() in {"runtime_event", "transition"}),
+        )
+        for _s in _sections:
+            _applied = list(_s.get("applied_events") or [])
+            if _applied:
+                logger.info(
+                    "SECTION_AUDIO_MUTATED section=%s applied_count=%d",
+                    _s.get("name") or _s.get("type"),
+                    len(_applied),
+                )
+            _stage = ((_s.get("hook_evolution") or {}).get("stage") if isinstance(_s.get("hook_evolution"), dict) else None)
+            if _stage:
+                logger.info("HOOK_STAGE_RENDERED section=%s stage=%s", _s.get("name") or _s.get("type"), _stage)
+    except Exception:
+        pass
     output_audio = _apply_master_headroom(output_audio, target_peak_dbfs=-1.0)
 
     mastering_result = apply_mastering(
@@ -584,6 +612,15 @@ def render_from_plan(
         mastering_result=mastering_result,
         render_plan_sections=render_plan.get("sections") or [],
         render_plan=render_plan,
+    )
+    logger.info(
+        "RENDER_SIGNATURE_CAPTURED count=%d unique=%d",
+        len(render_observability.get("render_signatures") or []),
+        int(render_observability.get("unique_render_signature_count") or 0),
+    )
+    _assert_producer_runtime_not_noop(
+        timeline_json=timeline_json,
+        render_observability=render_observability,
     )
     _assert_dynamic_arrangement(
         timeline_json=timeline_json,
@@ -622,6 +659,35 @@ def render_from_plan(
             }
         },
     }
+
+
+def _assert_producer_runtime_not_noop(timeline_json: str, render_observability: dict[str, Any]) -> None:
+    """Hard fail when producer engine is enabled but runtime output is a no-op."""
+    from app.config import settings as _settings
+    if not _settings.feature_producer_engine_v2:
+        return
+    try:
+        timeline = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
+    except Exception:
+        timeline = {}
+    render_spec = dict(timeline.get("render_spec_summary") or {})
+    zeroed = (
+        int(render_spec.get("phrase_split_count") or 0) == 0
+        and int(render_spec.get("transition_event_count") or 0) == 0
+        and not bool(render_spec.get("transition_overlap_rendered"))
+        and not bool(render_spec.get("hook_escalation_applied"))
+        and float(render_spec.get("variation_uniqueness_score") or 0.0) <= 0.0
+        and float(render_spec.get("final_producer_score") or 0.0) <= 0.0
+    )
+    if zeroed:
+        logger.error(
+            "PRODUCER_RUNTIME_NOOP_DETECTED sections=%d planned_stems=%d actual_stems=%d signatures=%d",
+            len(timeline.get("sections") or []),
+            len(render_observability.get("planned_stem_map_by_section") or []),
+            len(render_observability.get("actual_stem_map_by_section") or []),
+            len(render_observability.get("render_signatures") or []),
+        )
+        raise RuntimeError("PRODUCER_RUNTIME_NOOP_DETECTED")
 
 def _assert_dynamic_arrangement(
     timeline_json: str,
