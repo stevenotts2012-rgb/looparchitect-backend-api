@@ -200,6 +200,16 @@ async def lifespan(app: FastAPI):
         bool(settings.database_url),
         bool(settings.redis_url),
     )
+    logger.info(
+        "RUNTIME_CONFIG_SNAPSHOT scope=web_startup environment=%s is_production=%s "
+        "dev_fallback_loop_only=%s producer_v2=%s transitions_v2=%s arrangement_plan_v2=%s",
+        settings.environment,
+        settings.is_production,
+        settings.dev_fallback_loop_only,
+        settings.feature_producer_engine_v2,
+        settings.feature_arrangement_transitions_v2,
+        settings.feature_arrangement_plan_v2,
+    )
 
     if settings.get_storage_backend() == "s3":
         logger.info(
