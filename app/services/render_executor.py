@@ -585,6 +585,11 @@ def render_from_plan(
         render_plan_sections=render_plan.get("sections") or [],
         render_plan=render_plan,
     )
+    _assert_dynamic_arrangement(
+        timeline_json=timeline_json,
+        render_observability=render_observability,
+        render_path_used=render_path_used,
+    )
 
     logger.info(
         "RENDER_OBSERVABILITY render_path=%s source_quality=%s fallbacks=%d "
@@ -617,6 +622,53 @@ def render_from_plan(
             }
         },
     }
+
+def _assert_dynamic_arrangement(
+    timeline_json: str,
+    render_observability: dict,
+    render_path_used: str,
+) -> None:
+    """Hard-fail static renders that violate producer execution requirements."""
+    try:
+        timeline = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
+    except Exception:
+        timeline = {}
+
+    render_spec = dict(timeline.get("render_spec_summary") or {})
+    sections = list(timeline.get("sections") or [])
+    energy_curve = list(render_spec.get("variation_energy_curve") or [])
+    phrase_splits = int(render_spec.get("phrase_split_count") or 0)
+    transition_overlap_count = int(render_spec.get("transition_overlap_rendered_count") or 0)
+    hook_escalation_applied = bool(render_spec.get("hook_escalation_applied"))
+    uniqueness_score = float(render_spec.get("variation_uniqueness_score") or 0.0)
+    section_signatures = int(render_observability.get("unique_render_signature_count") or 0)
+
+    validations: list[tuple[str, bool, str]] = [
+        ("energy_curve_non_flat", any(abs(float(v)) > 1e-6 for v in energy_curve), "flat_energy_curve"),
+        ("transition_overlap_present", transition_overlap_count > 0, "missing_overlap_transition_audio"),
+        ("hook_escalation_present", hook_escalation_applied, "hook_escalation_not_applied"),
+        ("phrase_mutation_present", phrase_splits > 0, "phrase_mutation_not_applied"),
+        ("section_density_varies", section_signatures > 1, "all_sections_same_density"),
+        ("variation_uniqueness_score", uniqueness_score >= 0.70, "variation_uniqueness_below_threshold"),
+        ("has_sections", len(sections) > 0, "empty_arrangement"),
+    ]
+
+    failed = [item for item in validations if not item[1]]
+    if failed:
+        logger.error(
+            "ARRANGEMENT_STATIC_REJECTED render_path=%s failed_validations=%s",
+            render_path_used,
+            [{"check": c, "reason": r} for c, _ok, r in failed],
+        )
+        raise RuntimeError(
+            "Dynamic arrangement validation failed: "
+            + ", ".join(f"{c}({r})" for c, _ok, r in failed)
+        )
+
+    logger.info("ENERGY_CURVE_COMPUTED values=%s", energy_curve)
+    logger.info("PHRASE_MUTATION_APPLIED phrase_split_count=%s", phrase_splits)
+    logger.info("TRANSITION_AUDIO_RENDERED transition_overlap_rendered_count=%s", transition_overlap_count)
+    logger.info("HOOK_ESCALATION_CONFIRMED hook_escalation_applied=%s", hook_escalation_applied)
 
 
 

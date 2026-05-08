@@ -929,6 +929,22 @@ async def render_arrangement_async(
         len(variation_jobs),
         [j.job_id for j in variation_jobs],
     )
+    # Strict multi-variation guarantee: never silently return reused jobs when
+    # the caller requested multiple variations.
+    if request.variation_count > 1 and any(j.deduplicated for j in variation_jobs):
+        logger.error(
+            "MULTI_VARIATION_BLOCKED_DEDUP loop_id=%s variation_count=%s deduplicated_jobs=%s",
+            loop_id,
+            request.variation_count,
+            [j.job_id for j in variation_jobs if j.deduplicated],
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Multi-variation render blocked because one or more variation jobs were "
+                "deduplicated. Retry with a new variation_seed."
+            ),
+        )
 
     return AsyncRenderBatchResponse(
         loop_id=loop_id,
