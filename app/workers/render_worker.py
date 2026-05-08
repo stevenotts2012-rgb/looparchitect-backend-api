@@ -377,6 +377,21 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     failure_stage: str | None = None
     worker_mode = get_worker_mode()
     feature_flags = resolve_feature_flags_snapshot()
+    logger.info(
+        "RUNTIME_CONFIG_SNAPSHOT scope=worker job_id=%s loop_id=%s env=%s is_production=%s "
+        "dev_fallback_loop_only=%s producer_v2=%s arrangement_plan_v2=%s arrangement_memory_v2=%s "
+        "transitions_v2=%s truth_obs_v2=%s",
+        app_job_id,
+        loop_id,
+        getattr(settings, "environment", None),
+        settings.is_production,
+        settings.dev_fallback_loop_only,
+        settings.feature_producer_engine_v2,
+        settings.feature_arrangement_plan_v2,
+        settings.feature_arrangement_memory_v2,
+        settings.feature_arrangement_transitions_v2,
+        settings.feature_arrangement_truth_observability_v2,
+    )
     
     try:
         arrangement_id = params.get("arrangement_id") if isinstance(params, dict) else None
@@ -819,6 +834,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 params_render_plan_json or (arrangement and arrangement.render_plan_json)
             )
             render_mode = _select_render_mode(has_render_plan)
+            if render_mode != "dev_fallback" and settings.dev_fallback_loop_only:
+                logger.info(
+                    "DEV_FALLBACK_BLOCKER_DETECTED job_id=%s loop_id=%s reason=render_plan_present",
+                    app_job_id,
+                    loop_id,
+                )
 
             if render_mode == "render_plan":
                 render_plan_json = (

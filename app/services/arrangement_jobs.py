@@ -2241,6 +2241,13 @@ def _render_producer_arrangement(
             _phrase_second_roles: list[str] = []
             _phrase_split_executed = False
             if phrase_plan and section_bars > 4:
+                logger.info(
+                    "PHRASE_HUMANIZATION_INVOKED section=%s section_idx=%s bars=%s split_bar=%s",
+                    section_name,
+                    section_idx,
+                    section_bars,
+                    int(phrase_plan.get("split_bar", section_bars // 2) or (section_bars // 2)),
+                )
                 split_bar = int(phrase_plan.get("split_bar", section_bars // 2) or (section_bars // 2))
                 split_bar = max(1, min(section_bars - 1, split_bar))
                 split_ms = split_bar * bar_duration_ms
@@ -2466,6 +2473,13 @@ def _render_producer_arrangement(
             logger.info(f"Processing HOOK section: {section_name} (pre_dsp_peak={pre_dsp_peak:.1f} dBFS)")
             hook_evolution = section.get("hook_evolution") if isinstance(section.get("hook_evolution"), dict) else {}
             hook_stage = str(hook_evolution.get("stage") or "hook1").strip().lower()
+            if hook_evolution:
+                logger.info(
+                    "HOOK_ESCALATION_INVOKED section=%s section_idx=%s hook_stage=%s",
+                    section_name,
+                    section_idx,
+                    hook_stage,
+                )
 
             # Boost to near ceiling — do NOT exceed -1.5 dBFS to avoid post-mastering clip.
             # hook1: standard boost (+3 dB).
@@ -2717,6 +2731,12 @@ def _render_producer_arrangement(
                     impact_gap = min(500, trans_duration_ms)
                     section_audio = section_audio[:-impact_gap] + AudioSegment.silent(duration=impact_gap)
                 section_applied_events.append(f"transition:{trans_type}")
+                logger.info(
+                    "TRANSITION_OVERLAP_INVOKED section=%s section_idx=%s transition_type=%s",
+                    section_name,
+                    section_idx,
+                    trans_type,
+                )
 
         if "pre_hook_silence_drop" not in section_applied_events:
             section_audio = _stabilize_section_loudness(
@@ -2869,6 +2889,14 @@ def _render_producer_arrangement(
         render_spec_summary["distinct_stem_set_count"],
         render_spec_summary["hook_stages"],
         render_spec_summary["transition_event_count"],
+    )
+    logger.info(
+        "PRODUCER_SCORE_COMPUTED variation_uniqueness_score=%.3f final_producer_score=%.3f "
+        "hook_escalation_applied=%s transition_overlap_rendered=%s",
+        float(render_spec_summary.get("variation_uniqueness_score") or 0.0),
+        float(render_spec_summary.get("final_producer_score") or 0.0),
+        bool(render_spec_summary.get("hook_escalation_applied")),
+        bool(render_spec_summary.get("transition_overlap_rendered")),
     )
 
     # Build timeline JSON
