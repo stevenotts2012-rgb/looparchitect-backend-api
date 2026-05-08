@@ -774,9 +774,14 @@ def _assert_dynamic_arrangement(
         )
 
     logger.info("ENERGY_CURVE_COMPUTED values=%s", energy_curve)
+    logger.info("ENERGY_CURVE_ESCALATED energy_span=%.3f", (max(energy_curve)-min(energy_curve)) if energy_curve else 0.0)
     logger.info("PHRASE_MUTATION_APPLIED phrase_split_count=%s", phrase_splits)
+    logger.info("PHRASE_MUTATION_RENDERED phrase_split_count=%s", phrase_splits)
     logger.info("TRANSITION_AUDIO_RENDERED transition_overlap_rendered_count=%s", transition_overlap_count)
+    logger.info("OVERLAP_TRANSITION_RENDERED transition_overlap_rendered_count=%s", transition_overlap_count)
     logger.info("HOOK_ESCALATION_CONFIRMED hook_escalation_applied=%s", hook_escalation_applied)
+    logger.info("HOOK_ESCALATION_RENDERED hook_escalation_applied=%s", hook_escalation_applied)
+    logger.info("VARIATION_DIVERGENCE_RENDERED variation_uniqueness_score=%.3f", uniqueness_score)
     logger.info("DYNAMIC_VALIDATION_PASSED")
 
 

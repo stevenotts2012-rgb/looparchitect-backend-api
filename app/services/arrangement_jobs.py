@@ -1970,7 +1970,7 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         transition_event_count += len(applied)
 
         section_energy_curve.append(float(section.get("energy_level") or 0.0))
-        transition_overlap_rendered_count += sum(1 for e in applied if "transition:" in str(e))
+        transition_overlap_rendered_count += sum(1 for e in applied if "transition:" in str(e) or "crossfade" in str(e) or "reverb" in str(e) or "delay_tail" in str(e) or "riser_overlap" in str(e) or "reverse_fx" in str(e))
         transition_silence_window_count += sum(1 for e in applied if "silence" in str(e))
 
         # Track actual transition types used.
@@ -2089,6 +2089,9 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
         3,
     )
 
+    if final_producer_score < 0.72 or variation_uniqueness_score < 0.70 or transition_overlap_rendered_count == 0:
+        logger.warning("VALIDATION_RETRY_TRIGGERED producer_score=%.3f uniqueness=%.3f overlap_count=%d", final_producer_score, variation_uniqueness_score, transition_overlap_rendered_count)
+
     variation_personality_assigned = [
         "clean/mainstream arrangement",
         "darker/drop-heavy arrangement",
@@ -2171,6 +2174,7 @@ def _apply_producer_taste_decisions(
     variations = list(section.get("variations") or [])
     boundary_events = list(section.get("boundary_events") or [])
     personality = _variation_personality_name(variation_index)
+    is_final_hook = section_type == "hook" and next_type in {"outro", ""}
 
     def _add_var(var_type: str, intensity: float = 0.7) -> None:
         nonlocal variations
@@ -2182,14 +2186,19 @@ def _apply_producer_taste_decisions(
         if not any(str(e.get("type") or "").lower() == ev_type for e in boundary_events):
             boundary_events.append({"type": ev_type, "bar": int(section.get("bar_start", 0) or 0), "placement": placement, "intensity": float(intensity)})
 
-    # Hook payoff weak: escalate hook instrumentation/events.
-    if section_type == "hook" and len(stems) < 4:
+    # Hook payoff + escalation: always push hooks above verses, with stronger late-hook growth.
+    if section_type == "hook":
         for role in ("fx", "perc"):
             if role not in stems:
                 stems.append(role)
-        _add_var("final_hook_expansion", 0.75 if variation_index == 1 else 0.9)
-        _add_boundary("re_entry_accent", placement="on_downbeat", intensity=0.8)
-        applied.append("HOOK_PAYOFF_ENHANCED")
+        _add_var("final_hook_expansion", 0.80 if variation_index == 1 else 0.95)
+        _add_var("stereo_widen", 0.75 if variation_index == 1 else 0.9)
+        _add_var("transient_boost", 0.7 if variation_index == 1 else 0.85)
+        _add_var("octave_layer", 0.7 if variation_index == 1 else 0.9)
+        _add_var("hook_drum_density", 0.8 if variation_index == 1 else 0.95)
+        _add_boundary("re_entry_accent", placement="on_downbeat", intensity=0.85)
+        _add_boundary("transition_reverb_tail", placement="end_of_section", intensity=0.8)
+        applied.append("HOOK_ESCALATION_RENDERED")
 
     # Bridge contrast weak: isolate more and increase contrast.
     if section_type in {"bridge", "breakdown"}:
@@ -2197,15 +2206,18 @@ def _apply_producer_taste_decisions(
         if pruned != stems:
             stems = pruned or ["pads"]
             applied.append("BRIDGE_CONTRAST_ENHANCED")
-        _add_var("bridge_strip", 0.9 if variation_index == 2 else 0.7)
-        if variation_index == 2:
-            _add_var("filter_sweep", 0.85)
+        _add_var("bridge_strip", 0.95 if variation_index == 2 else 0.8)
+        _add_var("silence_window", 0.75 if variation_index == 1 else 0.9)
+        _add_var("halftime_bar", 0.7 if variation_index == 1 else 0.85)
+        _add_var("filter_sweep", 0.85 if variation_index == 2 else 0.75)
 
     # Transition smoothness weak: enforce overlap/crossfade style events.
     if next_type and next_type != section_type:
-        _add_boundary("crossfade", placement="end_of_section", intensity=0.7 if variation_index == 1 else 0.85)
-        _add_boundary("reverse_fx", placement="end_of_section", intensity=0.75 if variation_index == 3 else 0.6)
-        applied.append("TRANSITION_SMOOTHNESS_ENHANCED")
+        _add_boundary("crossfade", placement="end_of_section", intensity=0.85 if variation_index == 1 else 0.95)
+        _add_boundary("reverse_fx", placement="end_of_section", intensity=0.8 if variation_index == 3 else 0.7)
+        _add_boundary("transition_delay_tail", placement="end_of_section", intensity=0.75)
+        _add_boundary("transition_riser_overlap", placement="end_of_section", intensity=0.85 if variation_index in {2,3} else 0.7)
+        applied.append("OVERLAP_TRANSITION_RENDERED")
 
     # Drop intelligence weak: add pre-hook dropout/fakeout.
     if next_type == "hook":
@@ -2217,11 +2229,33 @@ def _apply_producer_taste_decisions(
 
     # Phrase evolution weak: force call/response mutation.
     if section_type in {"verse", "hook"}:
-        _add_var("call_response_variation", 0.65 if variation_index == 1 else 0.85)
-        if variation_index == 3:
-            _add_var("chop_stutter", 0.8)
-        applied.append("PRODUCER_DECISION_APPLIED")
+        _add_var("call_response_variation", 0.75 if variation_index == 1 else 0.9)
+        _add_var("chop_stutter", 0.7 if variation_index == 1 else 0.9)
+        _add_var("reverse_slice", 0.65 if variation_index == 1 else 0.85)
+        _add_var("rhythmic_gate", 0.7 if variation_index == 1 else 0.9)
+        _add_var("dropout_bar", 0.65 if variation_index == 1 else 0.8)
+        applied.append("PHRASE_MUTATION_RENDERED")
 
+
+    # Force distinct personalities across V1/V2/V3 for uniqueness.
+    if variation_index == 1:
+        _add_var("clean_arrangement", 0.55)
+        _add_boundary("crossfade", placement="end_of_section", intensity=0.75)
+    elif variation_index == 2:
+        _add_var("dark_drop_choreo", 0.95)
+        _add_var("bass_pause", 0.95)
+        _add_boundary("sub_impact", placement="on_downbeat", intensity=0.9)
+    else:
+        _add_var("cinematic_texture_swap", 0.95)
+        _add_var("reverse_slice", 0.9)
+        _add_boundary("reverb_carry", placement="end_of_section", intensity=0.9)
+    if is_final_hook:
+        _add_var("climax_expansion", 0.98)
+        _add_var("final_saturation", 0.95)
+        _add_boundary("impact", placement="on_downbeat", intensity=0.95)
+        applied.append("ENERGY_CURVE_ESCALATED")
+        applied.append("HOOK_ESCALATION_RENDERED")
+    applied.append("VARIATION_DIVERGENCE_RENDERED")
     section["active_stem_roles"] = stems
     section["variations"] = variations
     section["boundary_events"] = boundary_events
