@@ -72,6 +72,16 @@ def _run_rq_worker() -> None:
 
 def run_worker() -> None:
     logger.info("LoopArchitect Worker started")
+    logger.info(
+        "RUNTIME_CONFIG_SNAPSHOT scope=worker_startup environment=%s is_production=%s "
+        "dev_fallback_loop_only=%s producer_v2=%s transitions_v2=%s arrangement_plan_v2=%s",
+        settings.environment,
+        settings.is_production,
+        settings.dev_fallback_loop_only,
+        settings.feature_producer_engine_v2,
+        settings.feature_arrangement_transitions_v2,
+        settings.feature_arrangement_plan_v2,
+    )
     settings.validate_startup()
 
     heartbeat = threading.Thread(target=_heartbeat_loop, daemon=True)

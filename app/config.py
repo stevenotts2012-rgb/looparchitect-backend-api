@@ -864,11 +864,24 @@ class Settings(BaseSettings):
 
     def validate_startup(self) -> None:
         """Validate required environment variables for startup safety."""
+        import logging
+        logger = logging.getLogger(__name__)
         backend = self.get_storage_backend()
 
         missing: list[str] = []
 
         if self.is_production:
+            if bool(self.dev_fallback_loop_only):
+                logger.critical(
+                    "DEV_FALLBACK_BLOCKER_DETECTED environment=%s is_production=%s dev_fallback_loop_only=%s",
+                    self.environment,
+                    self.is_production,
+                    self.dev_fallback_loop_only,
+                )
+                raise RuntimeError(
+                    "DEV_FALLBACK_LOOP_ONLY=true is forbidden in production. "
+                    "Set DEV_FALLBACK_LOOP_ONLY=false for both web and worker services."
+                )
             if not self.database_url or self.database_url == "sqlite:///./test.db":
                 missing.append("DATABASE_URL")
             if not self.redis_url:
