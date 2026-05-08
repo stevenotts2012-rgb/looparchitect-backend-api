@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.config import settings
 from app.models.loop import Loop
 from app.queue import is_redis_available
 from app.routes.render import RenderConfig
@@ -764,6 +765,19 @@ async def render_arrangement_async(
         loop_id,
         request.variation_count,
     )
+    logger.info(
+        "RUNTIME_CONFIG_SNAPSHOT scope=web loop_id=%s env=%s is_production=%s dev_fallback_loop_only=%s "
+        "producer_v2=%s arrangement_plan_v2=%s arrangement_memory_v2=%s transitions_v2=%s truth_obs_v2=%s",
+        loop_id,
+        getattr(settings, "environment", None),
+        settings.is_production,
+        settings.dev_fallback_loop_only,
+        settings.feature_producer_engine_v2,
+        settings.feature_arrangement_plan_v2,
+        settings.feature_arrangement_memory_v2,
+        settings.feature_arrangement_transitions_v2,
+        settings.feature_arrangement_truth_observability_v2,
+    )
 
     # Check Redis availability first
     if not is_redis_available():
@@ -908,6 +922,13 @@ async def render_arrangement_async(
                 deduplicated=was_deduplicated,
             )
         )
+    logger.info(
+        "BATCH_RENDER_JOBS_CREATED loop_id=%s requested_variation_count=%s created_jobs=%s job_ids=%s",
+        loop_id,
+        request.variation_count,
+        len(variation_jobs),
+        [j.job_id for j in variation_jobs],
+    )
 
     return AsyncRenderBatchResponse(
         loop_id=loop_id,
