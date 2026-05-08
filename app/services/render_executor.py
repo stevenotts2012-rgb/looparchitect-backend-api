@@ -543,6 +543,11 @@ def render_from_plan(
         fallback_bpm=float(render_plan.get("bpm") or 120.0),
     )
     logger.info(
+        "RENDER_PLAN_LOADED section_count=%d events=%d",
+        len(render_plan.get("sections") or []),
+        len(render_plan.get("events") or []),
+    )
+    logger.info(
         "PRODUCER_PLAN_CREATED sections=%d events=%d transitions=%d",
         len(producer_payload.get("sections") or []),
         len(render_plan.get("events") or []),
@@ -560,12 +565,24 @@ def render_from_plan(
 
     from app.services.arrangement_jobs import _render_producer_arrangement
 
+    logger.info("PRODUCER_RENDER_STARTED")
+    for _section in producer_payload.get("sections") or []:
+        logger.info("PRODUCER_SECTION_RENDER section=%s", _section.get("name") or _section.get("type"))
     output_audio, timeline_json = _render_producer_arrangement(
         loop_audio=audio_source,
         producer_arrangement=producer_payload,
         bpm=float(producer_payload.get("tempo", 120.0)),
         stems=stems,
         loop_variations=loop_variations,
+    )
+    try:
+        _tl = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
+    except Exception:
+        _tl = {}
+    logger.info(
+        "PRODUCER_RENDER_COMPLETED section_count=%d signature_count=%d",
+        len(_tl.get("sections") or []),
+        len(_tl.get("render_signatures") or []),
     )
     try:
         _tl = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
@@ -612,6 +629,15 @@ def render_from_plan(
         mastering_result=mastering_result,
         render_plan_sections=render_plan.get("sections") or [],
         render_plan=render_plan,
+    )
+    try:
+        _timeline_for_obs = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
+    except Exception:
+        _timeline_for_obs = {}
+    logger.info(
+        "OBSERVABILITY_BUILT section_count=%d signature_count=%d",
+        len(_timeline_for_obs.get("sections") or []),
+        len(render_observability.get("render_signatures") or []),
     )
     logger.info(
         "RENDER_SIGNATURE_CAPTURED count=%d unique=%d",
@@ -702,12 +728,22 @@ def _assert_dynamic_arrangement(
 
     render_spec = dict(timeline.get("render_spec_summary") or {})
     sections = list(timeline.get("sections") or [])
+    if not sections:
+        logger.error("PRODUCER_TIMELINE_EMPTY_BEFORE_VALIDATION render_path=%s", render_path_used)
+        raise RuntimeError("PRODUCER_TIMELINE_EMPTY_BEFORE_VALIDATION")
     energy_curve = list(render_spec.get("variation_energy_curve") or [])
     phrase_splits = int(render_spec.get("phrase_split_count") or 0)
     transition_overlap_count = int(render_spec.get("transition_overlap_rendered_count") or 0)
+    transition_event_count = int(render_spec.get("transition_event_count") or 0)
     hook_escalation_applied = bool(render_spec.get("hook_escalation_applied"))
     uniqueness_score = float(render_spec.get("variation_uniqueness_score") or 0.0)
     section_signatures = int(render_observability.get("unique_render_signature_count") or 0)
+    logger.info(
+        "DYNAMIC_VALIDATION_INPUT section_count=%d phrase_split_count=%d transition_count=%d",
+        len(sections),
+        phrase_splits,
+        transition_event_count,
+    )
 
     validations: list[tuple[str, bool, str]] = [
         ("energy_curve_non_flat", any(abs(float(v)) > 1e-6 for v in energy_curve), "flat_energy_curve"),
@@ -735,6 +771,7 @@ def _assert_dynamic_arrangement(
     logger.info("PHRASE_MUTATION_APPLIED phrase_split_count=%s", phrase_splits)
     logger.info("TRANSITION_AUDIO_RENDERED transition_overlap_rendered_count=%s", transition_overlap_count)
     logger.info("HOOK_ESCALATION_CONFIRMED hook_escalation_applied=%s", hook_escalation_applied)
+    logger.info("DYNAMIC_VALIDATION_PASSED")
 
 
 
