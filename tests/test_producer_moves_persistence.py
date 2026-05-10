@@ -709,3 +709,55 @@ class TestFallbackTransitionEventInjection:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestDspFrameAlignment:
+    def test_ensure_frame_aligned_trims_odd_lengths(self):
+        from app.services.arrangement_jobs import ensure_frame_aligned
+
+        fixed = ensure_frame_aligned(b"abcdefg", frame_width=4, context="unit_test")
+        assert fixed == b"abcd"
+
+    def test_producer_handlers_preserve_frame_alignment(self):
+        from pydub import AudioSegment
+        from app.services.arrangement_jobs import _apply_producer_move_effect
+
+        seg = AudioSegment.silent(duration=2000, frame_rate=44100).set_channels(2).set_sample_width(2)
+        handlers = [
+            "halftime_bar",
+            "octave_layer",
+            "transient_boost",
+            "rhythmic_gate",
+            "chop_stutter",
+            "dropout_bar",
+            "transition_reverb_tail",
+            "transition_delay_tail",
+        ]
+
+        for move_type in handlers:
+            out = _apply_producer_move_effect(
+                segment=seg,
+                move_type=move_type,
+                intensity=0.8,
+                stem_available=True,
+                bar_duration_ms=2000,
+                params={},
+            )
+            assert len(out.raw_data) % out.frame_width == 0, move_type
+
+    def test_no_frame_count_error_for_halftime_octave_transient(self):
+        from pydub import AudioSegment
+        from app.services.arrangement_jobs import _apply_producer_move_effect
+
+        seg = AudioSegment.silent(duration=2000, frame_rate=44100).set_channels(2).set_sample_width(2)
+        for move_type in ["halftime_bar", "octave_layer", "transient_boost"]:
+            out = _apply_producer_move_effect(
+                segment=seg,
+                move_type=move_type,
+                intensity=0.75,
+                stem_available=True,
+                bar_duration_ms=2000,
+                params={},
+            )
+            frame_count = len(out.raw_data) / out.frame_width
+            assert float(frame_count).is_integer(), move_type
