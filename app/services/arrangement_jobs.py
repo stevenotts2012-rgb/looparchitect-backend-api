@@ -1450,14 +1450,15 @@ def assert_audiosegment(value: object, context: str) -> AudioSegment:
     logger.error("DSP_GENERATOR_PIPELINE_ERROR context=%s return_type=%s", context, type(value).__name__)
     raise TypeError(f"DSP_GENERATOR_PIPELINE_ERROR:{context}:{type(value).__name__}")
 
-def ensure_valid_frame_alignment(raw_bytes: bytes, frame_width: int) -> bytes:
+def ensure_frame_aligned(raw_bytes: bytes, frame_width: int, context: str) -> bytes:
     frame_width = max(1, int(frame_width or 1))
     before = len(raw_bytes)
     remainder = before % frame_width
     if remainder:
         after = before - remainder
         logger.info(
-            "DSP_FRAME_ALIGNMENT_FIXED before=%d after=%d frame_width=%d",
+            "DSP_FRAME_ALIGNMENT_FIXED context=%s before=%d after=%d frame_width=%d",
+            context,
             before,
             after,
             frame_width,
@@ -1466,10 +1467,10 @@ def ensure_valid_frame_alignment(raw_bytes: bytes, frame_width: int) -> bytes:
     return raw_bytes
 
 
-def safe_spawn(segment: AudioSegment, raw_bytes: bytes, context: str, overrides: dict | None = None) -> AudioSegment:
-    aligned = ensure_valid_frame_alignment(raw_bytes, segment.frame_width)
+def spawn_aligned(segment: AudioSegment, raw_bytes: bytes, context: str, overrides: dict | None = None) -> AudioSegment:
+    aligned = ensure_frame_aligned(raw_bytes, segment.frame_width, context)
     logger.info(
-        "DSP_SAFE_SPAWN context=%s before=%s after=%s frame_width=%s",
+        "DSP_SPAWN_ALIGNED context=%s raw_len=%d aligned_len=%d frame_width=%d",
         context,
         len(raw_bytes),
         len(aligned),
@@ -1477,11 +1478,11 @@ def safe_spawn(segment: AudioSegment, raw_bytes: bytes, context: str, overrides:
     )
     return segment._spawn(aligned, overrides=overrides or {})
 
+
 def validate_frame_alignment(segment: AudioSegment, handler_name: str) -> AudioSegment:
     if len(segment.raw_data) % int(segment.frame_width) != 0:
         raise ValueError(f"Invalid frame alignment after DSP handler: {handler_name}")
     return segment
-
 
 def _apply_producer_move_effect(
     segment: AudioSegment,
@@ -1779,17 +1780,31 @@ def _apply_producer_move_effect(
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
         return validate_frame_alignment(result, move_type)
     if move_type == "octave_layer":
-        octave_up = safe_spawn(segment, segment.raw_data, "octave_layer", overrides={"frame_rate": int(segment.frame_rate * 2.0)}).set_frame_rate(segment.frame_rate) - (8 - 2 * intensity)
+        octave_up = spawn_aligned(segment, segment.raw_data, "octave_layer", overrides={"frame_rate": int(segment.frame_rate * 2.0)}).set_frame_rate(segment.frame_rate) - (8 - 2 * intensity)
         result = _apply_headroom_ceiling(segment.overlay(octave_up), -1.5)
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
         return validate_frame_alignment(result, move_type)
     if move_type == "silence_window":
         return _apply_producer_move_effect(segment, "silence_gap", intensity, stem_available, bar_duration_ms, params)
     if move_type == "halftime_bar":
-        halftime_rate = max(1000, int(segment.frame_rate // 2))
-        slowed = safe_spawn(segment, segment.raw_data, "halftime_bar", overrides={"frame_rate": halftime_rate})
-        result = slowed.set_frame_rate(segment.frame_rate)
-        result = assert_audiosegment((result + AudioSegment.silent(duration=max(0, len(segment) - len(result))))[: len(segment)], "halftime_bar")
+        # NOTE: segment[::2] can produce a generator-like object in some runtimes.
+        # Build explicit bytes with numpy to guarantee AudioSegment output.
+        sample_width = int(segment.sample_width)
+        if sample_width not in {1, 2, 4}:
+            return assert_audiosegment(segment, "halftime_bar_unsupported_sample_width")
+        dtype = {1: np.int8, 2: np.int16, 4: np.int32}[sample_width]
+        arr = np.frombuffer(segment.raw_data, dtype=dtype)
+        channels = max(1, int(segment.channels or 1))
+        frame_samples = int(segment.frame_width // sample_width) if sample_width > 0 else channels
+        frame_samples = max(channels, frame_samples)
+        usable_samples = (arr.size // frame_samples) * frame_samples
+        arr = arr[:usable_samples]
+        arr = arr.reshape((-1, frame_samples))
+        downsampled = arr[::2].copy()
+        halftime_raw = downsampled.copy().tobytes()
+        halftime = spawn_aligned(segment, halftime_raw, "halftime_bar", overrides={"frame_rate": max(1000, int(segment.frame_rate // 2))})
+        stretched = halftime.set_frame_rate(segment.frame_rate)
+        result = assert_audiosegment((stretched + AudioSegment.silent(duration=max(0, len(segment) - len(stretched))))[: len(segment)], "halftime_bar")
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
         return validate_frame_alignment(result, move_type)
     if move_type == "transition_reverb_tail":

@@ -713,9 +713,9 @@ if __name__ == "__main__":
 
 class TestDspFrameAlignment:
     def test_ensure_frame_aligned_trims_odd_lengths(self):
-        from app.services.arrangement_jobs import ensure_valid_frame_alignment
+        from app.services.arrangement_jobs import ensure_frame_aligned
 
-        fixed = ensure_valid_frame_alignment(b"abcdefg", frame_width=4)
+        fixed = ensure_frame_aligned(b"abcdefg", frame_width=4, context="unit_test")
         assert fixed == b"abcd"
 
     def test_producer_handlers_preserve_frame_alignment(self):
