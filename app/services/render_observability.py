@@ -68,7 +68,7 @@ def recompute_producer_metrics_from_execution_report(
             personality_values.add(personality)
 
         mutation_hit = bool(event_set & _PHRASE_MUTATION_EVENTS)
-        if mutation_hit or bool(sec.get("phrase_split_used")):
+        if mutation_hit or bool(sec.get("phrase_split_used")) or bool(sec.get("phrase_plan_used")):
             phrase_mutation_count += 1
             evidence_found["mutation"] = True
             logger.info("PHRASE_MUTATION_EVIDENCE_FOUND section_index=%d section_type=%s", idx, sec_type)
@@ -86,7 +86,7 @@ def recompute_producer_metrics_from_execution_report(
             if event_set & _HOOK_ESCALATION_EVENTS:
                 logger.info("HOOK_ESCALATION_EVIDENCE_FOUND section_index=%d events=%s", idx, sorted(event_set & _HOOK_ESCALATION_EVENTS))
 
-        roles = sorted(role_by_index.get(idx) or sec.get("actual_roles") or [])
+        roles = sorted(role_by_index.get(idx) or sec.get("actual_roles") or sec.get("runtime_active_stems") or sec.get("active_stem_roles") or [])
         role_sets.add(tuple(roles))
         stem_density = len(roles)
         event_intensity = len(event_set & (_PHRASE_MUTATION_EVENTS | _HOOK_ESCALATION_EVENTS | _TRANSITION_OVERLAP_EVENTS))
@@ -120,6 +120,11 @@ def recompute_producer_metrics_from_execution_report(
     }
     logger.info("METRIC_RECOMPUTE_APPLIED phrase_split_count=%d hook_escalation=%s overlap_count=%d uniqueness=%.3f final_score=%.3f", result["phrase_split_count"], result["hook_escalation_applied"], result["transition_overlap_rendered_count"], result["variation_uniqueness_score"], result["final_producer_score"])
     return result
+
+
+def _recompute_producer_metrics(timeline_sections: list[dict], render_signatures: list[str]) -> dict[str, Any]:
+    """Compatibility wrapper: delegates to recompute_producer_metrics_from_execution_report."""
+    return recompute_producer_metrics_from_execution_report(timeline_sections, [], render_signatures)
 
 # ---------------------------------------------------------------------------
 # Terminal state determination

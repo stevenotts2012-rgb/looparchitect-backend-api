@@ -572,6 +572,7 @@ class TestExtractObservabilityFromArrangement:
         assert obs["final_producer_score"] > 0.0
 
 
+
 class TestValidationUsesRecomputedMetrics:
     def test_validation_passes_with_applied_event_evidence(self):
         timeline = json.dumps({
@@ -600,6 +601,7 @@ class TestValidationUsesRecomputedMetrics:
             render_observability=render_observability,
             render_path_used="stem_render_executor",
         )
+
 
 
 # ---------------------------------------------------------------------------
