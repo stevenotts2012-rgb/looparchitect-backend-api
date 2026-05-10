@@ -5,6 +5,7 @@ Handles the async workflow of generating arrangements and updating database reco
 """
 
 import io
+import hashlib
 import json
 import logging
 import math
@@ -14,6 +15,7 @@ import time
 import uuid
 import subprocess
 import shutil
+from types import GeneratorType
 from datetime import datetime
 from pathlib import Path
 
@@ -1411,7 +1413,42 @@ _PRODUCER_MOVE_TYPES = {
     "widen_role",
     "delay_role",
     "reverb_tail",
+    # Producer-event aliases that must produce real DSP, not metadata-only moves.
+    "chop_stutter",
+    "rhythmic_gate",
+    "dropout_bar",
+    "stereo_widen",
+    "transient_boost",
+    "octave_layer",
+    "silence_window",
+    "halftime_bar",
+    "transition_reverb_tail",
+    "transition_delay_tail",
 }
+
+
+def _segment_evidence(segment: AudioSegment) -> dict[str, float | str]:
+    channels = segment.split_to_mono()
+    left_rms = float(channels[0].rms) if channels else 0.0
+    right_rms = float(channels[1].rms) if len(channels) > 1 else left_rms
+    stereo_width = abs(left_rms - right_rms) / max(1.0, (left_rms + right_rms) / 2.0)
+    return {
+        "rms": float(segment.rms or 0.0),
+        "dbfs": float(segment.dBFS if segment.rms else -120.0),
+        "stereo_width": stereo_width,
+        "hash": hashlib.sha1(segment.raw_data).hexdigest()[:16] if segment.raw_data else "",
+    }
+
+
+def assert_audiosegment(value: object, context: str) -> AudioSegment:
+    if isinstance(value, AudioSegment):
+        logger.info("DSP_HANDLER_RETURN_TYPE context=%s return_type=AudioSegment", context)
+        return value
+    if isinstance(value, GeneratorType):
+        logger.error("DSP_GENERATOR_PIPELINE_ERROR context=%s return_type=generator", context)
+        raise RuntimeError(f"DSP_GENERATOR_PIPELINE_ERROR:{context}")
+    logger.error("DSP_GENERATOR_PIPELINE_ERROR context=%s return_type=%s", context, type(value).__name__)
+    raise TypeError(f"DSP_GENERATOR_PIPELINE_ERROR:{context}:{type(value).__name__}")
 
 
 def _apply_producer_move_effect(
@@ -1423,6 +1460,7 @@ def _apply_producer_move_effect(
     params: dict | None = None,
 ) -> AudioSegment:
     """Apply audible producer move effects using stems when available, DSP fallback otherwise."""
+    logger.info("DSP_HANDLER_START move_type=%s intensity=%.3f", move_type, float(intensity or 0.0))
     intensity = max(0.1, min(1.0, float(intensity or 0.7)))
     params = params or {}
 
@@ -1681,6 +1719,46 @@ def _apply_producer_move_effect(
         response = segment[quarter * 2: quarter * 3] - 8
         tail = segment[quarter * 3:]
         return call + response + tail
+    if move_type == "chop_stutter":
+        return _apply_producer_move_effect(segment, "chop_role", intensity, stem_available, bar_duration_ms, params)
+    if move_type == "rhythmic_gate":
+        gate_ms = max(35, int(bar_duration_ms / (8 + int(8 * intensity))))
+        gated = AudioSegment.silent(duration=0)
+        for i in range(0, len(segment), gate_ms):
+            chunk = segment[i:i + gate_ms]
+            gated += chunk if (i // gate_ms) % 2 == 0 else (chunk - (10 + 6 * intensity))
+        return _apply_headroom_ceiling(gated, -1.5)
+    if move_type == "dropout_bar":
+        dropout_ms = int(min(len(segment), bar_duration_ms))
+        lead = segment[: max(0, len(segment) - dropout_ms)]
+        tail = (segment[-dropout_ms:] if dropout_ms < len(segment) else segment) - (18 + 4 * intensity)
+        return lead + tail.fade_in(max(5, min(20, dropout_ms // 20)))
+    if move_type == "stereo_widen":
+        return _apply_producer_move_effect(segment, "widen_role", intensity, stem_available, bar_duration_ms, params)
+    if move_type == "transient_boost":
+        trans = segment.high_pass_filter(2400) + (3 + 3 * intensity)
+        return _apply_headroom_ceiling(segment.overlay(trans, gain_during_overlay=-5), -1.5)
+    if move_type == "octave_layer":
+        octave_up = segment._spawn(segment.raw_data, overrides={"frame_rate": int(segment.frame_rate * 2.0)}).set_frame_rate(segment.frame_rate) - (8 - 2 * intensity)
+        return _apply_headroom_ceiling(segment.overlay(octave_up), -1.5)
+    if move_type == "silence_window":
+        return _apply_producer_move_effect(segment, "silence_gap", intensity, stem_available, bar_duration_ms, params)
+    if move_type == "halftime_bar":
+        # NOTE: segment[::2] can produce a generator-like object in some runtimes.
+        # Build explicit bytes with numpy to guarantee AudioSegment output.
+        sample_width = int(segment.sample_width)
+        if sample_width not in {1, 2, 4}:
+            return assert_audiosegment(segment, "halftime_bar_unsupported_sample_width")
+        dtype = {1: np.int8, 2: np.int16, 4: np.int32}[sample_width]
+        arr = np.frombuffer(segment.raw_data, dtype=dtype)
+        downsampled = arr[::2].copy()
+        halftime = segment._spawn(downsampled.tobytes(), overrides={"frame_rate": max(1000, int(segment.frame_rate // 2))})
+        stretched = halftime.set_frame_rate(segment.frame_rate)
+        return assert_audiosegment((stretched + AudioSegment.silent(duration=max(0, len(segment) - len(stretched))))[: len(segment)], "halftime_bar")
+    if move_type == "transition_reverb_tail":
+        return _apply_producer_move_effect(segment, "reverb_tail", intensity, stem_available, bar_duration_ms, params)
+    if move_type == "transition_delay_tail":
+        return _apply_producer_move_effect(segment, "delay_role", intensity, stem_available, bar_duration_ms, params)
 
     if move_type == "reverse_fx":
         # Reverse sweep on the tail: builds dramatic tension going into (or out of)
@@ -1868,7 +1946,9 @@ def _apply_producer_move_effect(
         result = segment.overlay(padded, gain_during_overlay=-3)
         return _apply_headroom_ceiling(result, -1.5)
 
-    return segment
+    result = assert_audiosegment(segment, f"{move_type}_default")
+    logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
+    return result
 
 
 def _build_section_audio_from_stems(
@@ -2796,6 +2876,7 @@ def _render_producer_arrangement(
                     variation_segment = variation_segment.reverse()
                 elif var_type in _PRODUCER_MOVE_TYPES:
                     var_params = variation.get("params") if isinstance(variation.get("params"), dict) else {}
+                    before = _segment_evidence(variation_segment)
                     variation_segment = _apply_producer_move_effect(
                         segment=variation_segment,
                         move_type=var_type,
@@ -2804,8 +2885,21 @@ def _render_producer_arrangement(
                         bar_duration_ms=bar_duration_ms,
                         params=var_params,
                     )
+                    variation_segment = assert_audiosegment(variation_segment, f"variation:{var_type}")
+                    after = _segment_evidence(variation_segment)
                     section_applied_events.append(var_type)
                     logger.info("RUNTIME_EVENT_APPLIED section=%s action=%s", section_name, var_type)
+                    logger.info("DSP_HANDLER_COMPLETE section=%s action=%s", section_name, var_type)
+                    logger.info(
+                        "DSP_EVENT_RENDERED section=%s action=%s rms_delta=%.2f width_delta=%.4f hash_changed=%s",
+                        section_name,
+                        var_type,
+                        float(after["rms"]) - float(before["rms"]),
+                        float(after["stereo_width"]) - float(before["stereo_width"]),
+                        before["hash"] != after["hash"],
+                    )
+                    if before["hash"] != after["hash"]:
+                        logger.info("REAL_AUDIO_TRANSFORMATION_APPLIED section=%s action=%s", section_name, var_type)
                 else:
                     # Never silently drop unknown producer actions. Apply a safe,
                     # audible approximation and persist why.

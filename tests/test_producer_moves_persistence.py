@@ -243,6 +243,45 @@ class TestApplyProducerMoveEffect:
         result = self._apply("reverb_tail")
         assert len(result) > 0
 
+    @pytest.mark.parametrize(
+        "move_type",
+        [
+            "chop_stutter",
+            "rhythmic_gate",
+            "dropout_bar",
+            "stereo_widen",
+            "transient_boost",
+            "octave_layer",
+            "silence_window",
+            "halftime_bar",
+            "reverse_fx",
+            "transition_reverb_tail",
+            "transition_delay_tail",
+        ],
+    )
+    def test_producer_events_apply_real_audio_change(self, move_type):
+        from pydub.generators import Sine
+        from pydub import AudioSegment
+        import hashlib
+
+        source = Sine(220).to_audio_segment(duration=2000).set_channels(2)
+        before_hash = hashlib.sha1(source.raw_data).hexdigest()
+        result = self._apply(move_type=move_type, params={})
+        # re-run on non-silent source so waveform mutation is measurable
+        from app.services.arrangement_jobs import _apply_producer_move_effect
+        result = _apply_producer_move_effect(
+            segment=source,
+            move_type=move_type,
+            intensity=0.8,
+            stem_available=True,
+            bar_duration_ms=self.bar_ms,
+            params={},
+        )
+        after_hash = hashlib.sha1(result.raw_data).hexdigest()
+        assert isinstance(result, AudioSegment)
+        assert len(result) == len(source)
+        assert after_hash != before_hash, f"{move_type} should mutate waveform bytes"
+
     def test_all_supported_actions_handled(self):
         """No SUPPORTED_RENDER_ACTION returns unchanged silent audio for all tests."""
         from app.services.generative_producer_system.types import SUPPORTED_RENDER_ACTIONS
