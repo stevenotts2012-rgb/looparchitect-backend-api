@@ -32,6 +32,7 @@ from app.services.render_observability import (
 from app.services.render_executor import (
     _build_render_observability,
     _derive_source_quality_mode,
+    _assert_dynamic_arrangement,
 )
 
 
@@ -569,6 +570,38 @@ class TestExtractObservabilityFromArrangement:
         assert len(obs["variation_energy_curve"]) > 0
         assert obs["variation_uniqueness_score"] > 0.0
         assert obs["final_producer_score"] > 0.0
+
+
+
+class TestValidationUsesRecomputedMetrics:
+    def test_validation_passes_with_applied_event_evidence(self):
+        timeline = json.dumps({
+            "sections": [
+                {"type": "hook", "applied_events": ["final_hook_expansion", "chop_stutter", "crossfade"]},
+                {"type": "verse", "applied_events": []},
+            ],
+            "render_spec_summary": {
+                "phrase_split_count": 0,
+                "transition_overlap_rendered_count": 0,
+                "hook_escalation_applied": False,
+                "variation_uniqueness_score": 0.0,
+                "variation_energy_curve": [],
+            },
+        })
+        render_observability = {
+            "phrase_split_count": 1,
+            "transition_overlap_rendered_count": 1,
+            "hook_escalation_applied": True,
+            "variation_uniqueness_score": 0.8,
+            "variation_energy_curve": [0.1, 0.9],
+            "unique_render_signature_count": 2,
+        }
+        _assert_dynamic_arrangement(
+            timeline_json=timeline,
+            render_observability=render_observability,
+            render_path_used="stem_render_executor",
+        )
+
 
 
 # ---------------------------------------------------------------------------

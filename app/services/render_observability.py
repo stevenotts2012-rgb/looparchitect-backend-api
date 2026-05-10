@@ -36,7 +36,16 @@ _TRANSITION_OVERLAP_EVENTS = {
 }
 
 
-def _recompute_producer_metrics(timeline_sections: list[dict], render_signatures: list[str]) -> dict[str, Any]:
+def recompute_producer_metrics_from_execution_report(
+    section_execution_report: list[dict],
+    actual_stem_map_by_section: list[dict],
+    render_signatures: list[str],
+) -> dict[str, Any]:
+    logger.info("METRIC_RECOMPUTE_STARTED sections=%d", len(section_execution_report or []))
+    role_by_index = {
+        int(sec.get("section_index", idx)): list(sec.get("roles") or [])
+        for idx, sec in enumerate(actual_stem_map_by_section or [])
+    }
     phrase_mutation_count = 0
     transition_overlap_count = 0
     hook_stages: list[str] = []
@@ -47,8 +56,9 @@ def _recompute_producer_metrics(timeline_sections: list[dict], render_signatures
     all_event_types: set[str] = set()
     personality_values: set[str] = set()
 
-    for idx, sec in enumerate(timeline_sections):
-        sec_type = str(sec.get("type") or "unknown")
+    evidence_found = {"mutation": False, "hook": False, "overlap": False}
+    for idx, sec in enumerate(section_execution_report or []):
+        sec_type = str(sec.get("section_type") or sec.get("type") or "unknown")
         section_types.append(sec_type)
         events = [str(e).strip().lower() for e in (sec.get("applied_events") or [])]
         event_set = set(events)
@@ -58,42 +68,46 @@ def _recompute_producer_metrics(timeline_sections: list[dict], render_signatures
             personality_values.add(personality)
 
         mutation_hit = bool(event_set & _PHRASE_MUTATION_EVENTS)
-        if mutation_hit or bool(sec.get("phrase_plan_used")):
+        if mutation_hit or bool(sec.get("phrase_split_used")) or bool(sec.get("phrase_plan_used")):
             phrase_mutation_count += 1
+            evidence_found["mutation"] = True
             logger.info("PHRASE_MUTATION_EVIDENCE_FOUND section_index=%d section_type=%s", idx, sec_type)
 
         overlap_hit = event_set & _TRANSITION_OVERLAP_EVENTS
         if overlap_hit:
             transition_overlap_count += len(overlap_hit)
             transition_styles.extend(sorted(overlap_hit))
+            evidence_found["overlap"] = True
             logger.info("TRANSITION_OVERLAP_EVIDENCE_FOUND section_index=%d events=%s", idx, sorted(overlap_hit))
 
         if sec_type in {"hook", "hook_2", "final_hook"} or (event_set & _HOOK_ESCALATION_EVENTS):
             hook_stages.append(sec_type)
+            evidence_found["hook"] = True
             if event_set & _HOOK_ESCALATION_EVENTS:
                 logger.info("HOOK_ESCALATION_EVIDENCE_FOUND section_index=%d events=%s", idx, sorted(event_set & _HOOK_ESCALATION_EVENTS))
 
-        roles = sorted(sec.get("runtime_active_stems") or sec.get("active_stem_roles") or [])
+        roles = sorted(role_by_index.get(idx) or sec.get("actual_roles") or sec.get("runtime_active_stems") or sec.get("active_stem_roles") or [])
         role_sets.add(tuple(roles))
         stem_density = len(roles)
         event_intensity = len(event_set & (_PHRASE_MUTATION_EVENTS | _HOOK_ESCALATION_EVENTS | _TRANSITION_OVERLAP_EVENTS))
         section_boost = 0.35 if sec_type.startswith("hook") else (0.2 if sec_type == "bridge" else 0.1)
         energy_curve.append(round(stem_density + (event_intensity * 0.4) + section_boost, 3))
 
-    logger.info("OBSERVABILITY_EVENT_EVIDENCE_EXTRACTED sections=%d events=%d", len(timeline_sections), len(all_event_types))
+    logger.info("OBSERVABILITY_EVENT_EVIDENCE_EXTRACTED sections=%d events=%d", len(section_execution_report or []), len(all_event_types))
+    logger.info("METRIC_RECOMPUTE_EVIDENCE_FOUND mutation=%s hook=%s overlap=%s", evidence_found["mutation"], evidence_found["hook"], evidence_found["overlap"])
     logger.info("ENERGY_CURVE_RECOMPUTED values=%s", energy_curve)
 
     uniq_signatures = len(set(render_signatures))
-    role_change_ratio = len(role_sets) / max(1, len(timeline_sections))
+    role_change_ratio = len(role_sets) / max(1, len(section_execution_report or []))
     transition_diversity = len(set(transition_styles)) / 7.0
-    uniqueness_score = round(min(1.0, (uniq_signatures / max(1, len(timeline_sections))) * 0.4 + min(1.0, len(all_event_types) / 10.0) * 0.25 + role_change_ratio * 0.15 + min(1.0, len(personality_values) / 3.0) * 0.1 + min(1.0, transition_diversity) * 0.1), 3)
+    uniqueness_score = round(min(1.0, (uniq_signatures / max(1, len(section_execution_report or []))) * 0.4 + min(1.0, len(all_event_types) / 10.0) * 0.25 + role_change_ratio * 0.15 + min(1.0, len(personality_values) / 3.0) * 0.1 + min(1.0, transition_diversity) * 0.1), 3)
     logger.info("VARIATION_UNIQUENESS_RECOMPUTED score=%.3f", uniqueness_score)
 
     energy_span = (max(energy_curve) - min(energy_curve)) if energy_curve else 0.0
     bridge_contrast = 1.0 if ("bridge" in section_types and any(s.startswith("hook") for s in section_types)) else 0.0
-    final_score = round(min(1.0, min(1.0, phrase_mutation_count / max(1, len(timeline_sections))) * 0.2 + (0.2 if hook_stages else 0.0) + (0.15 if transition_overlap_count > 0 else 0.0) + min(1.0, energy_span / 3.0) * 0.2 + uniqueness_score * 0.2 + bridge_contrast * 0.05), 3)
+    final_score = round(min(1.0, min(1.0, phrase_mutation_count / max(1, len(section_execution_report or []))) * 0.2 + (0.2 if hook_stages else 0.0) + (0.15 if transition_overlap_count > 0 else 0.0) + min(1.0, energy_span / 3.0) * 0.2 + uniqueness_score * 0.2 + bridge_contrast * 0.05), 3)
     logger.info("FINAL_PRODUCER_SCORE_RECOMPUTED score=%.3f", final_score)
-    return {
+    result = {
         "phrase_split_count": phrase_mutation_count,
         "hook_stages_rendered": sorted(set(hook_stages)),
         "transition_overlap_rendered": transition_overlap_count > 0,
@@ -104,6 +118,13 @@ def _recompute_producer_metrics(timeline_sections: list[dict], render_signatures
         "final_producer_score": final_score,
         "variation_transition_style": sorted(set(transition_styles)),
     }
+    logger.info("METRIC_RECOMPUTE_APPLIED phrase_split_count=%d hook_escalation=%s overlap_count=%d uniqueness=%.3f final_score=%.3f", result["phrase_split_count"], result["hook_escalation_applied"], result["transition_overlap_rendered_count"], result["variation_uniqueness_score"], result["final_producer_score"])
+    return result
+
+
+def _recompute_producer_metrics(timeline_sections: list[dict], render_signatures: list[str]) -> dict[str, Any]:
+    """Compatibility wrapper: delegates to recompute_producer_metrics_from_execution_report."""
+    return recompute_producer_metrics_from_execution_report(timeline_sections, [], render_signatures)
 
 # ---------------------------------------------------------------------------
 # Terminal state determination
@@ -328,7 +349,7 @@ def extract_observability_from_arrangement(arrangement_row: Any) -> dict[str, An
 
     unique_render_signature_count = len(set(render_signatures))
 
-    recomputed = _recompute_producer_metrics(timeline_sections, render_signatures)
+    recomputed = recompute_producer_metrics_from_execution_report(section_execution_report, actual_stem_map, render_signatures)
     return {
         "fallback_triggered_count": fallback_triggered_count,
         "fallback_sections_count": fallback_triggered_count,
