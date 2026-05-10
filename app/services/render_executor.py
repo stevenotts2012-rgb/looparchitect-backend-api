@@ -638,6 +638,7 @@ def render_from_plan(
         render_plan_sections=render_plan.get("sections") or [],
         render_plan=render_plan,
     )
+    logger.info("METRIC_RECOMPUTE_BEFORE_VALIDATION")
     from app.services.render_observability import recompute_producer_metrics_from_execution_report
     recomputed_metrics = recompute_producer_metrics_from_execution_report(
         render_observability.get("section_execution_report") or [],
@@ -645,6 +646,14 @@ def render_from_plan(
         render_observability.get("render_signatures") or [],
     )
     render_observability.update(recomputed_metrics)
+    try:
+        _timeline_for_merge = json.loads(timeline_json) if isinstance(timeline_json, str) else dict(timeline_json or {})
+    except Exception:
+        _timeline_for_merge = {}
+    _render_spec_summary = dict(_timeline_for_merge.get("render_spec_summary") or {})
+    _render_spec_summary.update(recomputed_metrics)
+    _timeline_for_merge["render_spec_summary"] = _render_spec_summary
+    timeline_json = json.dumps(_timeline_for_merge)
     _assert_metric_recompute_pipeline(render_observability)
     try:
         _timeline_for_obs = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
@@ -669,11 +678,13 @@ def render_from_plan(
         timeline_json=timeline_json,
         render_observability=render_observability,
     )
+    logger.info("VALIDATION_AFTER_METRIC_RECOMPUTE")
     _assert_dynamic_arrangement(
         timeline_json=timeline_json,
         render_observability=render_observability,
         render_path_used=render_path_used,
     )
+    logger.info("METRIC_RECOMPUTE_ORDER_FIXED")
 
     logger.info(
         "RENDER_OBSERVABILITY render_path=%s source_quality=%s fallbacks=%d "
@@ -841,6 +852,21 @@ def _assert_metric_recompute_pipeline(render_observability: dict[str, Any]) -> N
     if broken:
         logger.error("METRIC_RECOMPUTE_PIPELINE_BROKEN")
         raise RuntimeError("METRIC_RECOMPUTE_PIPELINE_BROKEN")
+    strict_events = {
+        "final_hook_expansion", "stereo_widen", "hook_drum_density",
+        "chop_stutter", "call_response_variation", "reverse_slice",
+        "crossfade", "reverse_fx", "transition_delay_tail",
+    }
+    if all_events & strict_events:
+        strict_broken = (
+            int(render_observability.get("phrase_split_count") or 0) <= 0
+            or not bool(render_observability.get("hook_escalation_applied"))
+            or not bool(render_observability.get("transition_overlap_rendered"))
+            or int(render_observability.get("transition_overlap_rendered_count") or 0) <= 0
+        )
+        if strict_broken:
+            logger.error("METRIC_RECOMPUTE_ORDER_BROKEN")
+            raise RuntimeError("METRIC_RECOMPUTE_ORDER_BROKEN")
 
 
 def _normalize_event_bar(
