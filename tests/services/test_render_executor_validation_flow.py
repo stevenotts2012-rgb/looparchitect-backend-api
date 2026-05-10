@@ -159,3 +159,87 @@ def test_dynamic_validation_failure_exposes_metadata():
     except render_executor.DynamicArrangementValidationError as exc:
         assert exc.render_metadata["render_observability"]["planned_stem_map_by_section"]
         assert exc.render_metadata["render_spec_summary"]["variation_energy_curve"] == [0.4, 0.4]
+
+
+def test_validation_uses_recomputed_metrics_before_validation(monkeypatch, tmp_path):
+    call_order = []
+    observed = {}
+
+    def _stub_render(*args, **kwargs):
+        timeline = json.dumps(
+            {
+                "sections": [{"name": "hook", "type": "hook", "applied_events": ["final_hook_expansion", "crossfade", "chop_stutter"]}],
+                "events": [],
+                "render_spec_summary": {
+                    "phrase_split_count": 0,
+                    "transition_overlap_rendered": False,
+                    "transition_overlap_rendered_count": 0,
+                    "hook_escalation_applied": False,
+                },
+            }
+        )
+        return AudioSegment.silent(duration=50), timeline
+
+    def _stub_mastering(audio, genre=None):
+        return _MasteringResult(audio)
+
+    def _stub_observability(**kwargs):
+        return {
+            "section_execution_report": [
+                {
+                    "section_index": 0,
+                    "section_type": "hook",
+                    "applied_events": ["final_hook_expansion", "crossfade", "chop_stutter"],
+                }
+            ],
+            "actual_stem_map_by_section": [{"section_index": 0, "roles": ["drums", "bass"]}],
+            "render_signatures": ["sig-a"],
+            "unique_render_signature_count": 1,
+            "planned_stem_map_by_section": [{"section_index": 0}],
+            "render_path_used": kwargs["render_path_used"],
+            "source_quality_mode_used": kwargs["source_quality_mode_used"],
+            "fallback_triggered_count": 0,
+            "mastering_applied": False,
+        }
+
+    def _capture_runtime(**kwargs):
+        call_order.append("runtime")
+        timeline = json.loads(kwargs["timeline_json"])
+        render_spec = timeline.get("render_spec_summary") or {}
+        assert render_spec.get("hook_escalation_applied") is True
+        assert int(render_spec.get("phrase_split_count") or 0) > 0
+        assert bool(render_spec.get("transition_overlap_rendered")) is True
+        observed["runtime_observability"] = dict(kwargs["render_observability"])
+
+    def _capture_dynamic(**kwargs):
+        call_order.append("dynamic")
+        timeline = json.loads(kwargs["timeline_json"])
+        render_spec = timeline.get("render_spec_summary") or {}
+        assert render_spec.get("hook_escalation_applied") is True
+        assert int(render_spec.get("phrase_split_count") or 0) > 0
+        assert bool(render_spec.get("transition_overlap_rendered")) is True
+        observed["dynamic_observability"] = dict(kwargs["render_observability"])
+
+    monkeypatch.setattr("app.services.arrangement_jobs._render_producer_arrangement", _stub_render)
+    monkeypatch.setattr(render_executor, "apply_mastering", _stub_mastering)
+    monkeypatch.setattr(render_executor, "_build_render_observability", _stub_observability)
+    monkeypatch.setattr(render_executor, "_assert_producer_runtime_not_noop", _capture_runtime)
+    monkeypatch.setattr(render_executor, "_assert_dynamic_arrangement", _capture_dynamic)
+
+    render_executor.render_from_plan(
+        render_plan_json={
+            "bpm": 120,
+            "key": "C",
+            "sections": [{"name": "hook", "type": "hook", "bars": 4}],
+            "events": [],
+            "render_profile": {},
+        },
+        audio_source=AudioSegment.silent(duration=100),
+        output_path=tmp_path / "out.wav",
+        stems=None,
+    )
+
+    assert call_order == ["runtime", "dynamic"]
+    assert observed["runtime_observability"]["hook_escalation_applied"] is True
+    assert int(observed["runtime_observability"]["phrase_split_count"]) > 0
+    assert bool(observed["runtime_observability"]["transition_overlap_rendered"]) is True
