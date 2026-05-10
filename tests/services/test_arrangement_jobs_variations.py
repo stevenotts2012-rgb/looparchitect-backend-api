@@ -1317,3 +1317,20 @@ def test_attach_loops_to_sections_validates_render_plan_quality() -> None:
 
     # Should not raise
     validate_variation_plan_usage(render_plan)
+
+
+def test_section_length_discipline_caps_long_sections() -> None:
+    from app.services.arrangement_jobs import _enforce_section_length_discipline
+
+    assert _enforce_section_length_discipline("verse", 25) == 16
+    assert _enforce_section_length_discipline("hook", 22) == 16
+    assert _enforce_section_length_discipline("bridge", 12) == 8
+
+
+def test_transition_event_trim_respects_boundary_limits() -> None:
+    from app.services.arrangement_jobs import _trim_transition_events
+
+    events = [object(), object(), object(), object()]
+    assert len(_trim_transition_events("intro", "verse", events)) == 2
+    assert len(_trim_transition_events("verse", "hook", events)) == 3
+    assert len(_trim_transition_events("bridge", "hook", events)) == 3
