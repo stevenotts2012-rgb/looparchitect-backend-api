@@ -638,6 +638,14 @@ def render_from_plan(
         render_plan_sections=render_plan.get("sections") or [],
         render_plan=render_plan,
     )
+    from app.services.render_observability import recompute_producer_metrics_from_execution_report
+    recomputed_metrics = recompute_producer_metrics_from_execution_report(
+        render_observability.get("section_execution_report") or [],
+        render_observability.get("actual_stem_map_by_section") or [],
+        render_observability.get("render_signatures") or [],
+    )
+    render_observability.update(recomputed_metrics)
+    _assert_metric_recompute_pipeline(render_observability)
     try:
         _timeline_for_obs = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
     except Exception:
@@ -744,12 +752,12 @@ def _assert_dynamic_arrangement(
     if not sections:
         logger.error("PRODUCER_TIMELINE_EMPTY_BEFORE_VALIDATION render_path=%s", render_path_used)
         raise RuntimeError("PRODUCER_TIMELINE_EMPTY_BEFORE_VALIDATION")
-    energy_curve = list(render_spec.get("variation_energy_curve") or [])
-    phrase_splits = int(render_spec.get("phrase_split_count") or 0)
-    transition_overlap_count = int(render_spec.get("transition_overlap_rendered_count") or 0)
+    energy_curve = list(render_spec.get("variation_energy_curve") or render_observability.get("variation_energy_curve") or [])
+    phrase_splits = int(render_spec.get("phrase_split_count") or render_observability.get("phrase_split_count") or 0)
+    transition_overlap_count = int(render_spec.get("transition_overlap_rendered_count") or render_observability.get("transition_overlap_rendered_count") or 0)
     transition_event_count = int(render_spec.get("transition_event_count") or 0)
-    hook_escalation_applied = bool(render_spec.get("hook_escalation_applied"))
-    uniqueness_score = float(render_spec.get("variation_uniqueness_score") or 0.0)
+    hook_escalation_applied = bool(render_spec.get("hook_escalation_applied") or render_observability.get("hook_escalation_applied"))
+    uniqueness_score = float(render_spec.get("variation_uniqueness_score") or render_observability.get("variation_uniqueness_score") or 0.0)
     section_signatures = int(render_observability.get("unique_render_signature_count") or 0)
     logger.info(
         "DYNAMIC_VALIDATION_INPUT section_count=%d phrase_split_count=%d transition_overlap_count=%d transition_event_count=%d",
@@ -817,6 +825,22 @@ def _assert_dynamic_arrangement(
 def _events_overlap_section(event_start: int, event_end: int, section_start: int, section_end: int) -> bool:
     """Return True when an event bar range overlaps a section bar range."""
     return event_start < section_end and event_end > section_start
+
+
+def _assert_metric_recompute_pipeline(render_observability: dict[str, Any]) -> None:
+    report = list(render_observability.get("section_execution_report") or [])
+    all_events = {str(e).strip().lower() for row in report for e in (row.get("applied_events") or [])}
+    has_mutation = bool(all_events & {"call_response_variation", "chop_stutter", "reverse_slice", "rhythmic_gate", "dropout_bar", "chop", "chop_role"})
+    has_hook = bool(all_events & {"final_hook_expansion", "stereo_widen", "transient_boost", "octave_layer", "hook_drum_density", "re_entry_accent", "add_impact", "widen_role"})
+    has_overlap = bool(all_events & {"crossfade", "reverse_fx", "transition_delay_tail", "transition_riser_overlap", "transition_reverb_tail", "reverb_tail", "delay_role"})
+    broken = (
+        (has_mutation and int(render_observability.get("phrase_split_count") or 0) <= 0)
+        or (has_hook and not bool(render_observability.get("hook_escalation_applied")))
+        or (has_overlap and (not bool(render_observability.get("transition_overlap_rendered")) or int(render_observability.get("transition_overlap_rendered_count") or 0) <= 0))
+    )
+    if broken:
+        logger.error("METRIC_RECOMPUTE_PIPELINE_BROKEN")
+        raise RuntimeError("METRIC_RECOMPUTE_PIPELINE_BROKEN")
 
 
 def _normalize_event_bar(
@@ -1425,3 +1449,4 @@ def _build_render_observability(
         "actual_transition_events_used": actual_transition_events_used,
         "plan_vs_actual_transition_match": plan_vs_actual_transition_match,
     }
+    logger.info("VALIDATION_USING_RECOMPUTED_METRICS")
