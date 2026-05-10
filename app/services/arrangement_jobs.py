@@ -1450,7 +1450,6 @@ def assert_audiosegment(value: object, context: str) -> AudioSegment:
     logger.error("DSP_GENERATOR_PIPELINE_ERROR context=%s return_type=%s", context, type(value).__name__)
     raise TypeError(f"DSP_GENERATOR_PIPELINE_ERROR:{context}:{type(value).__name__}")
 
-
 def _apply_producer_move_effect(
     segment: AudioSegment,
     move_type: str,
