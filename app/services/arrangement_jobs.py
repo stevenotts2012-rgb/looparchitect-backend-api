@@ -820,6 +820,36 @@ def _repeat_to_duration(audio: AudioSegment, target_ms: int) -> AudioSegment:
     return (audio * repeats)[:target_ms]
 
 
+
+
+def _enforce_section_length_discipline(section_type: str, bars: int) -> int:
+    """Clamp section bars to producer-like phrase-aligned lengths."""
+    st = _normalize_section_type(section_type)
+    allowed = {"intro": (4, 8), "verse": (8, 16), "pre_hook": (4, 8), "hook": (8, 16), "bridge": (4, 8), "breakdown": (4, 8), "outro": (4, 8)}
+    if st not in allowed:
+        return max(4, min(16, int(bars or 8)))
+    lo, hi = allowed[st]
+    b = max(lo, min(hi, int(bars or lo)))
+    # snap to phrase size
+    if b not in (4, 8, 16):
+        b = 16 if b > 12 and hi >= 16 else 8 if b > 6 else 4
+    return b
+
+
+def _trim_transition_events(section_type: str, next_section_type: str | None, events: list) -> list:
+    if not events:
+        return events
+    st = _normalize_section_type(section_type)
+    nt = _normalize_section_type(next_section_type or "") if next_section_type else ""
+    limit = 2
+    if st == "verse" and nt == "hook":
+        limit = 3
+    elif st in {"bridge", "breakdown"} and nt in {"hook", "outro"}:
+        limit = 3
+    elif st in {"intro", "hook"}:
+        limit = 2
+    return events[:limit]
+
 def _apply_stem_primary_section_states(
     sections: list[dict],
     stem_metadata: dict | None,
@@ -877,6 +907,7 @@ def _apply_stem_primary_section_states(
 
         for section_idx, section in enumerate(sections):
             section_type = _normalize_section_type(section.get("type") or "verse")
+            section["bars"] = _enforce_section_length_discipline(section_type, int(section.get("bars", 8) or 8))
             occurrence_counter[section_type] = occurrence_counter.get(section_type, 0) + 1
             occurrence = occurrence_counter[section_type]
 
@@ -992,6 +1023,7 @@ def _apply_stem_primary_section_states(
                     is_repeat=next_is_repeat,
                     available_roles=available_roles,
                 )
+                transition_events = _trim_transition_events(section_type, next_section_type, transition_events)
                 for te in transition_events:
                     if te.placement == "end_of_section":
                         # Register only in boundary_events — NOT in baseline_variations.
@@ -1036,13 +1068,29 @@ def _apply_stem_primary_section_states(
                 })
 
             if section_type in {"bridge", "breakdown"}:
-                baseline_variations.append({
-                    "variation_type": "bridge_strip",
-                    "bar_start": bar_start,
-                    "duration_bars": max(1, section_bars),
-                    "intensity": 0.82,
-                    "params": {"strip": ["drums", "bass"]},
-                })
+                baseline_variations.extend([
+                    {
+                        "variation_type": "bridge_strip",
+                        "bar_start": bar_start,
+                        "duration_bars": max(1, section_bars),
+                        "intensity": 0.82,
+                        "params": {"strip": ["drums", "bass"]},
+                    },
+                    {
+                        "variation_type": "filtered_phrase",
+                        "bar_start": bar_start,
+                        "duration_bars": max(1, section_bars // 2),
+                        "intensity": 0.7,
+                        "params": {"filter": "bandpass"},
+                    },
+                    {
+                        "variation_type": "drum_dropout",
+                        "bar_start": bar_start + max(0, section_bars // 2 - 1),
+                        "duration_bars": 1,
+                        "intensity": 0.85,
+                        "params": {"silence": True},
+                    },
+                ])
 
             if section_type == "outro":
                 baseline_variations.append({
@@ -1065,11 +1113,17 @@ def _apply_stem_primary_section_states(
                     stage = "hook2"
                 elif hook_count >= 3:
                     stage = "hook3"
+                payoff_moves = ["new_rhythmic_density", "bass_aggression_change", "counter_layer", "widened_pad", "downbeat_impact", "mid_hook_variation", "lead_in_2bar"]
                 section["hook_evolution"] = {
                     "stage": stage,
                     "density": 0.75 + min(0.2, (hook_count - 1) * 0.1),
                     "stereo_width": 1.0 + min(0.16, (hook_count - 1) * 0.08),
+                    "payoff_moves": payoff_moves[:3 if hook_count > 1 else 2],
                 }
+                baseline_variations.extend([
+                    {"variation_type": "hat_density_variation", "bar_start": bar_start, "duration_bars": max(1, section_bars // 2), "intensity": 0.78, "params": {"mode": "dense"}},
+                    {"variation_type": "call_response_variation", "bar_start": bar_start + max(1, section_bars // 2), "duration_bars": max(1, section_bars // 2), "intensity": 0.72, "params": {"split": "half_hook"}},
+                ])
 
             prev_same_type_roles[section_type] = active_roles
             prev_adjacent_roles = active_roles
