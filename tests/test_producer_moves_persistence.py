@@ -261,6 +261,7 @@ class TestApplyProducerMoveEffect:
     )
     def test_producer_events_apply_real_audio_change(self, move_type):
         from pydub.generators import Sine
+        from pydub import AudioSegment
         import hashlib
 
         source = Sine(220).to_audio_segment(duration=2000).set_channels(2)
@@ -277,6 +278,7 @@ class TestApplyProducerMoveEffect:
             params={},
         )
         after_hash = hashlib.sha1(result.raw_data).hexdigest()
+        assert isinstance(result, AudioSegment)
         assert len(result) == len(source)
         assert after_hash != before_hash, f"{move_type} should mutate waveform bytes"
 

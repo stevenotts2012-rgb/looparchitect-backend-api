@@ -15,6 +15,7 @@ import time
 import uuid
 import subprocess
 import shutil
+from types import GeneratorType
 from datetime import datetime
 from pathlib import Path
 
@@ -1439,6 +1440,16 @@ def _segment_evidence(segment: AudioSegment) -> dict[str, float | str]:
     }
 
 
+def assert_audiosegment(value: object, context: str) -> AudioSegment:
+    if isinstance(value, AudioSegment):
+        logger.info("DSP_HANDLER_RETURN_TYPE context=%s return_type=AudioSegment", context)
+        return value
+    if isinstance(value, GeneratorType):
+        logger.error("DSP_GENERATOR_PIPELINE_ERROR context=%s return_type=generator", context)
+        raise RuntimeError(f"DSP_GENERATOR_PIPELINE_ERROR:{context}")
+    logger.error("DSP_GENERATOR_PIPELINE_ERROR context=%s return_type=%s", context, type(value).__name__)
+    raise TypeError(f"DSP_GENERATOR_PIPELINE_ERROR:{context}:{type(value).__name__}")
+
 def _apply_producer_move_effect(
     segment: AudioSegment,
     move_type: str,
@@ -1448,6 +1459,7 @@ def _apply_producer_move_effect(
     params: dict | None = None,
 ) -> AudioSegment:
     """Apply audible producer move effects using stems when available, DSP fallback otherwise."""
+    logger.info("DSP_HANDLER_START move_type=%s intensity=%.3f", move_type, float(intensity or 0.0))
     intensity = max(0.1, min(1.0, float(intensity or 0.7)))
     params = params or {}
 
@@ -1731,9 +1743,17 @@ def _apply_producer_move_effect(
     if move_type == "silence_window":
         return _apply_producer_move_effect(segment, "silence_gap", intensity, stem_available, bar_duration_ms, params)
     if move_type == "halftime_bar":
-        half = segment[::2]
-        stretched = half._spawn(half.raw_data, overrides={"frame_rate": max(1000, half.frame_rate // 2)}).set_frame_rate(segment.frame_rate)
-        return (stretched + AudioSegment.silent(duration=max(0, len(segment) - len(stretched))))[: len(segment)]
+        # NOTE: segment[::2] can produce a generator-like object in some runtimes.
+        # Build explicit bytes with numpy to guarantee AudioSegment output.
+        sample_width = int(segment.sample_width)
+        if sample_width not in {1, 2, 4}:
+            return assert_audiosegment(segment, "halftime_bar_unsupported_sample_width")
+        dtype = {1: np.int8, 2: np.int16, 4: np.int32}[sample_width]
+        arr = np.frombuffer(segment.raw_data, dtype=dtype)
+        downsampled = arr[::2].copy()
+        halftime = segment._spawn(downsampled.tobytes(), overrides={"frame_rate": max(1000, int(segment.frame_rate // 2))})
+        stretched = halftime.set_frame_rate(segment.frame_rate)
+        return assert_audiosegment((stretched + AudioSegment.silent(duration=max(0, len(segment) - len(stretched))))[: len(segment)], "halftime_bar")
     if move_type == "transition_reverb_tail":
         return _apply_producer_move_effect(segment, "reverb_tail", intensity, stem_available, bar_duration_ms, params)
     if move_type == "transition_delay_tail":
@@ -1925,7 +1945,9 @@ def _apply_producer_move_effect(
         result = segment.overlay(padded, gain_during_overlay=-3)
         return _apply_headroom_ceiling(result, -1.5)
 
-    return segment
+    result = assert_audiosegment(segment, f"{move_type}_default")
+    logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
+    return result
 
 
 def _build_section_audio_from_stems(
@@ -2862,9 +2884,11 @@ def _render_producer_arrangement(
                         bar_duration_ms=bar_duration_ms,
                         params=var_params,
                     )
+                    variation_segment = assert_audiosegment(variation_segment, f"variation:{var_type}")
                     after = _segment_evidence(variation_segment)
                     section_applied_events.append(var_type)
                     logger.info("RUNTIME_EVENT_APPLIED section=%s action=%s", section_name, var_type)
+                    logger.info("DSP_HANDLER_COMPLETE section=%s action=%s", section_name, var_type)
                     logger.info(
                         "DSP_EVENT_RENDERED section=%s action=%s rms_delta=%.2f width_delta=%.4f hash_changed=%s",
                         section_name,
