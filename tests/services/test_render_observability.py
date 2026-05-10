@@ -544,6 +544,32 @@ class TestExtractObservabilityFromArrangement:
         assert obs["fallback_triggered_count"] == 0
         assert obs["planned_stem_map_by_section"] == []
 
+    def test_applied_event_evidence_recomputes_metrics(self):
+        timeline_secs = [
+            {
+                "type": "hook",
+                "runtime_active_stems": ["drums", "bass", "lead"],
+                "active_stem_roles": ["drums", "bass", "lead"],
+                "applied_events": ["final_hook_expansion", "stereo_widen", "call_response_variation", "crossfade"],
+                "phrase_plan_used": False,
+            },
+            {
+                "type": "bridge",
+                "runtime_active_stems": ["pads"],
+                "active_stem_roles": ["pads"],
+                "applied_events": ["reverse_fx"],
+                "phrase_plan_used": False,
+            },
+        ]
+        row = self._make_arrangement(timeline_secs, [])
+        obs = extract_observability_from_arrangement(row)
+        assert obs["phrase_split_count"] > 0
+        assert obs["hook_escalation_applied"] is True
+        assert obs["transition_overlap_rendered"] is True
+        assert len(obs["variation_energy_curve"]) > 0
+        assert obs["variation_uniqueness_score"] > 0.0
+        assert obs["final_producer_score"] > 0.0
+
 
 # ---------------------------------------------------------------------------
 # 8. job_service render_metadata persistence (unit)

@@ -744,12 +744,12 @@ def _assert_dynamic_arrangement(
     if not sections:
         logger.error("PRODUCER_TIMELINE_EMPTY_BEFORE_VALIDATION render_path=%s", render_path_used)
         raise RuntimeError("PRODUCER_TIMELINE_EMPTY_BEFORE_VALIDATION")
-    energy_curve = list(render_spec.get("variation_energy_curve") or [])
-    phrase_splits = int(render_spec.get("phrase_split_count") or 0)
-    transition_overlap_count = int(render_spec.get("transition_overlap_rendered_count") or 0)
+    energy_curve = list(render_spec.get("variation_energy_curve") or render_observability.get("variation_energy_curve") or [])
+    phrase_splits = int(render_spec.get("phrase_split_count") or render_observability.get("phrase_split_count") or 0)
+    transition_overlap_count = int(render_spec.get("transition_overlap_rendered_count") or render_observability.get("transition_overlap_rendered_count") or 0)
     transition_event_count = int(render_spec.get("transition_event_count") or 0)
-    hook_escalation_applied = bool(render_spec.get("hook_escalation_applied"))
-    uniqueness_score = float(render_spec.get("variation_uniqueness_score") or 0.0)
+    hook_escalation_applied = bool(render_spec.get("hook_escalation_applied") or render_observability.get("hook_escalation_applied"))
+    uniqueness_score = float(render_spec.get("variation_uniqueness_score") or render_observability.get("variation_uniqueness_score") or 0.0)
     section_signatures = int(render_observability.get("unique_render_signature_count") or 0)
     logger.info(
         "DYNAMIC_VALIDATION_INPUT section_count=%d phrase_split_count=%d transition_overlap_count=%d transition_event_count=%d",
