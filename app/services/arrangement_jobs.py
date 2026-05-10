@@ -1479,6 +1479,11 @@ def spawn_aligned(segment: AudioSegment, raw_bytes: bytes, context: str, overrid
     return segment._spawn(aligned, overrides=overrides or {})
 
 
+def validate_frame_alignment(segment: AudioSegment, handler_name: str) -> AudioSegment:
+    if len(segment.raw_data) % int(segment.frame_width) != 0:
+        raise ValueError(f"Invalid frame alignment after DSP handler: {handler_name}")
+    return segment
+
 def _apply_producer_move_effect(
     segment: AudioSegment,
     move_type: str,
@@ -1750,7 +1755,7 @@ def _apply_producer_move_effect(
     if move_type == "chop_stutter":
         result = _apply_producer_move_effect(segment, "chop_role", intensity, stem_available, bar_duration_ms, params)
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
     if move_type == "rhythmic_gate":
         gate_ms = max(35, int(bar_duration_ms / (8 + int(8 * intensity))))
         gated = AudioSegment.silent(duration=0)
@@ -1759,26 +1764,26 @@ def _apply_producer_move_effect(
             gated += chunk if (i // gate_ms) % 2 == 0 else (chunk - (10 + 6 * intensity))
         result = _apply_headroom_ceiling(gated, -1.5)
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
     if move_type == "dropout_bar":
         dropout_ms = int(min(len(segment), bar_duration_ms))
         lead = segment[: max(0, len(segment) - dropout_ms)]
         tail = (segment[-dropout_ms:] if dropout_ms < len(segment) else segment) - (18 + 4 * intensity)
         result = lead + tail.fade_in(max(5, min(20, dropout_ms // 20)))
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
     if move_type == "stereo_widen":
         return _apply_producer_move_effect(segment, "widen_role", intensity, stem_available, bar_duration_ms, params)
     if move_type == "transient_boost":
         trans = segment.high_pass_filter(2400) + (3 + 3 * intensity)
         result = _apply_headroom_ceiling(segment.overlay(trans, gain_during_overlay=-5), -1.5)
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
     if move_type == "octave_layer":
         octave_up = spawn_aligned(segment, segment.raw_data, "octave_layer", overrides={"frame_rate": int(segment.frame_rate * 2.0)}).set_frame_rate(segment.frame_rate) - (8 - 2 * intensity)
         result = _apply_headroom_ceiling(segment.overlay(octave_up), -1.5)
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
     if move_type == "silence_window":
         return _apply_producer_move_effect(segment, "silence_gap", intensity, stem_available, bar_duration_ms, params)
     if move_type == "halftime_bar":
@@ -1801,15 +1806,15 @@ def _apply_producer_move_effect(
         stretched = halftime.set_frame_rate(segment.frame_rate)
         result = assert_audiosegment((stretched + AudioSegment.silent(duration=max(0, len(segment) - len(stretched))))[: len(segment)], "halftime_bar")
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
     if move_type == "transition_reverb_tail":
         result = _apply_producer_move_effect(segment, "reverb_tail", intensity, stem_available, bar_duration_ms, params)
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
     if move_type == "transition_delay_tail":
         result = _apply_producer_move_effect(segment, "delay_role", intensity, stem_available, bar_duration_ms, params)
         logger.info("DSP_HANDLER_COMPLETE move_type=%s", move_type)
-        return result
+        return validate_frame_alignment(result, move_type)
 
     if move_type == "reverse_fx":
         # Reverse sweep on the tail: builds dramatic tension going into (or out of)
@@ -2937,6 +2942,7 @@ def _render_producer_arrangement(
                         params=var_params,
                     )
                     variation_segment = assert_audiosegment(variation_segment, f"variation:{var_type}")
+                    variation_segment = validate_frame_alignment(variation_segment, var_type)
                     after = _segment_evidence(variation_segment)
                     section_applied_events.append(var_type)
                     logger.info("RUNTIME_EVENT_APPLIED section=%s action=%s", section_name, var_type)

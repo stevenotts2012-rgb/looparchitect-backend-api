@@ -732,6 +732,7 @@ class TestDspFrameAlignment:
             "dropout_bar",
             "transition_reverb_tail",
             "transition_delay_tail",
+            "reverse_slice",
         ]
 
         for move_type in handlers:
