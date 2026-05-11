@@ -788,11 +788,16 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
             logger.info(
                 "VARIATION_JOB_RENDER_ENTER job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f",
-                app_job_id, _variation_index, (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds(),
+                app_job_id,
+                _variation_index,
+                (params.get("personality") if isinstance(params, dict) else None),
+                render_stage,
+                (datetime.utcnow() - worker_started_at).total_seconds(),
             )
             logger.info(
                 "VARIATION_JOB_STARTED job_id=%s variation_index=%s status=processing",
-                app_job_id, _variation_index,
+                app_job_id,
+                _variation_index,
             )
 
         # Load job and loop
