@@ -81,3 +81,37 @@ def test_hook_2_differs_from_hook_1_and_transition_count_restrained():
 
     # restrained boundary count (no transition spam): we only add a compact set
     assert len(hook2.get("boundary_events") or []) <= 6
+
+
+def test_phrase_plan_used_and_phrase_evolution_for_all_8bar_sections():
+    sections = [
+        {"type": "verse", "bars": 8, "bar_start": 0, "active_stem_roles": ["drums", "bass", "melody"]},
+        {"type": "pre_hook", "bars": 8, "bar_start": 8, "active_stem_roles": ["drums", "bass", "melody"]},
+        {"type": "hook", "bars": 8, "bar_start": 16, "active_stem_roles": ["drums", "bass", "melody"]},
+        {"type": "bridge", "bars": 8, "bar_start": 24, "active_stem_roles": ["drums", "bass", "pads"]},
+    ]
+    for i, section in enumerate(sections):
+        prev_section = sections[i - 1] if i > 0 else None
+        next_section = sections[i + 1] if i + 1 < len(sections) else None
+        _apply_producer_taste_decisions(section, prev_section=prev_section, next_section=next_section, variation_index=1)
+        section["phrase_plan_used"] = bool(section.get("phrase_plan")) and int(section.get("bars", 0)) >= 8
+
+    assert all(s.get("phrase_plan_used") for s in sections)
+    summary = _build_render_spec_summary([
+        {
+            "name": s["type"],
+            "type": s["type"],
+            "runtime_active_stems": s.get("active_stem_roles", []),
+            "phrase_plan_used": s["phrase_plan_used"],
+            "hook_evolution": {"stage": "hook_1"} if s["type"] == "hook" else {},
+            "applied_events": [v.get("variation_type") for v in s.get("variations", [])],
+            "boundary_events": s.get("boundary_events", []),
+            "energy_level": 0.7 if s["type"] == "hook" else 0.45,
+        }
+        for s in sections
+    ] + [{
+        "name": "hook_2", "type": "hook", "runtime_active_stems": ["drums", "bass", "melody", "perc"],
+        "phrase_plan_used": True, "hook_evolution": {"stage": "hook_2"}, "applied_events": ["final_hook_drum_lift"],
+        "boundary_events": [], "energy_level": 0.9,
+    }])
+    assert summary["phrase_evolution_score"] > 0.35

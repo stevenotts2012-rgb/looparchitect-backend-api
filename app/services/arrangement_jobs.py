@@ -2422,98 +2422,81 @@ def _apply_producer_taste_decisions(
         if not any(str(e.get("type") or "").lower() == ev_type for e in boundary_events):
             boundary_events.append({"type": ev_type, "bar": int(section.get("bar_start", 0) or 0), "placement": placement, "intensity": float(intensity)})
 
-    # Hook payoff + escalation: always push hooks above verses, with stronger late-hook growth.
+    # Section-aware drum groove mutation.
+    if section_type in {"verse", "pre_hook"}:
+        _add_var("drum_density_down", 0.62 if section_type == "verse" else 0.58)
+        _add_var("hat_density_variation", 0.68 if bars >= 8 else 0.6)
+    if next_type == "hook":
+        _add_var("pre_hook_fill", 0.78)
+    if section_type == "hook":
+        _add_var("drum_density_up", 0.8)
+        if is_final_hook:
+            _add_var("final_hook_drum_lift", 0.92)
+    if section_type in {"bridge", "breakdown"}:
+        _add_var("bridge_drum_dropout", 0.88)
+
+    # Bass / 808 mutation.
+    if next_type == "hook":
+        _add_var("bass_pause", 0.84 if variation_index == 2 else 0.74)
+        _add_var("pad_swell", 0.76)
+        _add_var("reverse_melody_pickup", 0.74 if variation_index != 3 else 0.9)
+    if section_type == "hook":
+        _add_var("bass_answer_phrase", 0.76)
+        if is_final_hook:
+            _add_var("final_hook_bass_lift", 0.94)
+    if section_type in {"bridge", "breakdown"}:
+        _add_var("bridge_bass_dropout", 0.9)
+    if prev_type in {"bridge", "breakdown"} and section_type in {"pre_hook", "hook", "verse"}:
+        _add_var("bass_reentry", 0.83)
+
+    # Melody / pad phrase mutation.
+    if section_type in {"verse", "pre_hook", "hook"}:
+        _add_var("melody_filter_phrase", 0.7 if section_type == "verse" else 0.58)
+        _add_var("call_response_melody", 0.72)
+    if section_type == "hook":
+        _add_var("melody_octave_response", 0.82)
+
+    # Hook identity: at least two identity markers, and hook_2 differs by stage.
     if section_type == "hook":
         for role in ("fx", "perc"):
             if role not in stems:
                 stems.append(role)
-        _add_var("final_hook_expansion", 0.80 if variation_index == 1 else 0.95)
-        _add_var("stereo_widen", 0.75 if variation_index == 1 else 0.9)
-        _add_var("transient_boost", 0.7 if variation_index == 1 else 0.85)
-        _add_var("octave_layer", 0.7 if variation_index == 1 else 0.9)
-        _add_var("hook_drum_density", 0.8 if variation_index == 1 else 0.95)
+        _add_var("hook_identity_downbeat", 0.8)
+        if is_final_hook:
+            _add_var("hook_internal_phrase_shift", 0.86)
         _add_boundary("re_entry_accent", placement="on_downbeat", intensity=0.85)
-        _add_boundary("transition_reverb_tail", placement="end_of_section", intensity=0.8)
         applied.append("HOOK_ESCALATION_RENDERED")
 
-    # Bridge contrast weak: isolate more and increase contrast.
+    # Bridge identity: reset first half and keep events restrained.
     if section_type in {"bridge", "breakdown"}:
         pruned = [r for r in stems if r not in {"drums", "bass", "808", "sub"}]
         if pruned != stems:
             stems = pruned or ["pads"]
             applied.append("BRIDGE_CONTRAST_ENHANCED")
-        _add_var("bridge_strip", 0.95 if variation_index == 2 else 0.8)
-        _add_var("silence_window", 0.75 if variation_index == 1 else 0.9)
-        _add_var("halftime_bar", 0.7 if variation_index == 1 else 0.85)
-        _add_var("filter_sweep", 0.85 if variation_index == 2 else 0.75)
+        _add_var("bridge_strip", 0.9)
+        _add_var("halftime_bar", 0.78)
 
-    # Transition smoothness weak: enforce overlap/crossfade style events.
+    # Keep transition events restrained: one compact overlap + optional impact.
     if next_type and next_type != section_type:
-        _add_boundary("crossfade", placement="end_of_section", intensity=0.85 if variation_index == 1 else 0.95)
-        _add_boundary("reverse_fx", placement="end_of_section", intensity=0.8 if variation_index == 3 else 0.7)
-        _add_boundary("transition_delay_tail", placement="end_of_section", intensity=0.75)
-        _add_boundary("transition_riser_overlap", placement="end_of_section", intensity=0.85 if variation_index in {2,3} else 0.7)
+        _add_boundary("crossfade", placement="end_of_section", intensity=0.78 if variation_index == 1 else 0.86)
+        if next_type == "hook":
+            _add_boundary("impact", placement="on_downbeat", intensity=0.9 if variation_index != 1 else 0.82)
         applied.append("OVERLAP_TRANSITION_RENDERED")
 
-    # Drop intelligence weak: add pre-hook dropout/fakeout.
-    if next_type == "hook":
-        _add_var("pre_hook_drum_mute", 0.85 if variation_index == 2 else 0.7)
-        _add_var("bass_pause", 0.9 if variation_index == 2 else 0.75)
-        if variation_index in {2, 3}:
-            _add_var("fake_drop", 0.8)
-        applied.append("DROP_INTELLIGENCE_RENDERED")
-
-    # Phrase evolution weak: force call/response mutation.
-    if section_type in {"verse", "hook"}:
-        _add_var("call_response_variation", 0.75 if variation_index == 1 else 0.9)
-        _add_var("chop_stutter", 0.7 if variation_index == 1 else 0.9)
-        _add_var("reverse_slice", 0.65 if variation_index == 1 else 0.85)
-        _add_var("rhythmic_gate", 0.7 if variation_index == 1 else 0.9)
-        _add_var("dropout_bar", 0.65 if variation_index == 1 else 0.8)
-        applied.append("PHRASE_MUTATION_RENDERED")
-
-
-    # Musical mutation engine (section-aware, restrained).
-    if section_type in {"verse", "pre_hook", "hook"}:
-        _add_var("drum_density_down", 0.62)
-        _add_var("hat_density_variation", 0.68)
-        _add_var("melody_filter_phrase", 0.7 if section_type == "verse" else 0.55)
-        _add_var("call_response_melody", 0.72)
-    if next_type == "hook":
-        _add_var("pre_hook_fill", 0.78)
-        _add_var("pad_swell", 0.76)
-        _add_var("reverse_melody_pickup", 0.74)
-        _add_var("bass_pause", 0.82 if variation_index == 2 else 0.72)
-    if section_type == "hook":
-        _add_var("drum_density_up", 0.78)
-        _add_var("bass_answer_phrase", 0.74)
-        _add_var("melody_octave_response", 0.8)
-        if is_final_hook:
-            _add_var("final_hook_drum_lift", 0.92)
-            _add_var("final_hook_bass_lift", 0.94)
-    if section_type in {"bridge", "breakdown"}:
-        _add_var("bridge_drum_dropout", 0.88)
-        _add_var("bridge_bass_dropout", 0.9)
-    if prev_type in {"bridge", "breakdown"} and section_type in {"pre_hook", "hook", "verse"}:
-        _add_var("bass_reentry", 0.83)
-
-    # Force distinct personalities across V1/V2/V3 for uniqueness.
+    # Distinct personalities (no FX spam).
     if variation_index == 1:
         _add_var("clean_arrangement", 0.55)
-        _add_var("restrained_mutation_profile", 0.6)
-        _add_boundary("crossfade", placement="end_of_section", intensity=0.75)
+        _add_var("restrained_mutation_profile", 0.62)
     elif variation_index == 2:
         _add_var("dark_drop_choreo", 0.95)
         _add_var("fake_drop", 0.88)
         _add_var("dark_filtered_phrase", 0.86)
         _add_var("bass_pause", 0.95)
-        _add_boundary("sub_impact", placement="on_downbeat", intensity=0.9)
     else:
         _add_var("cinematic_texture_swap", 0.95)
-        _add_var("reverse_melody_pickup", 0.9)
+        _add_var("reverse_melody_pickup", 0.92)
         _add_var("phrase_chop_variation", 0.9)
-        _add_var("reverse_slice", 0.9)
-        _add_boundary("reverb_carry", placement="end_of_section", intensity=0.9)
+        _add_var("bridge_tension_ramp", 0.87)
     if is_final_hook:
         _add_var("climax_expansion", 0.98)
         _add_var("final_saturation", 0.95)
