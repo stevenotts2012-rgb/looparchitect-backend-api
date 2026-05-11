@@ -24,7 +24,6 @@ from app.services.storage import storage
 
 UPLOADS_DIR = "uploads"
 RENDERS_DIR = "renders"
-GENERIC_VARIATIONS = ["Commercial", "Creative", "Experimental"]
 
 # Safety limits to protect server from realtime generation overload
 MAX_SECONDS = 21600  # 6 hours
@@ -39,8 +38,12 @@ router = APIRouter()
 
 class RenderConfig(BaseModel):
     genre: Optional[str] = "Trap"
-    length_seconds: Optional[int] = 180
+    mood: Optional[str] = None
     energy: Optional[str] = "high"
+    style_prompt: Optional[str] = None
+    bpm: Optional[float] = None
+    key: Optional[str] = None
+    length_seconds: Optional[int] = 180
     variations: Optional[int] = 3
     variation_styles: Optional[List[str]] = None
     custom_style: Optional[str] = None
@@ -196,40 +199,38 @@ def _get_default_transformations(name: str) -> List[str]:
 
 
 def _compute_variation_profiles(config: RenderConfig) -> List[dict]:
-    """Compute variation profiles based on config."""
-    profiles: List[dict] = []
-
+    """Compute style-honoring variation profiles from user-entered genre/style."""
+    requested_variations = max(1, min(int(config.variations or 3), 3))
     if config.variation_styles:
-        for style in config.variation_styles[: config.variations]:
-            profiles.append(
-                {
-                    "name": style.strip(),
-                    "style_hint": style.strip(),
-                    "transformations": _get_transformations_for_style(style),
-                }
-            )
-    elif config.custom_style:
-        profiles.append(
+        return [
             {
-                "name": "Custom",
-                "style_hint": config.custom_style,
-                "transformations": ["normalize", "fade_in", "fade_out"],
+                "name": style.strip(),
+                "style_hint": style.strip(),
+                "transformations": _get_transformations_for_style(style.strip()),
             }
-        )
+            for style in config.variation_styles[:requested_variations]
+        ]
+    explicit_style = (config.custom_style or "").strip()
+    user_style = explicit_style or (config.genre or "").strip() or "custom"
 
-    while len(profiles) < config.variations:
-        idx = len(profiles)
-        if idx < len(GENERIC_VARIATIONS):
-            name = GENERIC_VARIATIONS[idx]
-            profiles.append(
-                {
-                    "name": name,
-                    "style_hint": None,
-                    "transformations": _get_default_transformations(name.lower()),
-                }
-            )
-        else:
-            break
+    logger.info("USER_STYLE_INPUT_RECEIVED style=%s genre=%s mood=%s energy=%s style_prompt=%s bpm=%s key=%s", user_style, config.genre, config.mood, config.energy, config.style_prompt, config.bpm, config.key)
+
+    slow_style = _is_slow_style(config, user_style)
+    logger.info("GENRE_PROFILE_INFERRED style=%s profile=%s", user_style, "slow" if slow_style else "fast")
+
+    variation_names = _build_style_variations(user_style, slow_style)
+    profiles: List[dict] = []
+    for style_name in variation_names[:requested_variations]:
+        profiles.append({
+            "name": style_name,
+            "style_hint": style_name,
+            "transformations": _get_transformations_for_style(user_style),
+            "user_style": user_style,
+        })
+        logger.info("VARIATION_PROFILE_SELECTED style=%s variation=%s", user_style, style_name)
+
+    logger.info("USER_STYLE_HONORED input_style=%s output_style=%s", user_style, user_style)
+    logger.info("CINEMATIC_PROFILE_NOT_DEFAULT style=%s cinematic_default=%s", user_style, False)
 
     return profiles
 
@@ -256,6 +257,37 @@ def _build_variation(audio: AudioSegment, transformations: List[str]) -> AudioSe
     for t in transformations:
         audio = _apply_transformation(audio, t)
     return audio
+
+
+SLOW_MOOD_TERMS = {"smooth", "emotional", "sad", "slow", "soulful", "worship", "ballad", "intimate", "mellow", "chill"}
+SLOW_GENRE_TERMS = {"r&b", "rnb", "soul", "gospel", "blues", "jazz", "worship", "ballad", "lofi", "lo-fi", "ambient", "acoustic"}
+
+
+def _contains_any_token(text: str, terms: set[str]) -> bool:
+    normalized = (text or "").strip().lower()
+    return any(term in normalized for term in terms)
+
+
+def _is_slow_style(config: RenderConfig, user_style: str) -> bool:
+    if config.bpm is not None and config.bpm < 95:
+        return True
+    if _contains_any_token(config.mood or "", SLOW_MOOD_TERMS):
+        return True
+    return _contains_any_token(user_style, SLOW_GENRE_TERMS)
+
+
+def _build_style_variations(user_style: str, slow_style: bool) -> list[str]:
+    if slow_style:
+        return [
+            f"{user_style} — clean/smooth",
+            f"{user_style} — moody/intimate",
+            f"{user_style} — melodic/spacious",
+        ]
+    return [
+        f"{user_style} — clean/main",
+        f"{user_style} — darker/heavier",
+        f"{user_style} — melodic/bounce",
+    ]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────

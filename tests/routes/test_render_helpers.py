@@ -204,21 +204,21 @@ class TestComputeVariationProfiles:
         assert profiles[0]["name"] == "ATL"
         assert profiles[1]["name"] == "Detroit"
 
-    def test_uses_custom_style_when_no_variation_styles(self):
+    def test_honors_custom_style_as_source_of_truth(self):
         from app.routes.render import _compute_variation_profiles, RenderConfig
 
-        config = RenderConfig(variations=1, custom_style="My Style")
-        profiles = _compute_variation_profiles(config)
-        assert any(p["name"] == "Custom" for p in profiles)
-
-    def test_fills_remaining_with_generic_variations(self):
-        from app.routes.render import _compute_variation_profiles, RenderConfig
-
-        config = RenderConfig(variations=3)
+        config = RenderConfig(variations=3, custom_style="Future Gritwave")
         profiles = _compute_variation_profiles(config)
         assert len(profiles) == 3
-        names = {p["name"] for p in profiles}
-        assert "Commercial" in names or "Creative" in names or "Experimental" in names
+        assert all(p["name"].startswith("Future Gritwave —") for p in profiles)
+
+    def test_unknown_genre_still_returns_three_style_variations(self):
+        from app.routes.render import _compute_variation_profiles, RenderConfig
+
+        config = RenderConfig(variations=3, genre="Glassstep Noir")
+        profiles = _compute_variation_profiles(config)
+        assert len(profiles) == 3
+        assert all(p["name"].startswith("Glassstep Noir —") for p in profiles)
 
     def test_profiles_have_required_keys(self):
         from app.routes.render import _compute_variation_profiles, RenderConfig
@@ -237,14 +237,45 @@ class TestComputeVariationProfiles:
         profiles = _compute_variation_profiles(config)
         assert len(profiles) == 2
 
-    def test_custom_style_sets_style_hint(self):
+    def test_slow_rnb_uses_smooth_moody_spacious(self):
         from app.routes.render import _compute_variation_profiles, RenderConfig
 
-        config = RenderConfig(variations=1, custom_style="SomeStyle")
+        config = RenderConfig(variations=3, genre="R&B", mood="emotional", bpm=80)
         profiles = _compute_variation_profiles(config)
-        custom = next((p for p in profiles if p["name"] == "Custom"), None)
-        assert custom is not None
-        assert custom["style_hint"] == "SomeStyle"
+        names = [p["name"] for p in profiles]
+        assert names == [
+            "R&B — clean/smooth",
+            "R&B — moody/intimate",
+            "R&B — melodic/spacious",
+        ]
+
+    def test_gospel_worship_is_not_trap_labeled(self):
+        from app.routes.render import _compute_variation_profiles, RenderConfig
+
+        config = RenderConfig(variations=3, genre="gospel worship", mood="worship")
+        profiles = _compute_variation_profiles(config)
+        text_blob = " ".join(p["name"].lower() for p in profiles)
+        assert "trap" not in text_blob
+        assert "bounce" not in text_blob
+
+    def test_trap_uses_clean_dark_melodic_bounce(self):
+        from app.routes.render import _compute_variation_profiles, RenderConfig
+
+        config = RenderConfig(variations=3, genre="trap", bpm=145)
+        profiles = _compute_variation_profiles(config)
+        names = [p["name"] for p in profiles]
+        assert names == [
+            "trap — clean/main",
+            "trap — darker/heavier",
+            "trap — melodic/bounce",
+        ]
+
+    def test_cinematic_not_default_when_not_requested(self):
+        from app.routes.render import _compute_variation_profiles, RenderConfig
+
+        config = RenderConfig(variations=3, genre="afrobeat")
+        profiles = _compute_variation_profiles(config)
+        assert all("cinematic" not in p["name"].lower() for p in profiles)
 
 
 # ---------------------------------------------------------------------------
