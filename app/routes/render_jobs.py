@@ -189,6 +189,19 @@ _ROLE_GROUPS = {
 _MAX_RANDOM_SEED = _MAX_RANDOM_SEED_OUTER
 
 
+def _producer_plan_stats(producer_plan: dict | None, payload: dict | None = None) -> dict:
+    pp = producer_plan or {}
+    payload_keys = sorted(list((payload or {}).keys()))
+    return {
+        "has_producer_plan": bool(pp),
+        "section_count": len(pp.get("sections") or []),
+        "available_roles_count": len(pp.get("available_roles") or []),
+        "decision_log_count": len(pp.get("decision_log") or []),
+        "rules_applied_count": len(pp.get("rules_applied") or []),
+        "payload_keys": payload_keys,
+    }
+
+
 def _classify_roles(available_roles: List[str]) -> Dict[str, List[str]]:
     """Classify available roles into drum/bass/melody/fx groups."""
     groups: Dict[str, List[str]] = {k: [] for k in _ROLE_GROUPS}
@@ -496,7 +509,7 @@ def _producer_plan_to_render_plan(
     logger.info("PRODUCER_PLAN_PRESENT value=%s", "true" if producer_plan.events else "false")
     logger.info("PRODUCER_PLAN_EVENTS_COUNT count=%d", len(top_level_events))
 
-    return {
+    render_plan = {
         "loop_id": loop_id,
         "bpm": bpm,
         "key": key,
@@ -518,6 +531,9 @@ def _producer_plan_to_render_plan(
             "warnings": producer_plan.warnings,
         },
     }
+    _pp_stats = _producer_plan_stats(render_plan.get("producer_plan"), render_plan)
+    logger.info("PRODUCER_PLAN_RENDER_PAYLOAD_BUILT %s", json.dumps(_pp_stats, sort_keys=True))
+    return render_plan
 
 
 def _build_generative_render_plan(loop: Loop, params: Dict, target_bars: Optional[int] = None, seed: Optional[int] = None) -> dict:
@@ -585,6 +601,7 @@ def _build_generative_render_plan(loop: Loop, params: Dict, target_bars: Optiona
         len(producer_plan.events),
         len(producer_plan.skipped_events),
     )
+    logger.info("PRODUCER_PLAN_GENERATOR_OUTPUT %s", json.dumps(_producer_plan_stats(producer_plan.to_dict()), sort_keys=True))
 
     energy_curve_score = _compute_energy_curve_score([s["name"] for s in section_templates])
     logger.info(
@@ -840,6 +857,13 @@ async def render_arrangement_async(
             generative_plan = _build_generative_render_plan(
                 loop, plan_params, target_bars=target_bars, seed=var_seed
             )
+            _pp_route = generative_plan.get("producer_plan") or {}
+            logger.info(
+                "PRODUCER_PLAN_ROUTE_INPUT %s",
+                json.dumps(_producer_plan_stats(_pp_route, generative_plan), sort_keys=True),
+            )
+            if generative_plan.get("producer_arrangement_used") is True and not (_pp_route.get("sections") or []):
+                raise ValueError("PRODUCER_PLAN_EMPTY_BEFORE_ENQUEUE")
             render_plan_json = json.dumps(generative_plan)
             _pp = generative_plan.get("producer_plan") or {}
             logger.info(
@@ -908,6 +932,12 @@ async def render_arrangement_async(
         except Exception:
             _rp = {}
         _pp = _rp.get("producer_plan") or _rp.get("_generative_producer_plan") or _rp.get("_ai_producer_plan") or {}
+        logger.info(
+            "PRODUCER_PLAN_ENQUEUE_PAYLOAD %s",
+            json.dumps(_producer_plan_stats(_pp, job_params), sort_keys=True),
+        )
+        if not (_pp.get("sections") or []) and (_rp.get("sections") or []):
+            raise HTTPException(status_code=500, detail="PRODUCER_PLAN_EMPTY_BEFORE_ENQUEUE")
         logger.info(
             "ARRANGER_STATE_SERIALIZED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
             len(_pp.get("sections") or []),

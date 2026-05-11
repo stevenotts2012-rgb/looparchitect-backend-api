@@ -875,6 +875,30 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     params_render_plan_json
                     or (arrangement and arrangement.render_plan_json)
                 )
+                try:
+                    _incoming_plan = json.loads(render_plan_json) if isinstance(render_plan_json, str) else (render_plan_json or {})
+                except Exception:
+                    _incoming_plan = {}
+                _incoming_pp = (
+                    _incoming_plan.get("producer_plan")
+                    or _incoming_plan.get("_generative_producer_plan")
+                    or _incoming_plan.get("_ai_producer_plan")
+                    or {}
+                )
+                logger.info(
+                    "PRODUCER_PLAN_WORKER_RECEIVED %s",
+                    json.dumps(
+                        {
+                            "has_producer_plan": bool(_incoming_pp),
+                            "section_count": len(_incoming_pp.get("sections") or []),
+                            "available_roles_count": len(_incoming_pp.get("available_roles") or []),
+                            "decision_log_count": len(_incoming_pp.get("decision_log") or []),
+                            "rules_applied_count": len(_incoming_pp.get("rules_applied") or []),
+                            "payload_keys": sorted(list(_incoming_plan.keys())),
+                        },
+                        sort_keys=True,
+                    ),
+                )
                 # Log what target length will be applied based on the resolved plan
                 try:
                     _resolved_plan = json.loads(render_plan_json) if isinstance(render_plan_json, str) else render_plan_json

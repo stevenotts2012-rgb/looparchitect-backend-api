@@ -485,6 +485,32 @@ class TestArrangementRetrieval:
         assert item["section_summary"] == []
         assert item["decision_log"] == []
 
+    def test_response_hydrates_producer_plan_from_arrangement_json_when_missing(self, test_loop, db, client):
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            is_saved=True,
+            saved_at=datetime.utcnow(),
+            producer_plan_json=json.dumps({"builder_version": "2.0", "available_roles": [], "sections": []}),
+            arrangement_json=json.dumps(
+                {
+                    "sections": [
+                        {"name": "intro", "bar_start": 0, "bars": 4, "energy": 0.2, "active_stem_roles": ["drums", "bass"]},
+                        {"name": "hook", "bar_start": 4, "bars": 8, "energy": 0.9, "runtime_active_stems": ["lead"]},
+                    ]
+                }
+            ),
+        )
+        db.add(arrangement)
+        db.commit()
+
+        response = client.get(f"/api/v1/arrangements/{arrangement.id}")
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert len((data.get("producer_plan") or {}).get("sections") or []) == 2
+        assert len((data.get("producer_plan") or {}).get("available_roles") or []) >= 1
+
 
 class TestWorkerSuccessArrangementVisibility:
     """Regression tests for the render-worker success path.

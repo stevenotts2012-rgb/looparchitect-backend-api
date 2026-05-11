@@ -454,6 +454,8 @@ class TestRenderPlanJsonInParams:
         assert rpj is not None
         parsed = json.loads(rpj)
         assert isinstance(parsed, dict), "render_plan_json must parse to a dict"
+        producer_plan = parsed.get("producer_plan") or {}
+        assert len(producer_plan.get("sections") or []) >= 1
 
     def test_render_async_minimal_fallback_plan_has_sections(
         self, client, test_loop_with_file
