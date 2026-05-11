@@ -784,6 +784,10 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 "VARIATION_RENDER_STARTED job_id=%s loop_id=%s variation_index=%s variation_seed=%s",
                 app_job_id, loop_id, _variation_index, _variation_seed,
             )
+            logger.info(
+                "VARIATION_JOB_STARTED job_id=%s variation_index=%s status=processing",
+                app_job_id, _variation_index,
+            )
 
         # Load job and loop
         job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
@@ -1169,6 +1173,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         _variation_seed,
                         _arr_record_id,
                     )
+                    logger.info(
+                        "VARIATION_JOB_DONE job_id=%s variation_index=%s arrangement_id=%s",
+                        app_job_id,
+                        _variation_index,
+                        _arr_record_id,
+                    )
             except Exception as _arr_err:
                 logger.error(
                     "ARRANGEMENT_CREATE_FAILED job_id=%s error=%s",
@@ -1240,6 +1250,13 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             arrangement_id,
             e,
         )
+        if '_variation_index' in locals() and _variation_index is not None:
+            logger.error(
+                "VARIATION_JOB_FAILED job_id=%s variation_index=%s error=%s",
+                app_job_id,
+                _variation_index,
+                e,
+            )
         try:
             job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
             if job:

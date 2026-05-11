@@ -205,8 +205,20 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
     if not job:
         raise ValueError(f"Job {job_id} not found")
     
+    params = {}
+    if job.params_json:
+        try:
+            params = json.loads(job.params_json)
+        except Exception:
+            logger.warning("VARIATION_JOB_PARAMS_PARSE_FAILED job_id=%s", job_id)
+
+    variation_index = params.get("variation_index") if isinstance(params, dict) else None
+    personality = params.get("personality") if isinstance(params, dict) else None
+    arrangement_id_from_params = params.get("arrangement_id") if isinstance(params, dict) else None
+
     # Parse outputs and regenerate presigned URLs if succeeded
     output_files = None
+    output_url = None
     if job.output_files_json:
         try:
             outputs = json.loads(job.output_files_json)
@@ -230,8 +242,16 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
                             signed_url=signed_url,
                         )
                     )
+                    output_url = output_url or signed_url
         except Exception as e:
             logger.error(f"Failed to parse outputs for job {job_id}: {e}")
+    if variation_index is not None:
+        if output_url:
+            logger.info("VARIATION_JOB_OUTPUT_READY job_id=%s variation_index=%s output_url_present=true", job_id, variation_index)
+        elif job.status in {"failed", "succeeded"}:
+            logger.warning("VARIATION_JOB_MISSING_OUTPUT job_id=%s variation_index=%s status=%s", job_id, variation_index, job.status)
+        if getattr(job, "arrangement_id", None) is None and arrangement_id_from_params is None:
+            logger.warning("VARIATION_JOB_MISSING_ARRANGEMENT_ID job_id=%s variation_index=%s", job_id, variation_index)
 
     render_metadata = None
     if getattr(job, "render_metadata_json", None):
@@ -254,7 +274,10 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
         error_message=job.error_message,
         retry_count=job.retry_count,
         render_metadata=render_metadata,
-        arrangement_id=getattr(job, "arrangement_id", None),
+        arrangement_id=getattr(job, "arrangement_id", None) or arrangement_id_from_params,
+        variation_index=variation_index,
+        personality=personality,
+        output_url=output_url,
     )
 
 
