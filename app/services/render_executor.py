@@ -2,7 +2,6 @@
 
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -479,7 +478,6 @@ def render_from_plan(
           unique_render_signature_count, phrase_split_count, mastering_applied,
           mastering_profile, planned_stem_map_by_section, actual_stem_map_by_section.
     """
-    _started_at = datetime.utcnow()
     if isinstance(render_plan_json, str):
         try:
             render_plan = json.loads(render_plan_json)
@@ -552,17 +550,6 @@ def render_from_plan(
         render_plan=render_plan,
         fallback_bpm=float(render_plan.get("bpm") or 120.0),
     )
-    _variation_index = render_plan.get("variation_index")
-    _personality = render_plan.get("personality")
-    logger.info(
-        "RENDER_PROFILE_BEGIN variation_index=%s personality=%s section_type=%s mutation_type=%s stem_role=%s timeline_bar_range=%s",
-        _variation_index,
-        _personality,
-        "all",
-        "none",
-        "all",
-        "full",
-    )
     logger.info(
         "RENDER_PLAN_LOADED section_count=%d events=%d",
         len(render_plan.get("sections") or []),
@@ -587,10 +574,6 @@ def render_from_plan(
     from app.services.arrangement_jobs import _render_producer_arrangement
 
     logger.info("PRODUCER_RENDER_STARTED")
-    logger.info(
-        "RENDER_PROFILE_STAGE variation_index=%s personality=%s section_type=%s mutation_type=%s stem_role=%s timeline_bar_range=%s stage=timeline_construction",
-        _variation_index, _personality, "all", "none", "all", "full"
-    )
     for _section in producer_payload.get("sections") or []:
         logger.info("PRODUCER_SECTION_RENDER section=%s", _section.get("name") or _section.get("type"))
     output_audio, timeline_json = _render_producer_arrangement(
@@ -632,16 +615,6 @@ def render_from_plan(
     except Exception:
         pass
     output_audio = _apply_master_headroom(output_audio, target_peak_dbfs=-1.0)
-    if output_audio is None or len(output_audio) <= 0:
-        logger.error(
-            "DSP_INVALID_SEGMENT variation_index=%s personality=%s section_type=%s mutation_type=%s stem_role=%s timeline_bar_range=%s reason=zero_length_output",
-            _variation_index, _personality, "all", "audio_assembly", "all", "full",
-        )
-        raise RuntimeError("Render completed without output")
-    logger.info(
-        "RENDER_PROFILE_AUDIO_ASSEMBLY variation_index=%s personality=%s section_type=%s mutation_type=%s stem_role=%s timeline_bar_range=%s",
-        _variation_index, _personality, "all", "mixdown", "all", "full"
-    )
 
     mastering_result = apply_mastering(
         output_audio,
@@ -650,15 +623,7 @@ def render_from_plan(
     output_audio = mastering_result.audio
 
     output_path = Path(output_path)
-    logger.info(
-        "RENDER_PROFILE_EXPORT_BEGIN variation_index=%s personality=%s section_type=%s mutation_type=%s stem_role=%s timeline_bar_range=%s",
-        _variation_index, _personality, "all", "export", "all", "full"
-    )
     output_audio.export(str(output_path), format="wav")
-    logger.info(
-        "RENDER_PROFILE_EXPORT_SUCCESS variation_index=%s personality=%s section_type=%s mutation_type=%s stem_role=%s timeline_bar_range=%s",
-        _variation_index, _personality, "all", "export", "all", "full"
-    )
 
     # Embed producer_plan and update planned_transition_events in the timeline so that
     # the arrangement_json persisted to the DB includes the real producer plan data.
@@ -734,19 +699,6 @@ def render_from_plan(
         _resolved_plan_primary_used,
         _resolved_plan_primary_fallback_used,
         _render_mismatch_count,
-    )
-    logger.info(
-        "RENDER_TRUTH_FINAL variation_index=%s personality=%s sections_rendered=%d mutations_applied=%d stems_used=%d transitions_created=%d exported_duration_ms=%d waveform_peak=%.4f output_file_size=%d render_time=%.3f",
-        _variation_index,
-        _personality,
-        len((json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})).get("sections") or []),
-        len(render_observability.get("render_signatures") or []),
-        len(render_observability.get("actual_stem_map_by_section") or []),
-        int((json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})).get("render_spec_summary", {}).get("transition_event_count") or 0),
-        len(output_audio),
-        float(output_audio.max_dBFS if output_audio.max_dBFS is not None else -120.0),
-        int(output_path.stat().st_size if output_path.exists() else 0),
-        (datetime.utcnow() - _started_at).total_seconds(),
     )
 
     return {

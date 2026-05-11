@@ -2607,10 +2607,6 @@ def _render_producer_arrangement(
         variation_index,
         _variation_personality_name(variation_index),
     )
-    cinematic_safe_mode = bool(producer_arrangement.get("cinematic_safe_mode"))
-    max_section_duration_ms = int(producer_arrangement.get("max_section_duration_ms") or 180000)
-    max_render_duration_ms = int(producer_arrangement.get("max_render_duration_ms") or 900000)
-    max_mutation_count = int(producer_arrangement.get("max_mutation_count") or 256)
     
     bar_duration_ms = int((60.0 / bpm) * 4.0 * 1000)
     arranged = AudioSegment.silent(duration=0)
@@ -2657,8 +2653,6 @@ def _render_producer_arrangement(
         section_energy = float(section.get("energy_level", section.get("energy", 0.6)) or 0.6)
         
         section_ms = section_bars * bar_duration_ms
-        if section_ms <= 0 or section_ms > max_section_duration_ms:
-            raise ValueError(f"invalid section duration: {section_ms}ms")
         
         # ==================================================================== 
         # BUILD SECTION AUDIO - USE STEMS IF AVAILABLE
@@ -3040,8 +3034,6 @@ def _render_producer_arrangement(
                     target_section = int(target_section)
                 if target_section in {section_idx, section_name, section_type}:
                     variations.append(variation)
-        if cinematic_safe_mode:
-            variations = list(variations)[:8]
         for variation in variations:
             var_bar_start = int(
                 variation.get("bar_start", variation.get("start_bar", variation.get("bar", bar_start)))
@@ -3061,12 +3053,8 @@ def _render_producer_arrangement(
             
             logger.info("RUNTIME_EVENT_DISPATCHED section=%s action=%s bar=%d", section_name, var_type, var_bar_start)
             # Apply variation effects
-            if not isinstance(var_start_ms, int) or not isinstance(var_end_ms, int):
-                raise ValueError("NaN/None timing guard triggered")
             if var_end_ms > var_start_ms and var_start_ms >= 0 and var_end_ms <= len(section_audio):
                 variation_segment = section_audio[var_start_ms:var_end_ms]
-                if len(variation_segment) <= 0:
-                    raise ValueError("zero-length segment guard triggered")
                 
                 if var_type in {"hats_roll", "fill", "hi_hat_stutter"}:
                     # Hat rolls and fills: modest boost kept under ceiling
@@ -3198,8 +3186,6 @@ def _render_producer_arrangement(
             trans_type = (transition_info.get("transition_type") or transition_info.get("type") or "none").strip().lower()
             trans_duration_bars = int(transition_info.get("duration_bars", transition_info.get("bars", 0)) or 0)
             trans_duration_ms = trans_duration_bars * bar_duration_ms
-            if cinematic_safe_mode:
-                trans_duration_ms = min(trans_duration_ms, bar_duration_ms)
             
             if trans_duration_ms > 0 and trans_duration_ms <= len(section_audio):
                 if trans_type in {"sweep", "filter_sweep", "crossfade"}:
@@ -3266,8 +3252,6 @@ def _render_producer_arrangement(
             arranged = section_audio
         else:
             arranged = _crossfade_append(arranged, section_audio)
-        if len(arranged) > max_render_duration_ms:
-            raise TimeoutError("max render duration guard triggered")
         
         # Track section for timeline
         start_seconds = (bar_start * 4 * 60.0) / bpm

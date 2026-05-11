@@ -311,13 +311,6 @@ def _normalize_typed_list(items: list, model_cls: type[object], *, field_name: s
 
 
 def _normalize_arrangement_for_response(arrangement: Arrangement) -> dict:
-    normalized_arrangement_json = _coerce_json_value(
-        arrangement.arrangement_json,
-        default={},
-        expected_type=dict,
-        field_name="arrangement_json",
-        arrangement_id=arrangement.id,
-    )
     payload = {
         "id": arrangement.id,
         "loop_id": arrangement.loop_id,
@@ -330,7 +323,7 @@ def _normalize_arrangement_for_response(arrangement: Arrangement) -> dict:
         "output_file_url": arrangement.output_file_url,
         "stems_zip_url": arrangement.stems_zip_url,
         "mastering_metadata": arrangement.mastering_metadata,
-        "arrangement_json": json.dumps(normalized_arrangement_json),
+        "arrangement_json": arrangement.arrangement_json,
         "created_at": arrangement.created_at,
         "updated_at": arrangement.updated_at,
         "duration_seconds": arrangement.target_seconds,
@@ -383,7 +376,13 @@ def _normalize_arrangement_for_response(arrangement: Arrangement) -> dict:
         arrangement_id=arrangement.id,
     )
     _producer_plan = payload.get("producer_plan") or {}
-    _arrangement_json = normalized_arrangement_json
+    _arrangement_json = _coerce_json_value(
+        arrangement.arrangement_json,
+        default={},
+        expected_type=dict,
+        field_name="arrangement_json",
+        arrangement_id=arrangement.id,
+    )
     _arr_sections = list((_arrangement_json or {}).get("sections") or [])
     if not (_producer_plan.get("sections") or []) and _arr_sections:
         _runtime_roles: list[str] = []
@@ -443,20 +442,9 @@ def _build_arrangement_response(arrangement: Arrangement) -> "ArrangementRespons
 
     try:
         response = ArrangementResponse.model_validate(normalized_payload)
-        logger.info("ARRANGEMENT_DETAIL_NORMALIZED arrangement_id=%s", arrangement.id)
-    except Exception as exc:
-        logger.exception("ARRANGEMENT_DETAIL_SERIALIZATION_ERROR arrangement_id=%s payload_keys=%s", arrangement.id, sorted(normalized_payload.keys()))
-        logger.exception("ARRANGEMENT_DETAIL_SCHEMA_MISMATCH arrangement_id=%s error=%s", arrangement.id, exc)
-        safe_payload = {
-            **normalized_payload,
-            "producer_plan": None,
-            "section_summary": [],
-            "decision_log": [],
-            "arrangement_json": normalized_payload.get("arrangement_json") or "{}",
-            "error_message": normalized_payload.get("error_message") or "Payload normalized due to schema mismatch",
-        }
-        response = ArrangementResponse.model_validate(safe_payload)
-        logger.info("ARRANGEMENT_DETAIL_NORMALIZED arrangement_id=%s fallback=true", arrangement.id)
+    except Exception:
+        logger.exception("ARRANGEMENTS_422_RESPONSE arrangement_id=%s payload_keys=%s", arrangement.id, sorted(normalized_payload.keys()))
+        raise
 
     # Populate duration_seconds from the arrangement's target_seconds column so the
     # frontend player can show expected length without a separate API call.

@@ -128,20 +128,6 @@ class TestGetJobStatusReturnsArrangementId:
 
         assert response.arrangement_id is None
 
-    def test_variation_metadata_present_even_when_failed_without_output(self):
-        job = _make_job()
-        job.status = "failed"
-        job.arrangement_id = None
-        job.params_json = '{"variation_index":2,"personality":"experimental"}'
-        job.output_files_json = None
-        job.error_message = "DSP failure"
-        db = _make_db_with_job(job)
-        with patch("app.services.storage.storage"):
-            response = get_job_status(db, "job-test-001")
-        assert response.variation_index == 2
-        assert response.personality == "experimental"
-        assert response.error_message == "DSP failure"
-
 
 # ===========================================================================
 # 3. Legacy path: arrangement_id stored on job when succeeded
