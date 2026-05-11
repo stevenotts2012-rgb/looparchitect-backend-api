@@ -841,14 +841,64 @@ def _trim_transition_events(section_type: str, next_section_type: str | None, ev
         return events
     st = _normalize_section_type(section_type)
     nt = _normalize_section_type(next_section_type or "") if next_section_type else ""
-    limit = 2
+    limit = 1
     if st == "verse" and nt == "hook":
-        limit = 3
+        limit = 2
     elif st in {"bridge", "breakdown"} and nt in {"hook", "outro"}:
-        limit = 3
+        limit = 2
     elif st in {"intro", "hook"}:
         limit = 2
     return events[:limit]
+
+
+def _phrase_split_bar(section_bars: int) -> int | None:
+    """Return a phrase-aligned split point (4/8 bars) when section is long enough."""
+    bars = int(section_bars or 0)
+    if bars < 8:
+        return None
+    return 8 if bars >= 16 else 4
+
+
+def _build_phrase_roles_for_mutation(
+    section_type: str,
+    active_roles: list[str],
+    available_roles: list[str],
+    occurrence: int,
+) -> tuple[list[str], list[str]]:
+    """Build phrase-level role mutations for drum/bass/melody contrast."""
+    first_roles = list(active_roles or available_roles[:1])
+    second_roles = list(first_roles)
+
+    def _add_role(target: list[str], role: str) -> None:
+        if role in available_roles and role not in target:
+            target.append(role)
+
+    def _drop_role(target: list[str], role: str) -> None:
+        if role in target and len(target) > 1:
+            target.remove(role)
+
+    st = _normalize_section_type(section_type)
+    if st == "hook":
+        # Ensure hook 2 differs audibly from hook 1 using phrase mutation.
+        if occurrence >= 2:
+            _add_role(second_roles, "melody")
+            _add_role(second_roles, "fx")
+            _drop_role(first_roles, "bass")
+        else:
+            _drop_role(first_roles, "melody")
+            _add_role(second_roles, "melody")
+    elif st in {"bridge", "breakdown"}:
+        _drop_role(first_roles, "drums")
+        _drop_role(first_roles, "bass")
+        _add_role(second_roles, "melody")
+    else:
+        _drop_role(first_roles, "melody")
+        _add_role(second_roles, "melody")
+        if "bass" in first_roles:
+            _drop_role(first_roles, "bass")
+            _add_role(second_roles, "bass")
+
+    return _ordered_unique_roles(first_roles), _ordered_unique_roles(second_roles)
 
 def _apply_stem_primary_section_states(
     sections: list[dict],
@@ -986,6 +1036,39 @@ def _apply_stem_primary_section_states(
                         "description": phrase_plan.description,
                     }
 
+            # Always enforce phrase splits for longer sections (4-bar/8-bar) and
+            # inject lightweight phrase-level mutation when no explicit plan exists
+            # or when plan lacks audible contrast.
+            section_bars = int(section.get("bars", 1) or 1)
+            split_bar = _phrase_split_bar(section_bars)
+            existing_phrase_plan = section.get("phrase_plan") if isinstance(section.get("phrase_plan"), dict) else None
+            first_roles = list((existing_phrase_plan or {}).get("first_phrase_roles") or [])
+            second_roles = list((existing_phrase_plan or {}).get("second_phrase_roles") or [])
+            needs_phrase_mutation = (
+                split_bar is not None and (
+                    not existing_phrase_plan
+                    or not first_roles
+                    or not second_roles
+                    or set(first_roles) == set(second_roles)
+                )
+            )
+            if needs_phrase_mutation:
+                mut_first, mut_second = _build_phrase_roles_for_mutation(
+                    section_type=section_type,
+                    active_roles=active_roles,
+                    available_roles=available_roles,
+                    occurrence=occurrence,
+                )
+                section["phrase_plan"] = {
+                    "split_bar": split_bar,
+                    "first_phrase_roles": mut_first,
+                    "second_phrase_roles": mut_second,
+                    "lead_entry_delay_bars": 0,
+                    "end_dropout_bars": 1 if section_type in {"bridge", "breakdown"} and section_bars >= 8 else 0,
+                    "end_dropout_roles": ["drums", "bass"] if section_type in {"bridge", "breakdown"} else [],
+                    "description": f"auto_phrase_mutation_{section_type}",
+                }
+
             # Inject deterministic transition boundary events.
             baseline_variations: list[dict] = list(section.get("variations") or [])
             boundary_events: list[dict] = list(section.get("boundary_events") or [])
@@ -1089,6 +1172,13 @@ def _apply_stem_primary_section_states(
                         "duration_bars": 1,
                         "intensity": 0.85,
                         "params": {"silence": True},
+                    },
+                    {
+                        "variation_type": "bass_pause",
+                        "bar_start": bar_start + max(0, section_bars - 2),
+                        "duration_bars": 1,
+                        "intensity": 0.75,
+                        "params": {"pause_bars": 0.5},
                     },
                 ])
 
@@ -2265,7 +2355,7 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     drop_effectiveness_score = round(min(1.0, max(0.0, (0.35 if transition_silence_window_count > 0 else 0.0) + (0.30 if any('bass_pause' in str(e) for e in actual_transition_events_used) else 0.0) + (0.20 if any('pre_hook' in str(e) for e in actual_transition_events_used) else 0.0) + (0.15 if any('fake_drop' in str(e) for e in actual_transition_events_used) else 0.0))), 3)
     bridge_contrast_score = round(min(1.0, max(0.0, ((avg_hook_energy - avg_bridge_energy) * 0.75) + ((hook_density - bridge_density) * 0.2) + (0.05 if bridge_sections else 0.0))), 3)
     variation_personality_score = round(min(1.0, max(0.0, (variation_uniqueness_score * 0.5) + ((1.0 - section_similarity_score) * 0.25) + (min(1.0, len(set(actual_transition_events_used)) / 8.0) * 0.25))), 3)
-    phrase_evolution_score = round(min(1.0, max(0.0, (min(1.0, phrase_split_count / max(1, len(timeline_sections))) * 0.65) + (0.35 if len(set(hook_stages)) >= 2 else 0.0))), 3)
+    phrase_evolution_score = round(min(1.0, max(0.0, (min(1.0, phrase_split_count / max(1, len(timeline_sections))) * 0.55) + (0.30 if len(set(hook_stages)) >= 2 else 0.0) + (0.15 if any(bool((s.get("runtime_first_phrase_stems") or [])) and bool((s.get("runtime_second_phrase_stems") or [])) and set(s.get("runtime_first_phrase_stems") or []) != set(s.get("runtime_second_phrase_stems") or []) for s in timeline_sections) else 0.0))), 3)
 
     final_producer_score = round(
         (hook_payoff_score * 0.20)
