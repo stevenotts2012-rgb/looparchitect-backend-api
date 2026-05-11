@@ -682,6 +682,64 @@ def _build_minimal_render_plan(loop: Loop, params: Dict, target_bars: Optional[i
     }
 
 
+
+
+def _build_emergency_producer_plan(loop: Loop) -> dict:
+    sections = [
+        {"name": "intro", "bars": 8},
+        {"name": "verse", "bars": 16},
+        {"name": "hook", "bars": 16},
+        {"name": "verse_2", "bars": 16},
+        {"name": "hook_2", "bars": 16},
+        {"name": "bridge", "bars": 8},
+        {"name": "outro", "bars": 8},
+    ]
+    section_summary = ", ".join(f"{sec['name']}:{sec['bars']}" for sec in sections)
+    return {
+        "available_roles": ["full_mix", "drums", "bass", "melody"],
+        "rules_applied": ["emergency_loop_arrangement_fallback"],
+        "sections": sections,
+        "section_summary": section_summary,
+        "decision_log": [
+            f"Emergency producer plan fallback used for loop_id={loop.id} before enqueue"
+        ],
+    }
+
+
+def _ensure_producer_plan_before_enqueue(render_plan: dict, loop: Loop) -> dict:
+    producer_plan = render_plan.get("producer_plan") or {}
+    if producer_plan.get("sections"):
+        logger.info("PRODUCER_PLAN_READY_BEFORE_ENQUEUE")
+        return render_plan
+
+    logger.warning("PRODUCER_PLAN_EMPTY_DETECTED loop_id=%s", loop.id)
+    logger.info("PRODUCER_PLAN_HYDRATION_ATTEMPTED loop_id=%s", loop.id)
+
+    arrangement_json = render_plan.get("arrangement_json") or {}
+    arrangement_sections = arrangement_json.get("sections") or []
+    if arrangement_sections:
+        producer_plan = dict(producer_plan)
+        producer_plan["sections"] = arrangement_sections
+        producer_plan.setdefault("available_roles", ["full_mix", "drums", "bass", "melody"])
+        producer_plan.setdefault("rules_applied", ["hydrated_from_arrangement_json"])
+        producer_plan.setdefault("section_summary", ", ".join(
+            f"{s.get('name', 'section')}:{s.get('bars', s.get('length_bars', 0))}"
+            for s in arrangement_sections
+        ))
+        producer_plan.setdefault("decision_log", ["Hydrated producer_plan.sections from arrangement_json.sections before enqueue"] )
+        render_plan["producer_plan"] = producer_plan
+        logger.info("PRODUCER_PLAN_HYDRATED_FROM_ARRANGEMENT_JSON loop_id=%s", loop.id)
+        logger.info("PRODUCER_PLAN_READY_BEFORE_ENQUEUE")
+        return render_plan
+
+    emergency_plan = _build_emergency_producer_plan(loop)
+    if not emergency_plan.get("sections"):
+        raise ValueError("PRODUCER_PLAN_EMPTY_BEFORE_ENQUEUE")
+    render_plan["producer_plan"] = emergency_plan
+    logger.info("PRODUCER_PLAN_EMERGENCY_FALLBACK_CREATED loop_id=%s", loop.id)
+    logger.info("PRODUCER_PLAN_READY_BEFORE_ENQUEUE")
+    return render_plan
+
 def _compute_target_bars(loop: Loop, request: "AsyncRenderRequest") -> int:
     """Resolve the target bar count from the request and loop metadata.
 
@@ -862,8 +920,7 @@ async def render_arrangement_async(
                 "PRODUCER_PLAN_ROUTE_INPUT %s",
                 json.dumps(_producer_plan_stats(_pp_route, generative_plan), sort_keys=True),
             )
-            if generative_plan.get("producer_arrangement_used") is True and not (_pp_route.get("sections") or []):
-                raise ValueError("PRODUCER_PLAN_EMPTY_BEFORE_ENQUEUE")
+            generative_plan = _ensure_producer_plan_before_enqueue(generative_plan, loop)
             render_plan_json = json.dumps(generative_plan)
             _pp = generative_plan.get("producer_plan") or {}
             logger.info(
@@ -936,8 +993,14 @@ async def render_arrangement_async(
             "PRODUCER_PLAN_ENQUEUE_PAYLOAD %s",
             json.dumps(_producer_plan_stats(_pp, job_params), sort_keys=True),
         )
-        if not (_pp.get("sections") or []) and (_rp.get("sections") or []):
-            raise HTTPException(status_code=500, detail="PRODUCER_PLAN_EMPTY_BEFORE_ENQUEUE")
+        if not (_pp.get("sections") or []):
+            try:
+                _rp = _ensure_producer_plan_before_enqueue(_rp, loop)
+                _pp = _rp.get("producer_plan") or {}
+                job_params["render_plan_json"] = json.dumps(_rp)
+                render_plan_json = job_params["render_plan_json"]
+            except Exception:
+                raise HTTPException(status_code=500, detail="PRODUCER_PLAN_EMPTY_BEFORE_ENQUEUE")
         logger.info(
             "ARRANGER_STATE_SERIALIZED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
             len(_pp.get("sections") or []),
