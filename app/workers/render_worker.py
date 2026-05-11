@@ -1318,7 +1318,13 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         failure_stage=failure_stage,
                         render_path_used=_failure_render_path_used,
                         source_quality_mode_used=_failure_source_quality_mode,
-                        observability=_failure_observability,
+                        observability={
+                            **_failure_observability,
+                            "failure_stage": failure_stage or "unknown",
+                            "failure_reason": str(e)[:500],
+                            "recovery_attempted": bool((params or {}).get("personality") in {"cinematic", "experimental", "dark"}),
+                            "recovery_success": False,
+                        },
                         feature_flags_snapshot=feature_flags,
                     ),
                 )
