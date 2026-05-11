@@ -108,6 +108,7 @@ class VariationJobInfo(BaseModel):
     """Info about one enqueued variation job."""
 
     job_id: str
+    personality: str = Field(..., description="Producer profile used for this variation")
     variation_index: int = Field(..., description="0-based index of this variation")
     variation_seed: int = Field(..., description="Deterministic seed used for this variation")
     status: str
@@ -516,7 +517,20 @@ def _producer_plan_to_render_plan(
         "total_bars": total_bars,
         "sections": sections,
         "events": top_level_events,
-        "producer_plan": producer_plan.to_dict(),
+        "producer_plan": {
+            **producer_plan.to_dict(),
+            "sections": [
+                {"name": sec["name"], "bars": sec["bars"], "bar_start": sec["bar_start"], "energy": sec["energy"]}
+                for sec in sections
+            ],
+            "available_roles": list(available_roles),
+            "rules_applied": ["generative_producer_orchestrator"],
+            "decision_log": [
+                f"section={sec['name']} bars={sec['bars']} energy={sec['energy']} roles={','.join(sec.get('active_stem_roles') or [])}"
+                for sec in sections
+            ],
+            "section_summary": ", ".join(f"{sec['name']}:{sec['bars']}" for sec in sections),
+        },
         "render_profile": {
             "genre_profile": genre or "generic",
             "source": "generative_producer",
@@ -736,6 +750,7 @@ def _ensure_producer_plan_before_enqueue(render_plan: dict, loop: Loop) -> dict:
     if not emergency_plan.get("sections"):
         raise ValueError("PRODUCER_PLAN_EMPTY_BEFORE_ENQUEUE")
     render_plan["producer_plan"] = emergency_plan
+    logger.warning("EMERGENCY_FALLBACK_USED loop_id=%s", loop.id)
     logger.info("PRODUCER_PLAN_EMERGENCY_FALLBACK_CREATED loop_id=%s", loop.id)
     logger.info("PRODUCER_PLAN_READY_BEFORE_ENQUEUE")
     return render_plan
@@ -771,6 +786,24 @@ def _compute_target_bars(loop: Loop, request: "AsyncRenderRequest") -> int:
         return min(bars, _MAX_TARGET_BARS)
 
     return int(loop.bars or 32)
+
+
+_VARIATION_PERSONALITIES: list[dict[str, str]] = [
+    {"name": "clean/mainstream", "genre": "rnb", "energy": "medium"},
+    {"name": "dark/drop-heavy", "genre": "drill", "energy": "high"},
+    {"name": "cinematic/experimental", "genre": "rage", "energy": "dynamic"},
+]
+
+
+def _variation_profile_for_index(index: int, req_genre: str | None, req_energy: str | None) -> dict[str, str]:
+    if index < len(_VARIATION_PERSONALITIES):
+        return dict(_VARIATION_PERSONALITIES[index])
+    fallback_name = f"custom/seeded-{index+1}"
+    return {
+        "name": fallback_name,
+        "genre": (req_genre or "generic"),
+        "energy": (req_energy or "medium"),
+    }
 
 
 # ── Async Job Endpoints ───────────────────────────────────────────────────────────
@@ -840,6 +873,7 @@ async def render_arrangement_async(
         loop_id,
         request.variation_count,
     )
+    logger.info("VARIATION_REQUEST_COUNT loop_id=%s variation_count=%s", loop_id, request.variation_count)
     logger.info(
         "RUNTIME_CONFIG_SNAPSHOT scope=web loop_id=%s env=%s is_production=%s dev_fallback_loop_only=%s "
         "producer_v2=%s arrangement_plan_v2=%s arrangement_memory_v2=%s transitions_v2=%s truth_obs_v2=%s",
@@ -893,14 +927,12 @@ async def render_arrangement_async(
     )
 
     # ── Build per-variation jobs ──────────────────────────────────────────────
-    plan_params = {
-        "genre": request.genre,
-        "energy": request.energy,
-    }
-
     variation_jobs: List[VariationJobInfo] = []
 
     for var_idx in range(request.variation_count):
+        profile = _variation_profile_for_index(var_idx, request.genre, request.energy)
+        plan_params = {"genre": profile["genre"], "energy": profile["energy"], "personality": profile["name"]}
+        logger.info("VARIATION_PLAN_CREATED loop_id=%s variation_index=%s personality=%s genre=%s energy=%s", loop_id, var_idx, profile["name"], profile["genre"], profile["energy"])
         # Each variation gets a unique deterministic seed
         var_seed = (base_seed + var_idx) % (_MAX_RANDOM_SEED + 1)
 
@@ -912,6 +944,7 @@ async def render_arrangement_async(
         )
 
         try:
+            logger.info("REAL_PRODUCER_PLANNER_STARTED loop_id=%s variation_index=%s personality=%s seed=%s", loop_id, var_idx, profile["name"], var_seed)
             generative_plan = _build_generative_render_plan(
                 loop, plan_params, target_bars=target_bars, seed=var_seed
             )
@@ -924,7 +957,10 @@ async def render_arrangement_async(
             render_plan_json = json.dumps(generative_plan)
             _pp = generative_plan.get("producer_plan") or {}
             logger.info(
-                "ARRANGER_STATE_CREATED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+                "REAL_PRODUCER_PLANNER_OUTPUT loop_id=%s variation_index=%s personality=%s section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+                loop_id,
+                var_idx,
+                profile["name"],
                 len(_pp.get("sections") or []),
                 len(_pp.get("available_roles") or []),
                 len(_pp.get("decision_log") or []),
@@ -978,6 +1014,7 @@ async def render_arrangement_async(
             "variation_seed": var_seed,
             "variation_index": var_idx,
             "variation_count": request.variation_count,
+            "personality": profile["name"],
             "requested_length_seconds": requested_length_seconds,
             "actual_length_seconds": actual_length_seconds,
             "section_count": len(section_templates),
@@ -1035,6 +1072,7 @@ async def render_arrangement_async(
         variation_jobs.append(
             VariationJobInfo(
                 job_id=job.id,
+                personality=profile["name"],
                 variation_index=var_idx,
                 variation_seed=var_seed,
                 status=job.status,
@@ -1042,6 +1080,7 @@ async def render_arrangement_async(
                 deduplicated=was_deduplicated,
             )
         )
+    logger.info("VARIATION_JOBS_ENQUEUED loop_id=%s variation_count=%s jobs=%s", loop_id, request.variation_count, [j.job_id for j in variation_jobs])
     logger.info(
         "BATCH_RENDER_JOBS_CREATED loop_id=%s requested_variation_count=%s created_jobs=%s job_ids=%s",
         loop_id,
@@ -1050,6 +1089,9 @@ async def render_arrangement_async(
         [j.job_id for j in variation_jobs],
     )
     # Strict multi-variation guarantee: never silently return reused jobs when
+    if len(variation_jobs) != request.variation_count:
+        logger.error("PARTIAL_VARIATION_FAILURE loop_id=%s requested=%s created=%s", loop_id, request.variation_count, len(variation_jobs))
+        raise HTTPException(status_code=500, detail="Partial variation failure: requested jobs were not fully enqueued")
     # the caller requested multiple variations.
     if request.variation_count > 1 and any(j.deduplicated for j in variation_jobs):
         logger.error(
