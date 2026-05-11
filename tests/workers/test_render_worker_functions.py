@@ -145,6 +145,19 @@ class TestRunWithTimeout:
             render_worker._run_with_timeout(_raise, timeout_seconds=5)
 
 
+class TestCinematicTerminalGuards:
+    def test_is_cinematic_personality(self):
+        assert render_worker._is_cinematic_personality({"personality": "cinematic"}) is True
+        assert render_worker._is_cinematic_personality({"personality": "experimental"}) is True
+        assert render_worker._is_cinematic_personality({"personality": "clean"}) is False
+
+    def test_terminal_status_for_failure_timeout(self):
+        assert render_worker._terminal_status_for_failure(TimeoutError("x"), None) == "timeout"
+
+    def test_terminal_status_for_failure_missing_output(self):
+        assert render_worker._terminal_status_for_failure(RuntimeError("x"), []) == "missing_output"
+
+
 # ===========================================================================
 # _upload_render_output
 # ===========================================================================
