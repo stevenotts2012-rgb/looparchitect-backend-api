@@ -75,6 +75,9 @@ class RenderJobStatusResponse(BaseModel):
     arrangement_id: Optional[int] = Field(
         None, description="Arrangement DB record linked to this completed job"
     )
+    variation_index: Optional[int] = None
+    personality: Optional[str] = None
+    output_url: Optional[str] = None
 
     @field_validator("status", mode="before")
     @classmethod

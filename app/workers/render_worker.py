@@ -405,6 +405,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
     # Phase 3: track where failure occurred for job_terminal_state resolution.
     failure_stage: str | None = None
     worker_mode = get_worker_mode()
+    worker_started_at = datetime.utcnow()
+    render_stage = "init"
     feature_flags = resolve_feature_flags_snapshot()
     logger.info(
         "RUNTIME_CONFIG_SNAPSHOT scope=worker job_id=%s loop_id=%s env=%s is_production=%s "
@@ -784,6 +786,14 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 "VARIATION_RENDER_STARTED job_id=%s loop_id=%s variation_index=%s variation_seed=%s",
                 app_job_id, loop_id, _variation_index, _variation_seed,
             )
+            logger.info(
+                "VARIATION_JOB_RENDER_ENTER job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f",
+                app_job_id, _variation_index, (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds(),
+            )
+            logger.info(
+                "VARIATION_JOB_STARTED job_id=%s variation_index=%s status=processing",
+                app_job_id, _variation_index,
+            )
 
         # Load job and loop
         job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
@@ -992,6 +1002,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         stems=worker_stems,
                     )
 
+                render_stage = "dsp_render"
+                logger.info("VARIATION_JOB_RENDER_STAGE job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f", app_job_id, _variation_index, (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds())
                 render_result = _run_with_timeout(_do_render)
             except FuturesTimeoutError:
                 raise TimeoutError(
@@ -1035,6 +1047,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             except Exception as _dur_log_err:
                 logger.debug("FINAL_RENDER_DURATION_SECONDS log failed job_id=%s: %s", app_job_id, _dur_log_err)
 
+            render_stage = "upload_output"
+            logger.info("VARIATION_JOB_HEARTBEAT job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f", app_job_id, _variation_index, (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds())
             update_job_status(db, app_job_id, "processing", progress=90.0, progress_message="Uploading")
             failure_stage = "storage"
             s3_key, content_type = _upload_render_output(app_job_id, filename, output_path)
@@ -1169,6 +1183,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         _variation_seed,
                         _arr_record_id,
                     )
+                    logger.info(
+                        "VARIATION_JOB_DONE job_id=%s variation_index=%s arrangement_id=%s",
+                        app_job_id,
+                        _variation_index,
+                        _arr_record_id,
+                    )
             except Exception as _arr_err:
                 logger.error(
                     "ARRANGEMENT_CREATE_FAILED job_id=%s error=%s",
@@ -1232,6 +1252,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             )
     
     except Exception as e:
+        logger.error("VARIATION_JOB_RENDER_EXCEPTION job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f error=%s", app_job_id, (params.get("variation_index") if isinstance(params, dict) else None), (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds(), e)
         logger.exception(
             "JOB_FAILURE app_job_id=%s incoming_job_id=%s loop_id=%s arrangement_id=%s error=%s",
             app_job_id,
@@ -1240,6 +1261,13 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             arrangement_id,
             e,
         )
+        if '_variation_index' in locals() and _variation_index is not None:
+            logger.error(
+                "VARIATION_JOB_FAILED job_id=%s variation_index=%s error=%s",
+                app_job_id,
+                _variation_index,
+                e,
+            )
         try:
             job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
             if job:
@@ -1277,8 +1305,8 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 update_job_status(
                     db,
                     app_job_id,
-                    "failed",
-                    error_message=_err_str[:500],
+                    "timeout" if isinstance(e, TimeoutError) else "failed",
+                    error_message=("Render timeout exceeded" if isinstance(e, TimeoutError) else _err_str[:500]),
                     render_metadata=assemble_render_metadata(
                         worker_mode=worker_mode,
                         job_terminal_state=_terminal_state,
@@ -1289,6 +1317,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         feature_flags_snapshot=feature_flags,
                     ),
                 )
+                logger.error("VARIATION_JOB_MARKED_TERMINAL job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f terminal_status=%s", app_job_id, (params.get("variation_index") if isinstance(params, dict) else None), (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds(), ("timeout" if isinstance(e, TimeoutError) else "failed"))
                 logger.error(
                     "JOB_FAILURE_METADATA job_id=%s job_terminal_state=%s failure_stage=%s worker_mode=%s",
                     app_job_id,
@@ -1300,4 +1329,12 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             logger.error(f"Failed to update job status: {db_err}")
     
     finally:
+        try:
+            _job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
+            if _job and _job.status == "processing":
+                update_job_status(db, app_job_id, "cancelled", error_message="Worker exited without terminal status")
+                logger.error("VARIATION_JOB_MARKED_TERMINAL job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f terminal_status=cancelled", app_job_id, (params.get("variation_index") if isinstance(params, dict) else None), (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds())
+        except Exception:
+            logger.exception("VARIATION_JOB_TERMINAL_ENFORCEMENT_FAILED job_id=%s", app_job_id)
+        logger.info("VARIATION_JOB_RENDER_EXIT job_id=%s variation_index=%s personality=%s render_stage=%s elapsed_seconds=%.3f", app_job_id, (params.get("variation_index") if isinstance(params, dict) else None), (params.get("personality") if isinstance(params, dict) else None), render_stage, (datetime.utcnow()-worker_started_at).total_seconds())
         db.close()
