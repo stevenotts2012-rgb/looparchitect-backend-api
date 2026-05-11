@@ -2344,6 +2344,50 @@ def _variation_personality_name(variation_index: int) -> str:
     return "clean/mainstream arrangement"
 
 
+def _ensure_phrase_plan(section: dict, section_type: str, bars: int) -> None:
+    if bars < 8:
+        return
+    existing = section.get("phrase_plan") if isinstance(section.get("phrase_plan"), dict) else {}
+    roles = list(dict.fromkeys(section.get("active_stem_roles") or section.get("instruments") or []))
+    if not roles:
+        roles = ["drums", "bass", "melody", "pads"]
+
+    def _simple_first_half(base_roles: list[str]) -> list[str]:
+        if section_type in {"bridge", "breakdown"}:
+            return [r for r in base_roles if r not in {"drums", "bass", "808", "sub"}] or ["pads", "melody"]
+        return [r for r in base_roles if r not in {"fx", "perc", "counter_melody"}] or base_roles[: max(1, len(base_roles)//2)]
+
+    first_roles = _simple_first_half(roles)
+    second_roles = list(roles)
+    if set(first_roles) == set(second_roles):
+        for role in ("perc", "fx", "counter_melody", "topline"):
+            if role not in first_roles:
+                second_roles.append(role)
+                break
+
+    if bars >= 16:
+        phrase_plan = {
+            "structure": ["A", "B", "A2", "transition"],
+            "split_bar": 8,
+            "first_phrase_roles": first_roles,
+            "second_phrase_roles": second_roles,
+            "phrase_markers": {"a": [1, 4], "b": [5, 8], "a2": [9, 12], "transition": [13, 16]},
+        }
+    else:
+        phrase_plan = {
+            "structure": ["setup", "answer"],
+            "split_bar": 4,
+            "first_phrase_roles": first_roles,
+            "second_phrase_roles": second_roles,
+            "phrase_markers": {"setup": [1, 4], "answer": [5, 8]},
+        }
+
+    phrase_plan = {**phrase_plan, **existing}
+    phrase_plan["first_phrase_roles"] = phrase_plan.get("first_phrase_roles") or first_roles
+    phrase_plan["second_phrase_roles"] = phrase_plan.get("second_phrase_roles") or second_roles
+    section["phrase_plan"] = phrase_plan
+
+
 def _apply_producer_taste_decisions(
     section: dict,
     *,
@@ -2365,6 +2409,8 @@ def _apply_producer_taste_decisions(
     boundary_events = list(section.get("boundary_events") or [])
     personality = _variation_personality_name(variation_index)
     is_final_hook = section_type == "hook" and next_type in {"outro", ""}
+    bars = int(section.get("bars") or max(0, int((section.get("bar_end") or 0)) - int(section.get("bar_start") or 0)) or 8)
+    _ensure_phrase_plan(section, section_type, bars)
 
     def _add_var(var_type: str, intensity: float = 0.7) -> None:
         nonlocal variations
@@ -2427,16 +2473,45 @@ def _apply_producer_taste_decisions(
         applied.append("PHRASE_MUTATION_RENDERED")
 
 
+    # Musical mutation engine (section-aware, restrained).
+    if section_type in {"verse", "pre_hook", "hook"}:
+        _add_var("drum_density_down", 0.62)
+        _add_var("hat_density_variation", 0.68)
+        _add_var("melody_filter_phrase", 0.7 if section_type == "verse" else 0.55)
+        _add_var("call_response_melody", 0.72)
+    if next_type == "hook":
+        _add_var("pre_hook_fill", 0.78)
+        _add_var("pad_swell", 0.76)
+        _add_var("reverse_melody_pickup", 0.74)
+        _add_var("bass_pause", 0.82 if variation_index == 2 else 0.72)
+    if section_type == "hook":
+        _add_var("drum_density_up", 0.78)
+        _add_var("bass_answer_phrase", 0.74)
+        _add_var("melody_octave_response", 0.8)
+        if is_final_hook:
+            _add_var("final_hook_drum_lift", 0.92)
+            _add_var("final_hook_bass_lift", 0.94)
+    if section_type in {"bridge", "breakdown"}:
+        _add_var("bridge_drum_dropout", 0.88)
+        _add_var("bridge_bass_dropout", 0.9)
+    if prev_type in {"bridge", "breakdown"} and section_type in {"pre_hook", "hook", "verse"}:
+        _add_var("bass_reentry", 0.83)
+
     # Force distinct personalities across V1/V2/V3 for uniqueness.
     if variation_index == 1:
         _add_var("clean_arrangement", 0.55)
+        _add_var("restrained_mutation_profile", 0.6)
         _add_boundary("crossfade", placement="end_of_section", intensity=0.75)
     elif variation_index == 2:
         _add_var("dark_drop_choreo", 0.95)
+        _add_var("fake_drop", 0.88)
+        _add_var("dark_filtered_phrase", 0.86)
         _add_var("bass_pause", 0.95)
         _add_boundary("sub_impact", placement="on_downbeat", intensity=0.9)
     else:
         _add_var("cinematic_texture_swap", 0.95)
+        _add_var("reverse_melody_pickup", 0.9)
+        _add_var("phrase_chop_variation", 0.9)
         _add_var("reverse_slice", 0.9)
         _add_boundary("reverb_carry", placement="end_of_section", intensity=0.9)
     if is_final_hook:
