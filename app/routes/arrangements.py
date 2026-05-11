@@ -376,6 +376,39 @@ def _normalize_arrangement_for_response(arrangement: Arrangement) -> dict:
         arrangement_id=arrangement.id,
     )
     _producer_plan = payload.get("producer_plan") or {}
+    _arrangement_json = _coerce_json_value(
+        arrangement.arrangement_json,
+        default={},
+        expected_type=dict,
+        field_name="arrangement_json",
+        arrangement_id=arrangement.id,
+    )
+    _arr_sections = list((_arrangement_json or {}).get("sections") or [])
+    if not (_producer_plan.get("sections") or []) and _arr_sections:
+        _runtime_roles: list[str] = []
+        for _section in _arr_sections:
+            _runtime_roles.extend(list(_section.get("runtime_active_stems") or []))
+            _runtime_roles.extend(list(_section.get("active_stem_roles") or []))
+        _deduped_roles = sorted({str(r) for r in _runtime_roles if r})
+        _producer_plan = {
+            **_producer_plan,
+            "sections": _arr_sections,
+            "available_roles": _producer_plan.get("available_roles") or _deduped_roles,
+        }
+        payload["producer_plan"] = _producer_plan
+        if not payload.get("section_summary"):
+            payload["section_summary"] = [
+                {
+                    "section_name": str(s.get("name") or s.get("type") or "section"),
+                    "start_bar": int(s.get("bar_start") or s.get("start_bar") or 0),
+                    "end_bar": int((s.get("bar_start") or s.get("start_bar") or 0) + (s.get("bars") or s.get("length_bars") or 1)),
+                    "energy": float(s.get("energy") or 0.5),
+                    "intensity": float(s.get("energy") or 0.5),
+                    "active_roles": list(s.get("active_stem_roles") or s.get("runtime_active_stems") or []),
+                }
+                for s in _arr_sections
+            ]
+        logger.info("PRODUCER_PLAN_HYDRATED_FROM_ARRANGEMENT_JSON arrangement_id=%s sections=%d", arrangement.id, len(_arr_sections))
     logger.info(
         "ARRANGER_STATE_RESPONSE_SERIALIZED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
         len(_producer_plan.get("sections") or []),
