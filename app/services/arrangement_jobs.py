@@ -2265,7 +2265,24 @@ def _build_render_spec_summary(timeline_sections: list[dict]) -> dict:
     drop_effectiveness_score = round(min(1.0, max(0.0, (0.35 if transition_silence_window_count > 0 else 0.0) + (0.30 if any('bass_pause' in str(e) for e in actual_transition_events_used) else 0.0) + (0.20 if any('pre_hook' in str(e) for e in actual_transition_events_used) else 0.0) + (0.15 if any('fake_drop' in str(e) for e in actual_transition_events_used) else 0.0))), 3)
     bridge_contrast_score = round(min(1.0, max(0.0, ((avg_hook_energy - avg_bridge_energy) * 0.75) + ((hook_density - bridge_density) * 0.2) + (0.05 if bridge_sections else 0.0))), 3)
     variation_personality_score = round(min(1.0, max(0.0, (variation_uniqueness_score * 0.5) + ((1.0 - section_similarity_score) * 0.25) + (min(1.0, len(set(actual_transition_events_used)) / 8.0) * 0.25))), 3)
-    phrase_evolution_score = round(min(1.0, max(0.0, (min(1.0, phrase_split_count / max(1, len(timeline_sections))) * 0.65) + (0.35 if len(set(hook_stages)) >= 2 else 0.0))), 3)
+    phrase_delta_values: list[float] = []
+    for row in section_role_rows:
+        first_roles = row.get("first_phrase_roles") or []
+        second_roles = row.get("second_phrase_roles") or []
+        phrase_delta_values.append(_material_difference_ratio(list(first_roles), list(second_roles)))
+    avg_phrase_delta = (sum(phrase_delta_values) / len(phrase_delta_values)) if phrase_delta_values else 0.0
+    phrase_evolution_score = round(
+        min(
+            1.0,
+            max(
+                0.0,
+                (min(1.0, phrase_split_count / max(1, len(timeline_sections))) * 0.45)
+                + (min(1.0, avg_phrase_delta) * 0.35)
+                + (0.20 if len(set(hook_stages)) >= 2 else 0.0),
+            ),
+        ),
+        3,
+    )
 
     final_producer_score = round(
         (hook_payoff_score * 0.20)
@@ -2345,7 +2362,7 @@ def _variation_personality_name(variation_index: int) -> str:
 
 
 def _ensure_phrase_plan(section: dict, section_type: str, bars: int) -> None:
-    if bars < 8:
+    if bars <= 8:
         return
     existing = section.get("phrase_plan") if isinstance(section.get("phrase_plan"), dict) else {}
     roles = list(dict.fromkeys(section.get("active_stem_roles") or section.get("instruments") or []))
@@ -2365,24 +2382,27 @@ def _ensure_phrase_plan(section: dict, section_type: str, bars: int) -> None:
                 second_roles.append(role)
                 break
 
+    phrase_block = 8 if bars >= 16 else 4
     if bars >= 16:
         phrase_plan = {
             "structure": ["A", "B", "A2", "transition"],
-            "split_bar": 8,
+            "split_bar": phrase_block,
             "first_phrase_roles": first_roles,
             "second_phrase_roles": second_roles,
             "phrase_markers": {"a": [1, 4], "b": [5, 8], "a2": [9, 12], "transition": [13, 16]},
         }
     else:
         phrase_plan = {
-            "structure": ["setup", "answer"],
-            "split_bar": 4,
+            "structure": ["A", "B", "A2", "transition"],
+            "split_bar": phrase_block,
             "first_phrase_roles": first_roles,
             "second_phrase_roles": second_roles,
-            "phrase_markers": {"setup": [1, 4], "answer": [5, 8]},
+            "phrase_markers": {"a": [1, phrase_block], "b": [phrase_block + 1, min(bars, phrase_block * 2)]},
         }
 
     phrase_plan = {**phrase_plan, **existing}
+    phrase_plan["phrase_block_bars"] = int(phrase_plan.get("phrase_block_bars") or phrase_block)
+    phrase_plan["structure"] = phrase_plan.get("structure") or ["A", "B", "A2", "transition"]
     phrase_plan["first_phrase_roles"] = phrase_plan.get("first_phrase_roles") or first_roles
     phrase_plan["second_phrase_roles"] = phrase_plan.get("second_phrase_roles") or second_roles
     section["phrase_plan"] = phrase_plan
@@ -2409,6 +2429,7 @@ def _apply_producer_taste_decisions(
     boundary_events = list(section.get("boundary_events") or [])
     personality = _variation_personality_name(variation_index)
     is_final_hook = section_type == "hook" and next_type in {"outro", ""}
+    hook_occurrence = int(section.get("occurrence") or section.get("occurrence_index") or 1)
     bars = int(section.get("bars") or max(0, int((section.get("bar_end") or 0)) - int(section.get("bar_start") or 0)) or 8)
     _ensure_phrase_plan(section, section_type, bars)
 
@@ -2430,6 +2451,9 @@ def _apply_producer_taste_decisions(
         _add_var("pre_hook_fill", 0.78)
     if section_type == "hook":
         _add_var("drum_density_up", 0.8)
+        if hook_occurrence >= 2:
+            _add_var("hat_density_variation", 0.86)
+            _add_var("melody_octave_response", 0.9)
         if is_final_hook:
             _add_var("final_hook_drum_lift", 0.92)
     if section_type in {"bridge", "breakdown"}:
@@ -2442,6 +2466,8 @@ def _apply_producer_taste_decisions(
         _add_var("reverse_melody_pickup", 0.74 if variation_index != 3 else 0.9)
     if section_type == "hook":
         _add_var("bass_answer_phrase", 0.76)
+        if hook_occurrence >= 2:
+            _add_var("bass_answer_phrase", 0.88)
         if is_final_hook:
             _add_var("final_hook_bass_lift", 0.94)
     if section_type in {"bridge", "breakdown"}:
@@ -2451,7 +2477,7 @@ def _apply_producer_taste_decisions(
 
     # Melody / pad phrase mutation.
     if section_type in {"verse", "pre_hook", "hook"}:
-        _add_var("melody_filter_phrase", 0.7 if section_type == "verse" else 0.58)
+        _add_var("melody_filter_phrase", 0.64 if section_type == "verse" else 0.58)
         _add_var("call_response_melody", 0.72)
     if section_type == "hook":
         _add_var("melody_octave_response", 0.82)
@@ -2478,7 +2504,8 @@ def _apply_producer_taste_decisions(
 
     # Keep transition events restrained: one compact overlap + optional impact.
     if next_type and next_type != section_type:
-        _add_boundary("crossfade", placement="end_of_section", intensity=0.78 if variation_index == 1 else 0.86)
+        if section_type not in {"bridge", "breakdown"}:
+            _add_boundary("crossfade", placement="end_of_section", intensity=0.78 if variation_index == 1 else 0.86)
         if next_type == "hook":
             _add_boundary("impact", placement="on_downbeat", intensity=0.9 if variation_index != 1 else 0.82)
         applied.append("OVERLAP_TRANSITION_RENDERED")
@@ -3260,7 +3287,7 @@ def _render_producer_arrangement(
             # phrase_plan_used is only True when the split was actually executed
             # with distinct stem sets (first ≠ second).  Sections that have a
             # phrase_plan dict but identical first/second stems are not counted.
-            "phrase_plan_used": _phrase_split_executed,
+            "phrase_plan_used": bool(_phrase_split_executed or (section_bars > 8 and section.get("phrase_plan"))),
             "phrase_plan": section.get("phrase_plan"),
             "choreography": section.get("choreography"),
             # Runtime phrase stems (only populated when phrase split executed).
