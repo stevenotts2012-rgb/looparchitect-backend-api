@@ -298,3 +298,40 @@ class TestWorkerUsesParamsRenderPlanJson:
         )
         with pytest.raises(ValueError, match="render_plan_json is required"):
             render_worker._select_render_mode(has_render_plan)
+
+
+class TestExtractProducerFieldsFromPlan:
+    def test_preserves_populated_producer_plan(self):
+        render_plan = {
+            "producer_plan": {
+                "sections": [{"name": "verse"}],
+                "available_roles": ["drums"],
+                "decision_log": [{"a": 1}],
+                "rules_applied": ["r1"],
+                "events": [],
+            },
+            "events": [],
+        }
+        out = render_worker._extract_producer_fields_from_plan(
+            render_plan, '{"sections":[{"name":"verse","type":"verse"}]}'
+        )
+        payload = json.loads(out["producer_plan_json"])
+        assert len(payload.get("sections") or []) == 1
+        assert len(payload.get("available_roles") or []) == 1
+        assert out["section_summary_len"] == 1
+
+    def test_blocks_empty_overwrite_when_generative_plan_populated(self):
+        render_plan = {
+            "producer_plan": {},
+            "_generative_producer_plan": {
+                "sections": [{"name": "hook"}],
+                "available_roles": ["bass"],
+                "decision_log": [{"d": "x"}],
+                "rules_applied": ["rule"],
+            },
+            "events": [],
+        }
+        out = render_worker._extract_producer_fields_from_plan(render_plan, '{"sections":[]}')
+        payload = json.loads(out["producer_plan_json"])
+        assert payload.get("sections")
+        assert payload.get("available_roles")

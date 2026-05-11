@@ -841,6 +841,14 @@ async def render_arrangement_async(
                 loop, plan_params, target_bars=target_bars, seed=var_seed
             )
             render_plan_json = json.dumps(generative_plan)
+            _pp = generative_plan.get("producer_plan") or {}
+            logger.info(
+                "ARRANGER_STATE_CREATED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+                len(_pp.get("sections") or []),
+                len(_pp.get("available_roles") or []),
+                len(_pp.get("decision_log") or []),
+                len(_pp.get("rules_applied") or []),
+            )
             logger.info(
                 "render_plan_json_build_success: loop_id=%s variation_index=%d "
                 "source=generative_producer section_count=%d energy_curve_score=%.4f",
@@ -895,6 +903,18 @@ async def render_arrangement_async(
             "section_sequence": section_sequence,
             "render_plan_json": render_plan_json,
         }
+        try:
+            _rp = json.loads(render_plan_json)
+        except Exception:
+            _rp = {}
+        _pp = _rp.get("producer_plan") or _rp.get("_generative_producer_plan") or _rp.get("_ai_producer_plan") or {}
+        logger.info(
+            "ARRANGER_STATE_SERIALIZED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+            len(_pp.get("sections") or []),
+            len(_pp.get("available_roles") or []),
+            len(_pp.get("decision_log") or []),
+            len(_pp.get("rules_applied") or []),
+        )
 
         try:
             job, was_deduplicated = create_render_job(db, loop_id, job_params)
@@ -910,6 +930,13 @@ async def render_arrangement_async(
             var_seed,
             job.id,
             target_bars,
+        )
+        logger.info(
+            "ARRANGER_STATE_ENQUEUED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+            len(_pp.get("sections") or []),
+            len(_pp.get("available_roles") or []),
+            len(_pp.get("decision_log") or []),
+            len(_pp.get("rules_applied") or []),
         )
 
         variation_jobs.append(

@@ -293,12 +293,32 @@ def _extract_producer_fields_from_plan(
             "energy_curve_score": float(metadata.get("energy_curve_score") or 0.0),
             "warnings": metadata.get("warnings") or [],
         }
+    elif isinstance(producer_plan_dict, dict):
+        has_state = bool(producer_plan_dict.get("sections") or producer_plan_dict.get("available_roles") or producer_plan_dict.get("decision_log"))
+        if not has_state and (render_plan.get("_generative_producer_plan") or render_plan.get("_ai_producer_plan")):
+            candidate = render_plan.get("_generative_producer_plan") or render_plan.get("_ai_producer_plan")
+            if isinstance(candidate, dict) and (candidate.get("sections") or candidate.get("available_roles") or candidate.get("decision_log")):
+                logger.warning(
+                    "ARRANGER_STATE_OVERWRITE_BLOCKED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+                    len(candidate.get("sections") or []),
+                    len(candidate.get("available_roles") or []),
+                    len(candidate.get("decision_log") or []),
+                    len(candidate.get("rules_applied") or []),
+                )
+                producer_plan_dict = candidate
 
     # Use events from the embedded producer_plan dict when available (richer data).
     plan_events = producer_plan_dict.get("events") or events_list
     logger.info("PRODUCER_PLAN_EVENTS_COUNT count=%d", len(plan_events))
 
     producer_plan_json = _json.dumps(producer_plan_dict)
+    logger.info(
+        "ARRANGER_STATE_LOADED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+        len(producer_plan_dict.get("sections") or []),
+        len(producer_plan_dict.get("available_roles") or []),
+        len(producer_plan_dict.get("decision_log") or []),
+        len(producer_plan_dict.get("rules_applied") or []),
+    )
 
     # ── Decision log ─────────────────────────────────────────────────────────
     # Build a concise decision log from plan_events (richer when producer_plan embedded).
@@ -351,6 +371,15 @@ def _extract_producer_fields_from_plan(
                 break
     except Exception:
         pass
+
+    if not (producer_plan_dict.get("sections") or []) or not (producer_plan_dict.get("available_roles") or []):
+        logger.error(
+            "ARRANGER_EMPTY_PLAN_RUNTIME_ERROR section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+            len(producer_plan_dict.get("sections") or []),
+            len(producer_plan_dict.get("available_roles") or []),
+            len(producer_plan_dict.get("decision_log") or []),
+            len(producer_plan_dict.get("rules_applied") or []),
+        )
 
     return {
         "producer_plan_json": producer_plan_json,
@@ -916,6 +945,14 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
             try:
                 # Score the render plan before committing render resources.
                 parsed_plan = json.loads(render_plan_json) if isinstance(render_plan_json, str) else render_plan_json
+                _pp = parsed_plan.get("producer_plan") or parsed_plan.get("_generative_producer_plan") or parsed_plan.get("_ai_producer_plan") or {}
+                logger.info(
+                    "ARRANGER_STATE_RENDER_BEGIN section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+                    len(_pp.get("sections") or []),
+                    len(_pp.get("available_roles") or []),
+                    len(_pp.get("decision_log") or []),
+                    len(_pp.get("rules_applied") or []),
+                )
                 score_and_reject(parsed_plan)
 
                 # Wrap render_from_plan() in a local lambda so that both the
@@ -938,6 +975,13 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 )
 
             timeline_json = render_result["timeline_json"]
+            logger.info(
+                "ARRANGER_STATE_RENDER_COMPLETE section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+                len((_pp or {}).get("sections") or []),
+                len((_pp or {}).get("available_roles") or []),
+                len((_pp or {}).get("decision_log") or []),
+                len((_pp or {}).get("rules_applied") or []),
+            )
             postprocess = render_result.get("postprocess") or {}
             render_obs_from_executor = render_result.get("render_observability") or {}
             if postprocess and arrangement and arrangement.render_plan_json:
