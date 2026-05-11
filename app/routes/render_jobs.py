@@ -1062,6 +1062,14 @@ async def render_arrangement_async(
             target_bars,
         )
         logger.info(
+            "VARIATION_JOB_CREATED job_id=%s variation_index=%d personality=%s status=%s arrangement_id=%s",
+            job.id,
+            var_idx,
+            profile["name"],
+            job.status,
+            job_params.get("arrangement_id"),
+        )
+        logger.info(
             "ARRANGER_STATE_ENQUEUED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
             len(_pp.get("sections") or []),
             len(_pp.get("available_roles") or []),

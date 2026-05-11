@@ -713,3 +713,37 @@ class TestWorkerSuccessArrangementVisibility:
         assert getattr(new_arr, "status", None) == "done", (
             "New arrangement must have status=done"
         )
+
+
+class TestArrangementDetailNormalization:
+    def test_get_arrangement_normalizes_malformed_decision_log(self, test_loop, db, client):
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            output_s3_key="arrangements/norm.wav",
+            decision_log_json='{"bad": "shape"}',
+            arrangement_json='{"sections":[{"name":"intro","bar_start":1,"bars":4}]}',
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+        response = client.get(f"/api/v1/arrangements/{arrangement.id}")
+        assert response.status_code == 200
+        assert response.json()["decision_log"] == []
+
+    def test_get_arrangement_normalizes_malformed_producer_plan(self, test_loop, db, client):
+        arrangement = Arrangement(
+            loop_id=test_loop.id,
+            status="done",
+            target_seconds=60,
+            output_s3_key="arrangements/norm2.wav",
+            producer_plan_json='[{"not":"dict"}]',
+            arrangement_json='{"sections":[{"name":"hook","bar_start":5,"bars":8}]}',
+        )
+        db.add(arrangement)
+        db.commit()
+        db.refresh(arrangement)
+        response = client.get(f"/api/v1/arrangements/{arrangement.id}")
+        assert response.status_code == 200
+        assert isinstance(response.json()["producer_plan"], dict)
