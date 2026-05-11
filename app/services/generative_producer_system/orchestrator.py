@@ -161,6 +161,16 @@ class GenerativeProducerOrchestrator:
         -------
         ProducerPlan
         """
+        logger.info(
+            "PLANNER_INPUT_RECEIVED arr=%d sections=%d available_roles=%s genre=%s vibe=%s seed=%d",
+            self.arrangement_id,
+            len(sections or []),
+            list(self.available_roles or []),
+            genre,
+            vibe,
+            seed,
+        )
+
         # Normalise genre
         normalised_genre = (genre or "generic").lower().strip()
         if normalised_genre not in SUPPORTED_GENRES:
@@ -172,8 +182,15 @@ class GenerativeProducerOrchestrator:
             normalised_genre = "generic"
 
         profile = get_genre_profile(normalised_genre)
+        logger.info(
+            "PLANNER_ROLE_DETECTION_RESULT arr=%d detected_roles=%s source_type=%s",
+            self.arrangement_id,
+            list(self.available_roles or []),
+            "loop" if sections else "unknown",
+        )
 
         # Generate raw events
+        logger.info("PLANNER_SECTION_GENERATION_BEGIN arr=%d", self.arrangement_id)
         raw_events = generate_events(
             sections=sections,
             profile=profile,
@@ -190,6 +207,14 @@ class GenerativeProducerOrchestrator:
                 kept_events.append(mapped)
             else:
                 skipped_events.append(skip)  # type: ignore[arg-type]
+
+        logger.info(
+            "PLANNER_SECTION_GENERATION_RESULT arr=%d raw_event_count=%d kept_event_count=%d skipped_event_count=%d",
+            self.arrangement_id,
+            len(raw_events),
+            len(kept_events),
+            len(skipped_events),
+        )
 
         # Validate plan
         plan = ProducerPlan(
@@ -210,6 +235,10 @@ class GenerativeProducerOrchestrator:
         # If no events survived the generator+mapper pipeline, inject deterministic
         # fallback moves so the arrangement is never rendered as plain loop repetition.
         if not plan.events and sections:
+            logger.warning(
+                "PLANNER_FALLBACK_TRIGGERED arr=%d reason=no_events_survived",
+                self.arrangement_id,
+            )
             plan.events = _generate_fallback_events(sections, seed)
             plan.warnings.append("fallback_events_used: no generator events survived")
 
@@ -229,6 +258,14 @@ class GenerativeProducerOrchestrator:
             plan.section_variation_score,
             len(plan.warnings),
         )
+
+        if not plan.events and sections:
+            logger.error(
+                "PLANNER_EMPTY_PLAN_GENERATED arr=%d sections=%d available_roles=%s",
+                self.arrangement_id,
+                len(sections),
+                list(self.available_roles or []),
+            )
 
         return plan
 

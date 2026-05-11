@@ -5348,6 +5348,21 @@ def _run_generative_producer_shadow(
 
     try:
         sections_raw = render_plan.get("sections") or []
+        stem_meta = render_plan.get("render_profile", {}).get("stem_separation") if isinstance(render_plan.get("render_profile"), dict) else {}
+        detected_roles = list(available_roles or [])
+        if sections_raw and not detected_roles:
+            detected_roles = ["drums", "bass", "melody", "full_mix"]
+        logger.info(
+            "PLANNER_INPUT_RECEIVED arr=%d detected_roles=%s loop_duration=%s bpm=%s genre=%s source_type=%s section_count=%d active_stem_roles=%s",
+            arrangement_id,
+            detected_roles,
+            render_plan.get("target_seconds"),
+            render_plan.get("bpm"),
+            str(render_plan.get("selected_genre") or render_plan.get("genre") or "generic"),
+            "loop" if sections_raw else "unknown",
+            len(sections_raw),
+            detected_roles,
+        )
         if not sections_raw:
             logger.info(
                 "GENERATIVE_PRODUCER_SHADOW [arr=%d] no sections in render plan — skipping",
@@ -5375,6 +5390,7 @@ def _run_generative_producer_shadow(
             })
             current_bar = bar_end
 
+        logger.info("PLANNER_SECTION_GENERATION_BEGIN arr=%d", arrangement_id)
         orchestrator = GenerativeProducerOrchestrator(
             available_roles=available_roles,
             arrangement_id=arrangement_id,
@@ -5387,6 +5403,16 @@ def _run_generative_producer_shadow(
             seed=seed,
         )
         plan_dict = plan_to_dict(plan)
+        logger.info(
+            "PLANNER_SECTION_GENERATION_RESULT arr=%d section_count=%d event_count=%d warning_count=%d",
+            arrangement_id,
+            len(section_template),
+            len(plan_dict.get("events") or []),
+            len(plan_dict.get("warnings") or []),
+        )
+
+        if not (plan_dict.get("events") or []) and sections_raw:
+            logger.warning("PLANNER_FALLBACK_TRIGGERED arr=%d reason=empty_events", arrangement_id)
 
         result.update({
             "plan": plan_dict,
@@ -5401,6 +5427,27 @@ def _run_generative_producer_shadow(
             "section_variation_score": plan.section_variation_score,
             "event_count_per_section": plan.event_count_per_section,
         })
+
+        result["plan"] = result.get("plan") or {}
+        result["plan"].setdefault("builder_version", "2.0")
+        result["plan"].setdefault("available_roles", detected_roles)
+        result["plan"].setdefault("rules_applied", ["generative_producer_emergency_fallback"])
+        result["plan"].setdefault("decision_log", [])
+        result["plan"].setdefault("sections", [
+            {"name": "intro", "bars": 4},
+            {"name": "verse", "bars": 8},
+            {"name": "hook", "bars": 8},
+            {"name": "verse", "bars": 8},
+            {"name": "hook", "bars": 8},
+            {"name": "outro", "bars": 4},
+        ])
+        result["plan"].setdefault("section_summary", {"count": len(result["plan"].get("sections") or [])})
+
+        producer_arrangement_used = bool(render_plan.get("render_profile", {}).get("producer_arrangement_used"))
+        source_audio_exists = bool(sections_raw) or bool(stem_meta)
+        if producer_arrangement_used and source_audio_exists and not (result["plan"].get("sections") or []):
+            logger.error("PLANNER_EMPTY_PLAN_GENERATED arr=%d planner_exception=%s", arrangement_id, result.get("error"))
+            raise ValueError("PRODUCER_PLANNER_GENERATED_EMPTY_STRUCTURE")
 
         log_feature_event(
             logger,
@@ -5424,6 +5471,11 @@ def _run_generative_producer_shadow(
             exc_info=True,
         )
         result["error"] = str(exc)
+        logger.error(
+            "PLANNER_FALLBACK_TRIGGERED arr=%d planner_exception=%s",
+            arrangement_id,
+            str(exc),
+        )
 
     return result
 
