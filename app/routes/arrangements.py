@@ -375,6 +375,14 @@ def _normalize_arrangement_for_response(arrangement: Arrangement) -> dict:
         field_name="decision_log",
         arrangement_id=arrangement.id,
     )
+    _producer_plan = payload.get("producer_plan") or {}
+    logger.info(
+        "ARRANGER_STATE_RESPONSE_SERIALIZED section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
+        len(_producer_plan.get("sections") or []),
+        len(_producer_plan.get("available_roles") or []),
+        len(payload.get("decision_log") or []),
+        len(_producer_plan.get("rules_applied") or []),
+    )
 
     return payload
 def _build_arrangement_response(arrangement: Arrangement) -> "ArrangementResponse":
