@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # Producer Engine Strict Rules — enables additional anti-mud / density guardrails
     # (melodic density cap, low-frequency crowding prevention, sustained source limit).
     # Defaults to False for safe staged rollout; enable with PRODUCER_ENGINE_STRICT_RULES=true.
+    disable_experimental_profile_mutations: bool = Field(
+        default=False,
+        validation_alias="DISABLE_EXPERIMENTAL_PROFILE_MUTATIONS",
+    )
+
     feature_producer_engine_strict_rules: bool = Field(
         default=False,
         validation_alias="PRODUCER_ENGINE_STRICT_RULES",
