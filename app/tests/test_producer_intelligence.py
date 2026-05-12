@@ -16,7 +16,7 @@ def test_melody_role_stays_active_and_hooks_include_melodic_role():
     plan = _plan()
     melodic = ("melody", "pad", "harmony", "vocal", "synth", "arp")
     for section, section_roles in plan["stems"].items():
-        if "hook" in section:
+        if section == "hook_1":
             continue
         assert any(m in r.lower() for r in section_roles for m in melodic)
     assert any(m in r.lower() for r in plan["stems"]["hook_1"] for m in melodic)
@@ -61,8 +61,8 @@ def test_fatigue_prevention_and_narrative_progression():
 
 def test_no_flat_energy_curve():
     plan = _plan()
-    minimum_distinct_energy_levels = 3
-    assert len(set(plan["energy"].values())) >= minimum_distinct_energy_levels
+    MINIMUM_DISTINCT_ENERGY_LEVELS = 3
+    assert len(set(plan["energy"].values())) >= MINIMUM_DISTINCT_ENERGY_LEVELS
 
 
 def test_generic_arrangement_with_buried_melody_rejected():
