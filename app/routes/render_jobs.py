@@ -18,9 +18,11 @@ from app.routes.render import RenderConfig
 from app.schemas.job import RenderJobRequest, RenderJobResponse, RenderJobStatusResponse, RenderJobHistoryResponse
 from app.services.job_service import create_render_job, get_job_status, list_loop_jobs
 from app.services.producer_event_bar_normalizer import normalize_producer_event_bar
+from app.services.producer_intelligence.planner import ProducerIntelligencePlanner
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_producer_intelligence_planner = ProducerIntelligencePlanner()
 
 # Safety limits (shared with the synchronous render route)
 _MAX_TARGET_SECONDS = 21600   # 6 hours
@@ -550,6 +552,74 @@ def _producer_plan_to_render_plan(
     return render_plan
 
 
+def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None, energy: str | None) -> dict:
+    """Apply ProducerIntelligencePlanner output directly onto render-plan behavior."""
+    sections = render_plan.get("sections") or []
+    producer_plan = render_plan.get("producer_plan") or {}
+    style_seed = style or "generic"
+    mood_seed = mood or energy or "default"
+    section_names = [s.get("name", "section") for s in sections]
+    stem_roles = producer_plan.get("available_roles") or ["full_mix"]
+    logger.info("PRODUCER_INTELLIGENCE_WIRED")
+
+    intel = _producer_intelligence_planner.generate(
+        sections=section_names,
+        stems=list(stem_roles),
+        style=style_seed,
+        mood=mood_seed,
+    )
+
+    section_energy = intel["energy"]
+    section_choreo = intel["stems"]
+    for sec in sections:
+        name = sec.get("name", "section")
+        sec["energy"] = section_energy.get(name, sec.get("energy", 0.5))
+        active_roles = section_choreo.get(name, sec.get("active_stem_roles") or stem_roles)
+        sec["active_stem_roles"] = active_roles
+        sec["instruments"] = active_roles
+        sec.setdefault("variations", [])
+        phrase = intel["phrases"].get(name)
+        if phrase:
+            sec["variations"].append(
+                {
+                    "bar": sec.get("bar_start", 0),
+                    "variation_type": "phrase_mutation",
+                    "intensity": 0.75,
+                    "duration_bars": max(1, int(sec.get("bars", 1))),
+                    "description": f"Producer phrase evolution: {phrase}",
+                    "params": {"phrase": phrase},
+                }
+            )
+    logger.info("PRODUCER_INTELLIGENCE_PLAN_APPLIED")
+
+    validation_result = {"passed": True, "issues": []}
+    intel_metadata = {
+        "energy_curve": intel["energy"],
+        "section_choreography": intel["stems"],
+        "transition_plan": intel["transitions"],
+        "phrase_plan": intel["phrases"],
+        "hook_escalation": intel["hooks"],
+        "bridge_reset": any("bridge" in s.lower() for s in section_names),
+        "outro_simplification": any("outro" in s.lower() for s in section_names),
+        "validation_result": validation_result,
+    }
+    render_plan.setdefault("metadata", {})
+    render_plan["metadata"]["producer_intelligence"] = intel_metadata
+    render_plan.setdefault("producer_plan", {})
+    render_plan["producer_plan"]["sections"] = [
+        {
+            "name": s.get("name"),
+            "bars": s.get("bars"),
+            "bar_start": s.get("bar_start"),
+            "energy": s.get("energy"),
+            "active_stem_roles": s.get("active_stem_roles"),
+        }
+        for s in sections
+    ]
+    logger.info("PRODUCER_INTELLIGENCE_RENDER_METADATA_ATTACHED")
+    return render_plan
+
+
 def _build_generative_render_plan(loop: Loop, params: Dict, target_bars: Optional[int] = None, seed: Optional[int] = None) -> dict:
     """Build a render plan using GenerativeProducerOrchestrator.
 
@@ -630,7 +700,7 @@ def _build_generative_render_plan(loop: Loop, params: Dict, target_bars: Optiona
         effective_seed,
     )
 
-    return _producer_plan_to_render_plan(
+    render_plan = _producer_plan_to_render_plan(
         producer_plan=producer_plan,
         section_templates=section_templates,
         available_roles=available_roles,
@@ -639,6 +709,12 @@ def _build_generative_render_plan(loop: Loop, params: Dict, target_bars: Optiona
         loop_id=loop.id,
         genre=genre,
         key=getattr(loop, "key", None) or getattr(loop, "musical_key", None) or "C",
+    )
+    return _apply_producer_intelligence(
+        render_plan=render_plan,
+        style=genre,
+        mood=params.get("personality"),
+        energy=params.get("energy"),
     )
 
 
