@@ -590,11 +590,19 @@ def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None
                     "params": {"phrase": phrase},
                 }
             )
+        if "hook" in name.lower():
+            for ev in ("melody_front_hook", "pad_widen_hook", "harmony_lift", "melodic_call_response"):
+                sec["variations"].append({"bar": sec.get("bar_start", 0), "variation_type": ev, "intensity": 0.78, "duration_bars": max(1, int(sec.get("bars", 1)) // 2), "description": f"Hook identity: {ev}", "params": {}})
     logger.info("PRODUCER_INTELLIGENCE_PLAN_APPLIED")
 
     validation_result = {"passed": True, "issues": []}
     intel_metadata = {
         "energy_curve": intel["energy"],
+        "melody_presence_score": intel.get("melody_presence_score", 0.0),
+        "drum_bass_dominance_score": intel.get("drum_bass_dominance_score", 0.0),
+        "melodic_sections_count": intel.get("melodic_sections_count", 0),
+        "melody_restored_count": intel.get("melody_restored_count", 0),
+        "mix_balance_guard_applied": intel.get("mix_balance_guard_applied", False),
         "section_choreography": intel["stems"],
         "transition_plan": intel["transitions"],
         "phrase_plan": intel["phrases"],
