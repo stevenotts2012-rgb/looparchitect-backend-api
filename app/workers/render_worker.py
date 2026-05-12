@@ -784,6 +784,16 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 "VARIATION_RENDER_STARTED job_id=%s loop_id=%s variation_index=%s variation_seed=%s",
                 app_job_id, loop_id, _variation_index, _variation_seed,
             )
+            logger.info(
+                "VARIATION_JOB_STARTED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+                app_job_id,
+                _variation_index,
+                params.get("personality") if isinstance(params, dict) else None,
+                "processing",
+                False,
+                arrangement_id,
+                None,
+            )
 
         # Load job and loop
         job = db.query(RenderJob).filter(RenderJob.id == app_job_id).first()
@@ -1000,6 +1010,16 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
             timeline_json = render_result["timeline_json"]
             logger.info(
+                "VARIATION_JOB_RENDER_COMPLETE job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+                app_job_id,
+                _variation_index,
+                params.get("personality") if isinstance(params, dict) else None,
+                "processing",
+                False,
+                arrangement_id,
+                None,
+            )
+            logger.info(
                 "ARRANGER_STATE_RENDER_COMPLETE section_count=%d available_roles_count=%d decision_log_count=%d rules_applied_count=%d",
                 len((_pp or {}).get("sections") or []),
                 len((_pp or {}).get("available_roles") or []),
@@ -1063,6 +1083,25 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         app_job_id,
                         _url_err,
                     )
+                if not _arr_output_url:
+                    logger.error(
+                        "VARIATION_JOB_OUTPUT_ATTACHED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+                        app_job_id,
+                        _variation_index,
+                        params.get("personality") if isinstance(params, dict) else None,
+                        "missing_output",
+                        False,
+                        arrangement_id,
+                        "Render completed without output_url",
+                    )
+                    update_job_status(
+                        db,
+                        app_job_id,
+                        "missing_output",
+                        error_message="Render completed without output_url",
+                        arrangement_id=_arr_record_id if "_arr_record_id" in locals() else None,
+                    )
+                    return
 
                 try:
                     _target_seconds = int(
@@ -1168,6 +1207,16 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         _variation_index,
                         _variation_seed,
                         _arr_record_id,
+                    )
+                    logger.info(
+                        "VARIATION_JOB_OUTPUT_ATTACHED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+                        app_job_id,
+                        _variation_index,
+                        params.get("personality") if isinstance(params, dict) else None,
+                        "processing",
+                        True,
+                        _arr_record_id,
+                        None,
                     )
             except Exception as _arr_err:
                 logger.error(
