@@ -247,6 +247,28 @@ class TestRenderAsyncEndpoint:
         assert len(personalities) == 3
         assert all(custom_style in p for p in personalities)
 
+    def test_regression_lock_three_variation_profiles(self, client, test_loop_with_file):
+        jobs = [
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+        ]
+        user_style = "HyperTrap"
+        with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.create_render_job", side_effect=[(jobs[0], False), (jobs[1], False), (jobs[2], False)]):
+            response = client.post(
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 3, "genre": user_style, "energy": "high"},
+            )
+        assert response.status_code == 202, response.text
+        payload = response.json()
+        assert len(payload["jobs"]) == 3
+        assert [j["variation_index"] for j in payload["jobs"]] == [0, 1, 2]
+        assert all(bool(j.get("personality")) for j in payload["jobs"])
+        personalities = [j["personality"] for j in payload["jobs"]]
+        assert all(user_style in p for p in personalities)
+        assert all("cinematic/experimental" not in p.lower() for p in personalities)
+
     def test_render_config_fields_passed_to_create_job(self, client, test_loop_with_file):
         """Verify that config fields (genre, energy, etc.) are forwarded."""
         fake_job = RenderJob(
