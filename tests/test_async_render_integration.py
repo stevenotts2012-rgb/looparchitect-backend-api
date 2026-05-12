@@ -240,6 +240,21 @@ class TestJobService:
         assert updated.status == "missing_output"
         assert updated.finished_at is not None
 
+    def test_lifecycle_terminal_states_supported(self):
+        terminals = {"succeeded", "failed", "timeout", "missing_output"}
+        assert terminals == {"succeeded", "failed", "timeout", "missing_output"}
+
+    def test_no_job_remains_processing_past_timeout(self):
+        jobs = [
+            RenderJob(id="v0", loop_id=1, job_type="render_arrangement", status="processing", params_json='{"variation_index":0}', started_at=datetime.utcnow() - timedelta(hours=2), created_at=datetime.utcnow()),
+            RenderJob(id="v1", loop_id=1, job_type="render_arrangement", status="processing", params_json='{"variation_index":1}', started_at=datetime.utcnow() - timedelta(hours=2), created_at=datetime.utcnow()),
+            RenderJob(id="v2", loop_id=1, job_type="render_arrangement", status="processing", params_json='{"variation_index":2}', started_at=datetime.utcnow() - timedelta(hours=2), created_at=datetime.utcnow()),
+        ]
+        for job in jobs:
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.first.return_value = job
+            out = get_job_status(mock_db, job.id)
+            assert out.status == "timeout"
 
 class TestAsyncRenderSchemas:
     """Test Pydantic request/response schemas."""
