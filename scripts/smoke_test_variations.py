@@ -28,8 +28,8 @@ def run(base_url: str, loop_id: int, timeout_seconds: int, poll_interval: float)
     r.raise_for_status()
     payload = r.json()
     jobs: List[Dict] = payload.get("jobs") or []
-    if len(jobs) < 2:
-        _log("PRODUCTION_VARIATION_SMOKE_FAILED", reason="fewer_than_2_jobs", returned_jobs=len(jobs))
+    if len(jobs) != 2:
+        _log("PRODUCTION_VARIATION_SMOKE_FAILED", reason="expected_exactly_2_jobs", returned_jobs=len(jobs))
         return 2
 
     start = time.time()

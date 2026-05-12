@@ -230,7 +230,7 @@ export interface RenderAsyncConfig {
   genre?: string;
   length_seconds?: number;
   energy?: string;
-  variations?: number;
+  variation_count?: number;
   variation_styles?: string[];
   custom_style?: string;
 }
