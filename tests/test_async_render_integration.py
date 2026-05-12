@@ -11,6 +11,7 @@ from app.services.job_service import (
     get_job_status,
     list_loop_jobs,
     _compute_dedupe_hash,
+    update_job_status,
 )
 from app.models.job import RenderJob
 from app.schemas.job import RenderJobRequest, RenderJobStatusResponse
@@ -218,6 +219,26 @@ class TestJobService:
         assert statuses["j1"] in {"succeeded", "failed", "timeout", "missing_output"}
         assert statuses["j2"] in {"succeeded", "failed", "timeout", "missing_output"}
         assert statuses["j3"] in {"succeeded", "failed", "timeout", "missing_output"}
+
+    def test_update_job_status_missing_output_sets_finished_at(self):
+        job = RenderJob(
+            id="job-missing-output",
+            loop_id=1,
+            job_type="render_arrangement",
+            status="processing",
+            params_json='{"variation_index":2,"personality":"melodic/bounce"}',
+            created_at=datetime.utcnow(),
+        )
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = job
+        updated = update_job_status(
+            mock_db,
+            "job-missing-output",
+            "missing_output",
+            error_message="Render completed without output_url",
+        )
+        assert updated.status == "missing_output"
+        assert updated.finished_at is not None
 
 
 class TestAsyncRenderSchemas:

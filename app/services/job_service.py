@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "missing_output"}
 
 
+def _variation_context(job: RenderJob) -> tuple[Optional[int], Optional[str]]:
+    try:
+        params = json.loads(job.params_json or "{}")
+    except Exception:
+        params = {}
+    return params.get("variation_index"), params.get("personality")
+
+
 def _compute_dedupe_hash(loop_id: int, params: Dict) -> str:
     """Hash (loop_id, render params) for deduplication."""
     key = json.dumps({"loop_id": loop_id, "params": params}, sort_keys=True)
@@ -203,7 +211,7 @@ def update_job_status(
     
     if status == "processing" and not job.started_at:
         job.started_at = datetime.utcnow()
-    elif status in ["succeeded", "failed"]:
+    elif status in _TERMINAL_STATUSES:
         job.finished_at = datetime.utcnow()
         if output_files:
             output_list = [f.model_dump() for f in output_files]
@@ -217,11 +225,12 @@ def update_job_status(
     
     db.commit()
     db.refresh(job)
+    variation_index, personality = _variation_context(job)
     logger.info(
         "VARIATION_JOB_STATUS_PERSISTED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
         job.id,
-        (json.loads(job.params_json).get("variation_index") if job.params_json else None),
-        (json.loads(job.params_json).get("personality") if job.params_json else None),
+        variation_index,
+        personality,
         job.status,
         bool(job.output_files_json),
         job.arrangement_id,
@@ -283,11 +292,12 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
             logger.warning("Failed to parse render_metadata_json for job %s: %s", job_id, _e)
 
     if job.status in _TERMINAL_STATUSES:
+        variation_index, personality = _variation_context(job)
         logger.info(
             "VARIATION_JOB_TERMINAL_CONFIRMED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
             job.id,
-            (json.loads(job.params_json).get("variation_index") if job.params_json else None),
-            (json.loads(job.params_json).get("personality") if job.params_json else None),
+            variation_index,
+            personality,
             job.status,
             bool(output_files),
             job.arrangement_id,
