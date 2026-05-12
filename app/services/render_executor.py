@@ -638,7 +638,8 @@ def render_from_plan(
         render_plan_sections=render_plan.get("sections") or [],
         render_plan=render_plan,
     )
-    logger.info("METRIC_RECOMPUTE_BEFORE_VALIDATION")
+    logger.info("METRIC_RECOMPUTE_BEGIN")
+    render_observability["_metric_recompute_started"] = True
     from app.services.render_observability import recompute_producer_metrics_from_execution_report
     recomputed_metrics = recompute_producer_metrics_from_execution_report(
         render_observability.get("section_execution_report") or [],
@@ -654,6 +655,8 @@ def render_from_plan(
     _render_spec_summary.update(recomputed_metrics)
     _timeline_for_merge["render_spec_summary"] = _render_spec_summary
     timeline_json = json.dumps(_timeline_for_merge)
+    render_observability["_metric_recompute_completed"] = True
+    logger.info("METRIC_RECOMPUTE_COMPLETE")
     _assert_metric_recompute_pipeline(render_observability)
     try:
         _timeline_for_obs = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
@@ -678,13 +681,14 @@ def render_from_plan(
         timeline_json=timeline_json,
         render_observability=render_observability,
     )
-    logger.info("VALIDATION_AFTER_METRIC_RECOMPUTE")
+    logger.info("METRIC_VALIDATION_BEGIN")
     _assert_dynamic_arrangement(
         timeline_json=timeline_json,
         render_observability=render_observability,
         render_path_used=render_path_used,
     )
-    logger.info("METRIC_RECOMPUTE_ORDER_FIXED")
+    logger.info("METRIC_VALIDATION_COMPLETE")
+    logger.info("METRIC_RECOMPUTE_ORDER_CONFIRMED")
 
     logger.info(
         "RENDER_OBSERVABILITY render_path=%s source_quality=%s fallbacks=%d "
@@ -753,6 +757,9 @@ def _assert_dynamic_arrangement(
     render_path_used: str,
 ) -> None:
     """Hard-fail static renders that violate producer execution requirements."""
+    if not bool(render_observability.get("_metric_recompute_completed")):
+        logger.error("METRIC_RECOMPUTE_ORDER_BROKEN")
+        raise RuntimeError("METRIC_RECOMPUTE_ORDER_BROKEN")
     try:
         timeline = json.loads(timeline_json) if isinstance(timeline_json, str) else (timeline_json or {})
     except Exception:
@@ -839,6 +846,9 @@ def _events_overlap_section(event_start: int, event_end: int, section_start: int
 
 
 def _assert_metric_recompute_pipeline(render_observability: dict[str, Any]) -> None:
+    if not bool(render_observability.get("_metric_recompute_started")) or not bool(render_observability.get("_metric_recompute_completed")):
+        logger.error("METRIC_RECOMPUTE_ORDER_BROKEN")
+        raise RuntimeError("METRIC_RECOMPUTE_ORDER_BROKEN")
     report = list(render_observability.get("section_execution_report") or [])
     all_events = {str(e).strip().lower() for row in report for e in (row.get("applied_events") or [])}
     has_mutation = bool(all_events & {"call_response_variation", "chop_stutter", "reverse_slice", "rhythmic_gate", "dropout_bar", "chop", "chop_role"})
