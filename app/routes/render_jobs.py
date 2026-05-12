@@ -788,27 +788,34 @@ def _compute_target_bars(loop: Loop, request: "AsyncRenderRequest") -> int:
     return int(loop.bars or 32)
 
 
-_VARIATION_PERSONALITIES: list[dict[str, str]] = [
-    {"name": "clean/mainstream", "genre": "rnb", "energy": "medium"},
-    {"name": "dark/drop-heavy", "genre": "drill", "energy": "high"},
-    {"name": "cinematic/experimental", "genre": "rage", "energy": "dynamic"},
-]
+_SLOW_MOOD_TERMS = {"smooth", "emotional", "sad", "slow", "soulful", "ballad", "intimate", "mellow", "chill"}
+_SLOW_STYLE_TERMS = {"r&b", "rnb", "soul", "gospel", "blues", "jazz", "ballad", "lofi", "lo-fi", "ambient", "acoustic"}
 
 
-def _variation_profile_for_index(index: int, req_genre: str | None, req_energy: str | None) -> dict[str, str]:
-    if index < len(_VARIATION_PERSONALITIES):
-        profile = dict(_VARIATION_PERSONALITIES[index])
-        disable_experimental = settings.disable_experimental_profile_mutations or settings.environment == "production"
-        if disable_experimental and profile["name"] == "cinematic/experimental":
-            profile["genre"] = "trap"
-            profile["energy"] = "medium"
-        return profile
-    fallback_name = f"custom/seeded-{index+1}"
-    return {
-        "name": fallback_name,
-        "genre": (req_genre or "generic"),
-        "energy": (req_energy or "medium"),
-    }
+def _contains_any_token(text: str, terms: set[str]) -> bool:
+    normalized = (text or "").strip().lower()
+    return any(term in normalized for term in terms)
+
+
+def _build_style_variations(user_style: str, mood: str | None, energy: str | None, bpm: float | None) -> list[dict[str, str]]:
+    slow_style = False
+    if bpm is not None and bpm < 95:
+        slow_style = True
+    if _contains_any_token(mood or "", _SLOW_MOOD_TERMS):
+        slow_style = True
+    if _contains_any_token(user_style, _SLOW_STYLE_TERMS):
+        slow_style = True
+    if (energy or "").strip().lower() in {"low", "smooth", "chill"}:
+        slow_style = True
+    if (energy or "").strip().lower() in {"high", "dynamic", "hype", "energetic"}:
+        slow_style = False
+
+    if slow_style:
+        personalities = ["clean/smooth", "moody/intimate", "melodic/spacious"]
+    else:
+        personalities = ["clean/main", "darker/heavier", "melodic/bounce"]
+
+    return [{"name": f"{user_style} — {name}", "genre": user_style, "energy": energy or "medium"} for name in personalities]
 
 
 # ── Async Job Endpoints ───────────────────────────────────────────────────────────
@@ -933,9 +940,18 @@ async def render_arrangement_async(
 
     # ── Build per-variation jobs ──────────────────────────────────────────────
     variation_jobs: List[VariationJobInfo] = []
+    user_style = (request.genre or "Trap").strip()
+    user_energy = (request.energy or "medium").strip()
+    user_mood = getattr(loop, "mood", None)
+    style_variations = _build_style_variations(user_style, user_mood, user_energy, bpm)
+    logger.info("VARIATION_PERSONALITY_SOURCE=style_builder loop_id=%s variation_count=%s", loop_id, request.variation_count)
 
     for var_idx in range(request.variation_count):
-        profile = _variation_profile_for_index(var_idx, request.genre, request.energy)
+        profile = style_variations[var_idx] if var_idx < len(style_variations) else {
+            "name": f"{user_style} — custom/seeded-{var_idx+1}",
+            "genre": user_style,
+            "energy": user_energy,
+        }
         plan_params = {"genre": profile["genre"], "energy": profile["energy"], "personality": profile["name"]}
         logger.info("VARIATION_PLAN_CREATED loop_id=%s variation_index=%s personality=%s genre=%s energy=%s", loop_id, var_idx, profile["name"], profile["genre"], profile["energy"])
         # Each variation gets a unique deterministic seed
