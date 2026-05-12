@@ -7,24 +7,25 @@ def validate_plan(sections: List[str], energies: Dict[str, float], stem_map: Dic
     issues: List[str] = []
 
     if len(set(energies.values())) <= 2:
-        issues.append("flat_arrangements")
+        issues.append("robotic_repetition")
     if max(energies.values()) - min(energies.values()) < 0.2:
-        issues.append("no_energy_evolution")
+        issues.append("static_density")
 
     if len(transitions) != max(0, len(sections) - 1):
         issues.append("missing_transitions")
+    transition_fingerprints = [t["fx"] for t in transitions]
+    if len(transition_fingerprints) > 2 and len(set(transition_fingerprints)) <= 1:
+        issues.append("repetitive_transitions")
 
     fingerprints = [tuple(stem_map[s]) for s in sections]
     if len(set(fingerprints)) == 1:
-        issues.append("identical_sections")
+        issues.append("robotic_repetition")
 
     hooks = [s for s in sections if "hook" in s.lower()]
     if len(hooks) >= 2 and hook_levels[hooks[-1]] <= hook_levels[hooks[0]]:
-        issues.append("repetitive_hook_reuse")
+        issues.append("flat_hook_payoff")
 
-    if any("outro" in s.lower() for s in sections):
-        outro = next(s for s in sections if "outro" in s.lower())
-        if energies[outro] >= energies[sections[-2]]:
-            issues.append("unresolved_endings")
+    if hooks and hooks[-1] in hook_levels and hook_levels[hooks[-1]] < 0.82:
+        issues.append("unresolved_final_hook")
 
     return issues
