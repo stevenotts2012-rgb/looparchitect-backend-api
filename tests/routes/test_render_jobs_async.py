@@ -206,12 +206,46 @@ class TestRenderAsyncEndpoint:
         assert len(payload["jobs"]) == 3
 
         personalities = [j["personality"] for j in payload["jobs"]]
-        assert personalities == ["clean/mainstream", "dark/drop-heavy", "cinematic/experimental"]
+        assert personalities == ["Trap — clean/main", "Trap — darker/heavier", "Trap — melodic/bounce"]
 
         for idx, job in enumerate(payload["jobs"]):
             assert job["variation_index"] == idx
             assert job["variation_seed"] == 42 + idx
             assert job["status"] in {"queued", "processing", "completed", "failed", "timeout", "missing_output"}
+
+    def test_variation_count_3_not_cinematic_without_explicit_cinematic_request(self, client, test_loop_with_file):
+        jobs = [
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+        ]
+        with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.create_render_job", side_effect=[(jobs[0], False), (jobs[1], False), (jobs[2], False)]):
+            response = client.post(
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 3, "genre": "trap", "energy": "high"},
+            )
+        assert response.status_code == 202, response.text
+        personalities = [j["personality"].lower() for j in response.json()["jobs"]]
+        assert all("cinematic/experimental" not in p for p in personalities)
+
+    def test_custom_style_returns_three_profiles_containing_style(self, client, test_loop_with_file):
+        jobs = [
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+            RenderJob(id=str(uuid.uuid4()), loop_id=test_loop_with_file.id, job_type="render_arrangement", status="queued", progress=0.0, created_at=datetime.utcnow()),
+        ]
+        custom_style = "HyperPhonk"
+        with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.create_render_job", side_effect=[(jobs[0], False), (jobs[1], False), (jobs[2], False)]):
+            response = client.post(
+                f"/api/v1/loops/{test_loop_with_file.id}/render-async",
+                json={"variation_count": 3, "genre": custom_style, "energy": "high"},
+            )
+        assert response.status_code == 202, response.text
+        personalities = [j["personality"] for j in response.json()["jobs"]]
+        assert len(personalities) == 3
+        assert all(custom_style in p for p in personalities)
 
     def test_render_config_fields_passed_to_create_job(self, client, test_loop_with_file):
         """Verify that config fields (genre, energy, etc.) are forwarded."""
