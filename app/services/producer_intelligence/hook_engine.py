@@ -4,10 +4,10 @@ from typing import Dict, List
 
 
 def escalate_hooks(sections: List[str], energies: Dict[str, float]) -> Dict[str, float]:
-    intensities: Dict[str, float] = {}
-    n = 0
-    for s in sections:
-        if "hook" in s.lower():
-            n += 1
-            intensities[s] = round(energies[s] + (0.04 * n), 3)
-    return intensities
+    levels: Dict[str, float] = {}
+    count = 0
+    for section in sections:
+        if "hook" in section.lower():
+            count += 1
+            levels[section] = round(min(1.0, energies[section] + (0.05 * count)), 3)
+    return levels
