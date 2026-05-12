@@ -1004,9 +1004,20 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
 
                 render_result = _run_with_timeout(_do_render)
             except FuturesTimeoutError:
-                raise TimeoutError(
-                    f"Render pipeline for job {app_job_id} exceeded timeout of {_JOB_TIMEOUT_SECONDS}s"
+                timeout_msg = f"Render pipeline for job {app_job_id} exceeded timeout of {_JOB_TIMEOUT_SECONDS}s"
+                logger.error(
+                    "VARIATION_JOB_TIMEOUT job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+                    app_job_id,
+                    _variation_index,
+                    params.get("personality") if isinstance(params, dict) else None,
+                    "timeout",
+                    False,
+                    arrangement_id,
+                    timeout_msg,
                 )
+                update_job_status(db, app_job_id, "timeout", error_message=timeout_msg[:500])
+                logger.info("VARIATION_JOB_STATUS_PERSISTED job_id=%s status=%s", app_job_id, "timeout")
+                return
 
             timeline_json = render_result["timeline_json"]
             logger.info(
@@ -1101,6 +1112,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         error_message="Render completed without output_url",
                         arrangement_id=_arr_record_id if "_arr_record_id" in locals() else None,
                     )
+                    logger.info("VARIATION_JOB_STATUS_PERSISTED job_id=%s status=%s", app_job_id, "missing_output")
                     return
 
                 try:
@@ -1257,6 +1269,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                 render_metadata=_direct_render_metadata,
                 arrangement_id=_arr_record_id,
             )
+            logger.info("VARIATION_JOB_STATUS_PERSISTED job_id=%s status=%s", app_job_id, "succeeded")
             logger.info(
                 "JOB_COMPLETED_WITH_ARRANGEMENT job_id=%s arrangement_id=%s loop_id=%s "
                 "job_terminal_state=%s render_path=%s fallbacks=%d worker_mode=%s",
@@ -1323,10 +1336,16 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                     failure_stage=failure_stage,
                     error_message=_err_str,
                 )
+                _fail_status = "failed"
+                if "exceeded timeout" in _err_str.lower() or "timeout" in _err_str.lower():
+                    _fail_status = "timeout"
+                    logger.error("VARIATION_JOB_TIMEOUT job_id=%s variation_index=%s error=%s", app_job_id, _variation_index, _err_str[:500])
+                else:
+                    logger.error("VARIATION_JOB_FAILED job_id=%s variation_index=%s error=%s", app_job_id, _variation_index, _err_str[:500])
                 update_job_status(
                     db,
                     app_job_id,
-                    "failed",
+                    _fail_status,
                     error_message=_err_str[:500],
                     render_metadata=assemble_render_metadata(
                         worker_mode=worker_mode,
@@ -1338,6 +1357,7 @@ def render_loop_worker(job_id: str, loop_id: int, params: Dict) -> None:
                         feature_flags_snapshot=feature_flags,
                     ),
                 )
+                logger.info("VARIATION_JOB_STATUS_PERSISTED job_id=%s status=%s", app_job_id, _fail_status)
                 logger.error(
                     "JOB_FAILURE_METADATA job_id=%s job_terminal_state=%s failure_stage=%s worker_mode=%s",
                     app_job_id,
