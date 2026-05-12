@@ -66,12 +66,9 @@ class ProducerIntelligencePlanner:
             state.used_stem_combinations.add(combo)
             state.remember_density(section, len(combo), len(stems))
 
+        # NOTE: melody audibility must be audio-validated post-render; role presence is insufficient.
         melody_presence, drum_bass_dom, melodic_sections_count, melody_restored_count = _compute_melody_presence(stems_by_section)
-        logger.info("MELODY_PRESENCE_ANALYZED score=%.3f", melody_presence)
-        if drum_bass_dom > 0.65:
-            logger.info("DRUM_BASS_DUCKED_FOR_MELODY")
-            logger.info("MELODY_PRESENCE_BOOSTED")
-        logger.info("MIX_BALANCE_GUARD_APPLIED")
+        logger.info("MIX_BALANCE_GUARD_APPLIED role_based_hint=%.3f", melody_presence)
         transitions = plan_transitions(
             sections,
             energies,
@@ -105,7 +102,7 @@ class ProducerIntelligencePlanner:
         logger.info("HUMANIZATION_APPLIED")
         if issues:
             raise ValueError(f"Producer validation failed: {issues}")
-        logger.info("MELODY_AUDIBILITY_VALIDATION_PASSED")
+        logger.info("MELODY_AUDIBILITY_VALIDATION_DEFERRED_TO_AUDIO_TRUTH")
         logger.info("PRODUCER_VALIDATION_PASSED")
 
         return {
