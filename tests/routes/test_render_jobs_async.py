@@ -777,12 +777,13 @@ class TestRenderPlanJsonLogs:
             captured.append(params)
             return jobs[len(captured) - 1], False
 
+        user_style = "HyperTrap"
         with patch("app.routes.render_jobs.settings.is_production", True), \
              patch("app.routes.render_jobs.is_redis_available", return_value=True), \
              patch("app.routes.render_jobs.create_render_job", side_effect=_capture):
             response = client.post(
                 f"/api/v1/loops/{test_loop_with_file.id}/render-async",
-                json={"variation_count": 3, "genre": "trap", "energy": "high"},
+                json={"variation_count": 3, "genre": user_style, "energy": "high"},
             )
 
         assert response.status_code == 202, response.text
@@ -790,6 +791,7 @@ class TestRenderPlanJsonLogs:
         assert payload["variation_count"] == 2
         assert len(payload["jobs"]) == 2
         assert [j["variation_index"] for j in payload["jobs"]] == [0, 1]
+        assert all(user_style in j["personality"] for j in payload["jobs"])
         assert all("cinematic/experimental" not in j["personality"].lower() for j in payload["jobs"])
         assert len(captured) == 2
         assert all(p["variation_count"] == 2 for p in captured)
