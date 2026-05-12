@@ -4,6 +4,7 @@
 
 Production is locked to **2 variations** for stability.
 The third variation is intentionally disabled in production until it is stabilized separately.
+Any request value above 2 (for example `variation_count=3`) is clamped to 2 in production.
 
 Run:
 
