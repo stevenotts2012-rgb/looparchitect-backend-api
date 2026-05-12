@@ -15,11 +15,8 @@ def _plan():
 def test_melody_role_stays_active_and_hooks_include_melodic_role():
     plan = _plan()
     melodic = ("melody", "pad", "harmony", "vocal", "synth", "arp")
-    for section, section_roles in plan["stems"].items():
-        if section == "hook_1":
-            continue
+    for section_roles in plan["stems"].values():
         assert any(m in r.lower() for r in section_roles for m in melodic)
-    assert any(m in r.lower() for r in plan["stems"]["hook_1"] for m in melodic)
 
 
 def test_bridge_features_melodic_texture_and_hook2_bigger():
@@ -46,8 +43,8 @@ def test_transitions_vary_and_silence_exists_density_changes():
 
 def test_stem_maps_evolve_and_density_changes_over_time():
     plan = _plan()
-    stem_fingerprints = [tuple(v) for v in plan["stems"].values()]
-    assert len(set(stem_fingerprints)) > 1
+    stem_role_combinations = [tuple(v) for v in plan["stems"].values()]
+    assert len(set(stem_role_combinations)) > 1
 
 
 def test_fatigue_prevention_and_narrative_progression():
@@ -61,7 +58,8 @@ def test_fatigue_prevention_and_narrative_progression():
 
 def test_no_flat_energy_curve():
     plan = _plan()
-    assert len(set(plan["energy"].values())) > 2
+    minimum_distinct_energy_levels = 3
+    assert len(set(plan["energy"].values())) >= minimum_distinct_energy_levels
 
 
 def test_generic_arrangement_with_buried_melody_rejected():
