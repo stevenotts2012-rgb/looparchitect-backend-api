@@ -72,7 +72,6 @@ class ProducerIntelligencePlanner:
             logger.info("DRUM_BASS_DUCKED_FOR_MELODY")
             logger.info("MELODY_PRESENCE_BOOSTED")
         logger.info("MIX_BALANCE_GUARD_APPLIED")
-
         transitions = plan_transitions(
             sections,
             energies,

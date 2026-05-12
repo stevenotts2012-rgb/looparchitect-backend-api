@@ -15,8 +15,8 @@ def _plan():
 def test_melody_role_stays_active_and_hooks_include_melodic_role():
     plan = _plan()
     melodic = ("melody", "pad", "harmony", "vocal", "synth", "arp")
-    for sec, roles in plan["stems"].items():
-        assert any(m in r.lower() for r in roles for m in melodic)
+    for section_roles in plan["stems"].values():
+        assert any(m in r.lower() for r in section_roles for m in melodic)
     assert any(m in r.lower() for r in plan["stems"]["hook_1"] for m in melodic)
 
 
@@ -40,6 +40,26 @@ def test_transitions_vary_and_silence_exists_density_changes():
     assert any("silence_moment" in fx for fx in fps)
     densities = [d[1] for d in plan["state"].section_density_history]
     assert len(set(densities)) > 1
+
+
+def test_stem_maps_evolve_and_density_changes_over_time():
+    plan = _plan()
+    stem_fingerprints = [tuple(v) for v in plan["stems"].values()]
+    assert len(set(stem_fingerprints)) > 1
+
+
+def test_fatigue_prevention_and_narrative_progression():
+    plan = _plan()
+    assert plan["phrases"]["intro"] == "support_phrase"
+    assert "verse" in plan["phrases"]["verse_1"]
+    assert "hook" in plan["phrases"]["hook_1"]
+    assert "bridge" in plan["phrases"]["bridge"]
+    assert "outro" in plan["phrases"]["outro"]
+
+
+def test_no_flat_energy_curve():
+    plan = _plan()
+    assert len(set(plan["energy"].values())) > 2
 
 
 def test_generic_arrangement_with_buried_melody_rejected():
