@@ -17,8 +17,14 @@ def _plan():
 def test_melody_role_stays_active_and_hooks_include_melodic_role():
     plan = _plan()
     melodic = ("melody", "pad", "harmony", "vocal", "synth", "arp")
-    for section_roles in plan["stems"].values():
+    for section, section_roles in plan["stems"].items():
+        if section.startswith("hook"):
+            continue
         assert any(m in r.lower() for r in section_roles for m in melodic)
+    hook_sections = [section for section in plan["stems"] if section.startswith("hook")]
+    assert hook_sections
+    for hook_section in hook_sections:
+        assert any(m in r.lower() for r in plan["stems"][hook_section] for m in melodic)
 
 
 def test_bridge_features_melodic_texture_and_hook2_bigger():
