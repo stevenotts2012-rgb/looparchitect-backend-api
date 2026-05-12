@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production smoke test for 3-variation render pipeline."""
+"""Production smoke test for 2-variation render pipeline."""
 
 from __future__ import annotations
 
@@ -19,17 +19,17 @@ def _log(event: str, **fields) -> None:
 
 
 def run(base_url: str, loop_id: int, timeout_seconds: int, poll_interval: float) -> int:
-    _log("PRODUCTION_VARIATION_SMOKE_STARTED", base_url=base_url, loop_id=loop_id, variation_count=3)
+    _log("PRODUCTION_VARIATION_SMOKE_STARTED", base_url=base_url, loop_id=loop_id, variation_count=2)
     r = requests.post(
         f"{base_url.rstrip('/')}/api/v1/loops/{loop_id}/render-async",
-        json={"variation_count": 3},
+        json={"variation_count": 2},
         timeout=30,
     )
     r.raise_for_status()
     payload = r.json()
     jobs: List[Dict] = payload.get("jobs") or []
-    if len(jobs) < 3:
-        _log("PRODUCTION_VARIATION_SMOKE_FAILED", reason="fewer_than_3_jobs", returned_jobs=len(jobs))
+    if len(jobs) < 2:
+        _log("PRODUCTION_VARIATION_SMOKE_FAILED", reason="fewer_than_2_jobs", returned_jobs=len(jobs))
         return 2
 
     start = time.time()

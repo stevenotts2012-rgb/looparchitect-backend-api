@@ -88,7 +88,7 @@ class AsyncRenderRequest(BaseModel):
     )
 
     variation_count: int = Field(
-        default=3,
+        default=2,
         ge=1,
         le=10,
         description="Number of distinct arrangement variations to enqueue",
@@ -811,9 +811,9 @@ def _build_style_variations(user_style: str, mood: str | None, energy: str | Non
         slow_style = False
 
     if slow_style:
-        personalities = ["clean/smooth", "moody/intimate", "melodic/spacious"]
+        personalities = ["clean/main", "darker/heavier"]
     else:
-        personalities = ["clean/main", "darker/heavier", "melodic/bounce"]
+        personalities = ["clean/main", "darker/heavier"]
 
     return [{"name": f"{user_style} — {name}", "genre": user_style, "energy": energy or "medium"} for name in personalities]
 
@@ -914,6 +914,22 @@ async def render_arrangement_async(
     if not (loop.file_key or loop.file_url):
         raise HTTPException(status_code=400, detail="Loop has no associated audio file")
 
+    effective_variation_count = request.variation_count
+    if settings.is_production and request.variation_count > 2:
+        logger.info(
+            "VARIATION_COUNT_CLAMPED_TO_TWO loop_id=%s requested=%s clamped=%s",
+            loop_id,
+            request.variation_count,
+            2,
+        )
+        effective_variation_count = 2
+    if settings.is_production:
+        logger.info(
+            "PRODUCTION_TWO_VARIATION_MODE loop_id=%s effective_variation_count=%s",
+            loop_id,
+            effective_variation_count,
+        )
+
     # ── Compute arrangement dimensions ───────────────────────────────────────
     target_bars = _compute_target_bars(loop, request)
     bpm = float(loop.bpm or loop.tempo or 120.0)
@@ -944,9 +960,9 @@ async def render_arrangement_async(
     user_energy = (request.energy or "medium").strip()
     user_mood = getattr(loop, "mood", None)
     style_variations = _build_style_variations(user_style, user_mood, user_energy, bpm)
-    logger.info("VARIATION_PERSONALITY_SOURCE=style_builder loop_id=%s variation_count=%s", loop_id, request.variation_count)
+    logger.info("VARIATION_PERSONALITY_SOURCE=style_builder loop_id=%s variation_count=%s", loop_id, effective_variation_count)
 
-    for var_idx in range(request.variation_count):
+    for var_idx in range(effective_variation_count):
         profile = style_variations[var_idx] if var_idx < len(style_variations) else {
             "name": f"{user_style} — custom/seeded-{var_idx+1}",
             "genre": user_style,
@@ -1034,7 +1050,7 @@ async def render_arrangement_async(
             "target_length_seconds": requested_length_seconds,
             "variation_seed": var_seed,
             "variation_index": var_idx,
-            "variation_count": request.variation_count,
+            "variation_count": effective_variation_count,
             "personality": profile["name"],
             "requested_length_seconds": requested_length_seconds,
             "actual_length_seconds": actual_length_seconds,
@@ -1101,24 +1117,24 @@ async def render_arrangement_async(
                 deduplicated=was_deduplicated,
             )
         )
-    logger.info("VARIATION_JOBS_ENQUEUED loop_id=%s variation_count=%s jobs=%s", loop_id, request.variation_count, [j.job_id for j in variation_jobs])
+    logger.info("VARIATION_JOBS_ENQUEUED loop_id=%s variation_count=%s jobs=%s", loop_id, effective_variation_count, [j.job_id for j in variation_jobs])
     logger.info(
         "BATCH_RENDER_JOBS_CREATED loop_id=%s requested_variation_count=%s created_jobs=%s job_ids=%s",
         loop_id,
-        request.variation_count,
+        effective_variation_count,
         len(variation_jobs),
         [j.job_id for j in variation_jobs],
     )
     # Strict multi-variation guarantee: never silently return reused jobs when
-    if len(variation_jobs) != request.variation_count:
-        logger.error("PARTIAL_VARIATION_FAILURE loop_id=%s requested=%s created=%s", loop_id, request.variation_count, len(variation_jobs))
+    if len(variation_jobs) != effective_variation_count:
+        logger.error("PARTIAL_VARIATION_FAILURE loop_id=%s requested=%s created=%s", loop_id, effective_variation_count, len(variation_jobs))
         raise HTTPException(status_code=500, detail="Partial variation failure: requested jobs were not fully enqueued")
     # the caller requested multiple variations.
-    if request.variation_count > 1 and any(j.deduplicated for j in variation_jobs):
+    if effective_variation_count > 1 and any(j.deduplicated for j in variation_jobs):
         logger.error(
             "MULTI_VARIATION_BLOCKED_DEDUP loop_id=%s variation_count=%s deduplicated_jobs=%s",
             loop_id,
-            request.variation_count,
+            effective_variation_count,
             [j.job_id for j in variation_jobs if j.deduplicated],
         )
         raise HTTPException(
@@ -1131,7 +1147,7 @@ async def render_arrangement_async(
 
     return AsyncRenderBatchResponse(
         loop_id=loop_id,
-        variation_count=request.variation_count,
+        variation_count=effective_variation_count,
         requested_length_seconds=requested_length_seconds,
         actual_length_seconds=actual_length_seconds,
         section_sequence=section_sequence,

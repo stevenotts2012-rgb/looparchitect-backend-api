@@ -447,8 +447,8 @@ class TestRenderAsyncLengthHandling:
 class TestVariationCount:
     """Verify that variation_count controls the number of enqueued jobs."""
 
-    def test_variation_count_3_creates_3_jobs(self, client, loop_120bpm):
-        """variation_count=3 (default) must produce exactly 3 jobs in the response."""
+    def test_variation_count_3_clamps_to_2_jobs_in_production(self, client, loop_120bpm):
+        """variation_count=3 clamps to 2 in production."""
         jobs_created: list = []
 
         def make_job(db, loop_id, params, **kwargs):
@@ -457,6 +457,7 @@ class TestVariationCount:
             return job, False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.settings.is_production", True), \
              patch("app.routes.render_jobs.create_render_job", side_effect=make_job):
             response = client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
@@ -464,9 +465,9 @@ class TestVariationCount:
             )
         assert response.status_code == 202, response.text
         data = response.json()
-        assert data["variation_count"] == 3
-        assert len(data["jobs"]) == 3
-        assert len(jobs_created) == 3, "create_render_job must be called exactly 3 times"
+        assert data["variation_count"] == 2
+        assert len(data["jobs"]) == 2
+        assert len(jobs_created) == 2, "create_render_job must be called exactly 2 times in production"
 
     def test_variation_count_1_creates_1_job(self, client, loop_120bpm):
         """variation_count=1 must produce exactly 1 job."""
@@ -487,8 +488,8 @@ class TestVariationCount:
         assert len(response.json()["jobs"]) == 1
         assert len(jobs_created) == 1
 
-    def test_variation_count_default_is_3(self, client, loop_120bpm):
-        """When variation_count is omitted the default (3) must be applied."""
+    def test_variation_count_default_is_2(self, client, loop_120bpm):
+        """When variation_count is omitted the default (2) must be applied."""
         jobs_created: list = []
 
         def make_job(db, loop_id, params, **kwargs):
@@ -502,7 +503,7 @@ class TestVariationCount:
                 f"/api/v1/loops/{loop_120bpm.id}/render-async", json={}
             )
         assert response.status_code == 202, response.text
-        assert len(response.json()["jobs"]) == 3
+        assert len(response.json()["jobs"]) == 2
 
     def test_each_job_has_unique_variation_index(self, client, loop_120bpm):
         """Each job entry must have a distinct variation_index (0-based)."""
@@ -517,8 +518,8 @@ class TestVariationCount:
             )
         jobs = response.json()["jobs"]
         indices = [j["variation_index"] for j in jobs]
-        assert sorted(indices) == [0, 1, 2], (
-            f"Expected variation indices [0, 1, 2], got {indices}"
+        assert sorted(indices) == [0, 1], (
+            f"Expected variation indices [0, 1], got {indices}"
         )
 
     def test_variation_count_in_params_passed_to_job_service(self, client, loop_120bpm):
@@ -530,14 +531,15 @@ class TestVariationCount:
             return _make_fake_job(loop_id), False
 
         with patch("app.routes.render_jobs.is_redis_available", return_value=True), \
+             patch("app.routes.render_jobs.settings.is_production", True), \
              patch("app.routes.render_jobs.create_render_job", side_effect=capture_job_params):
             client.post(
                 f"/api/v1/loops/{loop_120bpm.id}/render-async",
-                json={"variation_count": 5},
+                json={"variation_count": 3},
             )
-        assert len(captured) == 5
+        assert len(captured) == 2
         for p in captured:
-            assert p["variation_count"] == 5
+            assert p["variation_count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -730,11 +732,11 @@ class TestArrangementMetadata:
 class TestAsyncRenderRequestSchema:
     """Pydantic validation for AsyncRenderRequest."""
 
-    def test_default_variation_count_is_3(self):
+    def test_default_variation_count_is_2(self):
         from app.routes.render_jobs import AsyncRenderRequest
 
         req = AsyncRenderRequest()
-        assert req.variation_count == 3
+        assert req.variation_count == 2
 
     def test_variation_count_1_accepted(self):
         from app.routes.render_jobs import AsyncRenderRequest
