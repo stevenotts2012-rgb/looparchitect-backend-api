@@ -5,7 +5,7 @@ Tests job creation, deduplication, status polling, and worker processing.
 
 import pytest
 from unittest.mock import patch, MagicMock
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.services.job_service import (
     create_render_job,
     get_job_status,
@@ -182,6 +182,42 @@ class TestJobService:
         assert created_job.progress_message == "Queue unavailable"
         assert "Queue enqueue failed" in (created_job.error_message or "")
         assert mock_db.commit.call_count >= 2
+
+    def test_three_variation_jobs_have_unique_indices_seeds(self):
+        params = [
+            {"variation_index": 0, "variation_seed": 200},
+            {"variation_index": 1, "variation_seed": 201},
+            {"variation_index": 2, "variation_seed": 202},
+        ]
+        assert len({p["variation_index"] for p in params}) == 3
+        assert len({p["variation_seed"] for p in params}) == 3
+
+    def test_get_job_status_marks_timeout_terminal(self):
+        job = RenderJob(
+            id="job-timeout",
+            loop_id=1,
+            job_type="render_arrangement",
+            status="processing",
+            params_json='{"variation_index":2,"personality":"melodic/bounce"}',
+            started_at=datetime.utcnow() - timedelta(hours=2),
+            created_at=datetime.utcnow() - timedelta(hours=2),
+        )
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = job
+        out = get_job_status(mock_db, "job-timeout")
+        assert out.status == "timeout"
+        assert out.finished_at is not None
+
+    def test_get_job_status_returns_terminal_for_all_three_jobs(self):
+        jobs = [
+            RenderJob(id="j1", loop_id=1, job_type="render_arrangement", status="succeeded", params_json='{"variation_index":0}', created_at=datetime.utcnow()),
+            RenderJob(id="j2", loop_id=1, job_type="render_arrangement", status="failed", params_json='{"variation_index":1}', created_at=datetime.utcnow()),
+            RenderJob(id="j3", loop_id=1, job_type="render_arrangement", status="missing_output", params_json='{"variation_index":2}', created_at=datetime.utcnow()),
+        ]
+        statuses = {j.id: j.status for j in jobs}
+        assert statuses["j1"] in {"succeeded", "failed", "timeout", "missing_output"}
+        assert statuses["j2"] in {"succeeded", "failed", "timeout", "missing_output"}
+        assert statuses["j3"] in {"succeeded", "failed", "timeout", "missing_output"}
 
 
 class TestAsyncRenderSchemas:

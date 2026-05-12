@@ -15,6 +15,7 @@ from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_queue
 from app.schemas.job import OutputFile, RenderJobStatusResponse
 
 logger = logging.getLogger(__name__)
+_TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "missing_output"}
 
 
 def _compute_dedupe_hash(loop_id: int, params: Dict) -> str:
@@ -102,6 +103,16 @@ def create_render_job(
         DEFAULT_RENDER_QUEUE_NAME,
         arrangement_id,
     )
+    logger.info(
+        "VARIATION_JOB_CREATED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+        job_id,
+        params.get("variation_index") if isinstance(params, dict) else None,
+        params.get("personality") if isinstance(params, dict) else None,
+        job.status,
+        False,
+        arrangement_id,
+        None,
+    )
 
     logger.info(
         "render_job_enqueue_attempt: job_id=%s loop_id=%s queue_name=%s",
@@ -132,6 +143,16 @@ def create_render_job(
             getattr(rq_job, "id", None),
             loop_id,
             queue.name,
+        )
+        logger.info(
+            "VARIATION_JOB_ENQUEUED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+            job_id,
+            params.get("variation_index") if isinstance(params, dict) else None,
+            params.get("personality") if isinstance(params, dict) else None,
+            job.status,
+            False,
+            arrangement_id,
+            None,
         )
     except Exception as enqueue_error:
         logger.exception(
@@ -196,6 +217,16 @@ def update_job_status(
     
     db.commit()
     db.refresh(job)
+    logger.info(
+        "VARIATION_JOB_STATUS_PERSISTED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+        job.id,
+        (json.loads(job.params_json).get("variation_index") if job.params_json else None),
+        (json.loads(job.params_json).get("personality") if job.params_json else None),
+        job.status,
+        bool(job.output_files_json),
+        job.arrangement_id,
+        job.error_message,
+    )
     return job
 
 
@@ -205,6 +236,17 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
     if not job:
         raise ValueError(f"Job {job_id} not found")
     
+    # Hard terminal guarantee: timeout long-running processing jobs.
+    if job.status == "processing" and job.started_at:
+        elapsed = (datetime.utcnow() - job.started_at).total_seconds()
+        timeout_seconds = int(getattr(settings, "render_job_timeout_seconds", 900) or 900)
+        if elapsed > timeout_seconds:
+            job.status = "timeout"
+            job.error_message = f"Job exceeded timeout of {timeout_seconds}s"
+            job.finished_at = datetime.utcnow()
+            db.commit()
+            db.refresh(job)
+
     # Parse outputs and regenerate presigned URLs if succeeded
     output_files = None
     if job.output_files_json:
@@ -239,6 +281,18 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
             render_metadata = json.loads(job.render_metadata_json)
         except Exception as _e:
             logger.warning("Failed to parse render_metadata_json for job %s: %s", job_id, _e)
+
+    if job.status in _TERMINAL_STATUSES:
+        logger.info(
+            "VARIATION_JOB_TERMINAL_CONFIRMED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
+            job.id,
+            (json.loads(job.params_json).get("variation_index") if job.params_json else None),
+            (json.loads(job.params_json).get("personality") if job.params_json else None),
+            job.status,
+            bool(output_files),
+            job.arrangement_id,
+            job.error_message,
+        )
 
     return RenderJobStatusResponse(
         job_id=job.id,
