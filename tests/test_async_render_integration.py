@@ -256,7 +256,6 @@ class TestJobService:
             out = get_job_status(mock_db, job.id)
             assert out.status == "timeout"
 
-
 class TestAsyncRenderSchemas:
     """Test Pydantic request/response schemas."""
 
