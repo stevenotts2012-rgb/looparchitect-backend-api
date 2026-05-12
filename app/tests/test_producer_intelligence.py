@@ -2,6 +2,8 @@ import pytest
 
 from app.services.producer_intelligence.planner import ProducerIntelligencePlanner
 
+MINIMUM_DISTINCT_ENERGY_LEVELS = 3
+
 
 def _plan():
     planner = ProducerIntelligencePlanner()
@@ -15,11 +17,8 @@ def _plan():
 def test_melody_role_stays_active_and_hooks_include_melodic_role():
     plan = _plan()
     melodic = ("melody", "pad", "harmony", "vocal", "synth", "arp")
-    for section, section_roles in plan["stems"].items():
-        if section == "hook_1":
-            continue
+    for section_roles in plan["stems"].values():
         assert any(m in r.lower() for r in section_roles for m in melodic)
-    assert any(m in r.lower() for r in plan["stems"]["hook_1"] for m in melodic)
 
 
 def test_bridge_features_melodic_texture_and_hook2_bigger():
@@ -61,7 +60,6 @@ def test_fatigue_prevention_and_narrative_progression():
 
 def test_no_flat_energy_curve():
     plan = _plan()
-    MINIMUM_DISTINCT_ENERGY_LEVELS = 3
     assert len(set(plan["energy"].values())) >= MINIMUM_DISTINCT_ENERGY_LEVELS
 
 
