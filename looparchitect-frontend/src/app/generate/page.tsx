@@ -196,6 +196,7 @@ export default function GeneratePage() {
       const response = await renderAsync(loopIdNum, {
         genre: form.genre || undefined,
         length_seconds: parseInt(form.targetSeconds, 10) || 60,
+        variation_count: 2,
         custom_style: form.styleText || undefined,
       });
 
@@ -519,7 +520,7 @@ export default function GeneratePage() {
             disabled={isGenerating || isInProgress}
             className="flex-1 bg-blue-600 text-white py-2 rounded disabled:opacity-50"
           >
-            {isGenerating ? "Requesting…" : "Generate Arrangement"}
+            {isGenerating ? "Requesting…" : "Generate 2 New Variations"}
           </button>
 
           <button
@@ -570,6 +571,23 @@ export default function GeneratePage() {
           </p>
         </section>
       )}
+
+
+
+      {generateResponse?.jobs?.length ? (
+        <section className="border rounded p-4 space-y-2">
+          <h2 className="font-semibold text-lg">Variation Jobs</h2>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {generateResponse.jobs.slice(0, 2).map((job) => (
+              <div key={job.job_id} className="border rounded p-3">
+                <p className="text-sm font-medium">Variation {job.variation_index + 1}</p>
+                <p className="text-xs text-gray-500">Job: <code>{job.job_id}</code></p>
+                <p className="text-xs text-gray-500">Status: {job.status}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {/* Job status */}
       {jobId && (
