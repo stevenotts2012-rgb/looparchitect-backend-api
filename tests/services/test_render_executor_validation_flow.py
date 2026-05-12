@@ -243,3 +243,74 @@ def test_validation_uses_recomputed_metrics_before_validation(monkeypatch, tmp_p
     assert observed["runtime_observability"]["hook_escalation_applied"] is True
     assert int(observed["runtime_observability"]["phrase_split_count"]) > 0
     assert bool(observed["runtime_observability"]["transition_overlap_rendered"]) is True
+
+
+def test_validation_raises_when_recompute_not_completed():
+    try:
+        render_executor._assert_dynamic_arrangement(
+            timeline_json=json.dumps({"sections": [{"name": "hook", "type": "hook"}], "render_spec_summary": {}}),
+            render_observability={"_metric_recompute_started": True, "_metric_recompute_completed": False},
+            render_path_used="stem_render_executor",
+        )
+        assert False, "Expected METRIC_RECOMPUTE_ORDER_BROKEN"
+    except RuntimeError as exc:
+        assert str(exc) == "METRIC_RECOMPUTE_ORDER_BROKEN"
+
+
+def test_recompute_pipeline_requires_start_and_complete_flags():
+    try:
+        render_executor._assert_metric_recompute_pipeline(
+            {
+                "_metric_recompute_started": True,
+                "_metric_recompute_completed": False,
+                "section_execution_report": [],
+            }
+        )
+        assert False, "Expected METRIC_RECOMPUTE_ORDER_BROKEN"
+    except RuntimeError as exc:
+        assert str(exc) == "METRIC_RECOMPUTE_ORDER_BROKEN"
+
+
+def test_variation_jobs_recompute_before_validation_all_three(monkeypatch, tmp_path):
+    orders = []
+
+    def _stub_render(*args, **kwargs):
+        timeline = json.dumps(
+            {
+                "sections": [{"name": "hook", "type": "hook", "applied_events": ["final_hook_expansion", "crossfade", "chop_stutter"]}],
+                "events": [],
+                "render_spec_summary": {"phrase_split_count": 0, "transition_overlap_rendered": False, "transition_overlap_rendered_count": 0, "hook_escalation_applied": False},
+            }
+        )
+        return AudioSegment.silent(duration=50), timeline
+
+    def _stub_mastering(audio, genre=None):
+        return _MasteringResult(audio)
+
+    def _stub_observability(**kwargs):
+        return {
+            "section_execution_report": [{"section_index": 0, "section_type": "hook", "applied_events": ["final_hook_expansion", "crossfade", "chop_stutter"]}],
+            "actual_stem_map_by_section": [{"section_index": 0, "roles": ["drums"]}],
+            "render_signatures": ["sig-a"],
+            "planned_stem_map_by_section": [{"section_index": 0}],
+            "unique_render_signature_count": 2,
+        }
+
+    def _capture_dynamic(**kwargs):
+        assert kwargs["render_observability"]["_metric_recompute_completed"] is True
+        orders.append("validated")
+
+    monkeypatch.setattr("app.services.arrangement_jobs._render_producer_arrangement", _stub_render)
+    monkeypatch.setattr(render_executor, "apply_mastering", _stub_mastering)
+    monkeypatch.setattr(render_executor, "_build_render_observability", _stub_observability)
+    monkeypatch.setattr(render_executor, "_assert_producer_runtime_not_noop", lambda **kwargs: None)
+    monkeypatch.setattr(render_executor, "_assert_dynamic_arrangement", _capture_dynamic)
+
+    for idx in range(3):
+        render_executor.render_from_plan(
+            render_plan_json={"bpm": 120, "key": "C", "sections": [{"name": "hook", "type": "hook", "bars": 4}], "events": [], "render_profile": {}, "variation_index": idx},
+            audio_source=AudioSegment.silent(duration=100),
+            output_path=tmp_path / f"out_{idx}.wav",
+            stems=None,
+        )
+    assert len(orders) == 3
