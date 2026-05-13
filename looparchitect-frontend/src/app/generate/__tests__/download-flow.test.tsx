@@ -29,9 +29,6 @@ vi.mock("@/api/client", async () => {
     ...actual,
     renderAsync: vi.fn(),
     getJobStatus: vi.fn(),
-    downloadArrangement: vi.fn(),
-    getDawExportInfo: vi.fn(),
-    downloadDawExport: vi.fn(),
   };
 });
 
@@ -48,12 +45,29 @@ const JOB_ID = "job-abc";
  */
 function makeRenderAsyncResponse(): client.RenderAsyncResponse {
   return {
-    job_id: JOB_ID,
     loop_id: 1,
-    status: "queued",
-    created_at: new Date().toISOString(),
-    poll_url: `/api/v1/jobs/${JOB_ID}`,
-    deduplicated: false,
+    variation_count: 2,
+    requested_length_seconds: 60,
+    actual_length_seconds: 60,
+    section_sequence: ["intro", "hook"],
+    jobs: [
+      {
+        job_id: JOB_ID,
+        variation_index: 0,
+        variation_seed: 1,
+        status: "queued",
+        poll_url: `/api/v1/jobs/${JOB_ID}`,
+        deduplicated: false,
+      },
+      {
+        job_id: "job-def",
+        variation_index: 1,
+        variation_seed: 2,
+        status: "queued",
+        poll_url: "/api/v1/jobs/job-def",
+        deduplicated: false,
+      },
+    ],
   };
 }
 
@@ -98,15 +112,22 @@ async function renderCompleted(signedUrl?: string) {
 
   // Click generate
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /generate arrangement/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate 2 new variations/i }));
   });
 
-  // Wait for the download button to appear (polls trigger after generate)
-  await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: /download arrangement/i })
-    ).toBeInTheDocument()
-  );
+  if (signedUrl) {
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /download arrangement/i })
+      ).toBeInTheDocument()
+    );
+  } else {
+    await waitFor(() =>
+      expect(
+        screen.getByText(/no downloadable audio file is available/i)
+      ).toBeInTheDocument()
+    );
+  }
 }
 
 // ── test setup ────────────────────────────────────────────────────────────────
@@ -129,7 +150,7 @@ afterEach(() => {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe("Download Arrangement – direct signed URL path", () => {
-  it("triggers browser download via anchor href and does NOT call downloadArrangement()", async () => {
+  it("triggers browser download via anchor href", async () => {
     const signedUrl = "https://s3.example.com/signed/arrangement.wav?token=abc";
     await renderCompleted(signedUrl);
 
@@ -139,8 +160,6 @@ describe("Download Arrangement – direct signed URL path", () => {
       );
     });
 
-    // Blob fetch should NOT have been called — direct URL was used
-    expect(client.downloadArrangement).not.toHaveBeenCalled();
     // Anchor click should have been called
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
 
@@ -154,28 +173,16 @@ describe("Download Arrangement – direct signed URL path", () => {
 });
 
 describe("Download Arrangement – no signed URL (render-async flow)", () => {
-  it("shows an error when no signed URL is available", async () => {
+  it("hides the download button when no signed URL is available", async () => {
     // Complete without a signed URL (empty output_files)
     await renderCompleted(/* no signed URL */ undefined);
 
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", { name: /download arrangement/i })
-      );
-    });
-
-    // downloadArrangement should NOT be called — no arrangement_id in render-async flow
-    expect(client.downloadArrangement).not.toHaveBeenCalled();
-
-    // Error message should be visible
-    await waitFor(() =>
-      expect(screen.getByText(/audio file url not available/i)).toBeInTheDocument()
-    );
-
-    // Button should be re-enabled after the error
     expect(
-      screen.getByRole("button", { name: /download arrangement \(wav\)/i })
-    ).not.toBeDisabled();
+      screen.queryByRole("button", { name: /download arrangement/i })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/no downloadable audio file is available/i)
+    ).toBeInTheDocument();
   });
 });
 
@@ -221,4 +228,3 @@ describe("Download Arrangement – double-click prevention", () => {
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
   });
 });
-

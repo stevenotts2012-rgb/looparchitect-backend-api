@@ -243,6 +243,7 @@ export interface RenderAsyncConfig {
  */
 export interface RenderAsyncVariationJob {
   job_id: string;
+  personality?: string;
   variation_index: number;
   variation_seed: number;
   status: string;
@@ -285,9 +286,9 @@ export async function renderAsync(
   );
   if (process.env.NODE_ENV !== "production") {
     console.debug("[render_job_id_received]", {
-      job_id: response.job_id,
+      job_id: response.jobs[0]?.job_id ?? null,
       loop_id: response.loop_id,
-      status: response.status,
+      variation_count: response.variation_count,
     });
   }
   return response;

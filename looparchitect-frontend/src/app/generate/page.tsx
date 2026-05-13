@@ -5,8 +5,8 @@
  *
  * After the user clicks "Generate Arrangement" this page:
  * 1. Calls POST /api/v1/loops/{loop_id}/render-async  (async render queue)
- * 2. Stores the returned job_id
- * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds (real job endpoint)
+ * 2. Stores the returned jobs[] metadata
+ * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds for the primary job
  * 4. Maps backend states → UI states:
  *      queued      → "Queued"
  *      processing  → "Processing"
@@ -14,7 +14,7 @@
  *      failed      → "Failed"
  * 5. Stops polling automatically when status is "completed" or "failed"
  * 6. Shows an audio preview player using the signed URL from output_files
- * 7. Allows WAV and DAW export (ZIP) downloads when completed
+ * 7. Allows WAV downloads when completed and output exists
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,9 +22,6 @@ import { useSearchParams } from "next/navigation";
 import {
   renderAsync,
   getJobStatus,
-  downloadArrangement,
-  getDawExportInfo,
-  downloadDawExport,
   isTerminalJobStatus,
   BACKEND_BASE_URL,
   type RenderAsyncResponse,
@@ -111,9 +108,6 @@ export default function GeneratePage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
-
-  const [isDawExporting, setIsDawExporting] = useState(false);
-  const [dawExportError, setDawExportError] = useState<string | null>(null);
 
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -255,22 +249,6 @@ export default function GeneratePage() {
         return;
       }
 
-      // Fallback: blob endpoint (requires arrangement_id; not available in
-      // the render-async flow but kept for backward-compat with old sessions)
-      if (generateResponse && "arrangement_id" in generateResponse &&
-          (generateResponse as { arrangement_id?: number | null }).arrangement_id) {
-        const arrId = (generateResponse as { arrangement_id: number }).arrangement_id;
-        console.log("[download] falling back to blob endpoint, arrangement_id:", arrId);
-        const blob = await downloadArrangement(arrId);
-        const objectUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = objectUrl;
-        a.download = `arrangement-${arrId}.wav`;
-        a.click();
-        URL.revokeObjectURL(objectUrl);
-        return;
-      }
-
       throw new Error(
         "Audio file URL not available. Please wait for the render to complete or try again."
       );
@@ -281,61 +259,6 @@ export default function GeneratePage() {
       setDownloadError(message);
     } finally {
       setIsDownloading(false);
-    }
-  };
-
-  // ---------------------------------------------------------------------------
-  // DAW export handler
-  // ---------------------------------------------------------------------------
-
-  const handleDawExport = async () => {
-    if (isDawExporting) return;
-
-    setIsDawExporting(true);
-    setDawExportError(null);
-
-    // DAW export requires an arrangement_id — not present in the render-async flow.
-    const arrId =
-      generateResponse && "arrangement_id" in generateResponse
-        ? (generateResponse as { arrangement_id?: number | null }).arrangement_id
-        : null;
-
-    if (!arrId) {
-      setDawExportError("DAW export is not available for this render job.");
-      setIsDawExporting(false);
-      return;
-    }
-
-    try {
-      const info = await getDawExportInfo(arrId);
-      if (!info.ready_for_export) {
-        throw new Error(info.message ?? "Arrangement is not ready for DAW export.");
-      }
-
-      if (info.download_url) {
-        const resolvedUrl = info.download_url.startsWith("http")
-          ? info.download_url
-          : `${BACKEND_BASE_URL}${info.download_url}`;
-        const a = document.createElement("a");
-        a.href = resolvedUrl;
-        a.download = `arrangement-${arrId}-daw-export.zip`;
-        a.click();
-        return;
-      }
-
-      const blob = await downloadDawExport(arrId);
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = `arrangement-${arrId}-daw-export.zip`;
-      a.click();
-      URL.revokeObjectURL(objectUrl);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to download DAW export.";
-      setDawExportError(message);
-    } finally {
-      setIsDawExporting(false);
     }
   };
 
@@ -644,24 +567,30 @@ export default function GeneratePage() {
         </section>
       )}
 
-      {/* Download — only shown when completed */}
-      {isCompleted && (
+      {isCompleted && !audioSrc && (
+        <section className="space-y-2">
+          <p className="text-sm text-amber-700">
+            Render completed, but no downloadable audio file is available for this job.
+          </p>
+        </section>
+      )}
+
+      {/* Download — only shown when completed and output exists */}
+      {isCompleted && audioSrc && (
         <section className="space-y-3">
-          {audioSrc && (
-            <div>
-              <p className="text-sm font-medium mb-1">
-                Preview{expectedDurationLabel ? ` (${expectedDurationLabel})` : ""}
-              </p>
-              <audio
-                controls
-                src={audioSrc}
-                className="w-full"
-                preload="metadata"
-              >
-                Your browser does not support the audio element.
-              </audio>
-            </div>
-          )}
+          <div>
+            <p className="text-sm font-medium mb-1">
+              Preview{expectedDurationLabel ? ` (${expectedDurationLabel})` : ""}
+            </p>
+            <audio
+              controls
+              src={audioSrc}
+              className="w-full"
+              preload="metadata"
+            >
+              Your browser does not support the audio element.
+            </audio>
+          </div>
 
           <button
             onClick={handleDownload}
@@ -672,19 +601,6 @@ export default function GeneratePage() {
           </button>
           {downloadError && (
             <p className="text-sm text-red-600">{downloadError}</p>
-          )}
-
-          <button
-            onClick={handleDawExport}
-            disabled={isDawExporting}
-            className="w-full bg-purple-600 text-white py-2 rounded disabled:opacity-50"
-          >
-            {isDawExporting
-              ? "Preparing DAW export…"
-              : "Download DAW Export (ZIP)"}
-          </button>
-          {dawExportError && (
-            <p className="text-sm text-red-600">{dawExportError}</p>
           )}
         </section>
       )}
