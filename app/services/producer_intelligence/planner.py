@@ -100,6 +100,8 @@ class ProducerIntelligencePlanner:
             fill_frequency=taste_profile["fill_frequency"],
             silence_usage=taste_profile["silence_usage"],
         )
+        if guide:
+            logger.info("AI_TRANSITION_DENSITY_APPLIED density=%.3f", transition_density)
         state.transition_history.extend(transitions)
         state.fill_usage_history.extend([t for t in transitions if "fill" in t["fx"]])
         logger.info("TRANSITION_PLANNED")
@@ -147,4 +149,5 @@ class ProducerIntelligencePlanner:
             "mix_balance_guard_applied": True,
             "ai_guide": guide,
             "melody_priority": guide["mix_priorities"]["melody_priority"] if guide else 0.5,
+            "transition_density": transition_density,
         }

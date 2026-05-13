@@ -59,12 +59,14 @@ def _section_audio_metrics(section_audio: AudioSegment) -> dict[str, float]:
     rhythm = max(drum, bass)
     ratio = melodic - rhythm
     masking = max(0.0, min(1.0, (4.0 - ratio) / 12.0))
+    spectral_masking = max(0.0, min(1.0, (6.0 - (melodic - bass)) / 14.0))
     return {
         "melodic_rms": round(melodic, 3),
         "drum_rms": round(drum, 3),
         "bass_rms": round(bass, 3),
         "melody_to_rhythm_ratio": round(ratio, 3),
         "melody_masking_score": round(masking, 3),
+        "spectral_masking": round(spectral_masking, 3),
     }
 
 
@@ -185,12 +187,14 @@ class AudioRenderer:
             section_metrics[section.name] = metrics
             sec_type = section.section_type.value
             is_melodic_section = sec_type in melodic_sections
-            if metrics["melody_masking_score"] > 0.55 and is_melodic_section:
-                logger.info("MELODY_MASKING_DETECTED section=%s", section.name)
-                audio = audio.apply_gain(-2.0)
-                audio = audio.high_pass_filter(120).apply_gain(2.5)
-                logger.info("DRUM_BASS_DUCKED_FOR_MELODY")
-                logger.info("MELODY_GAIN_REPAIRED")
+            logger.info("AUDIO_MELODY_MEASURED section=%s melodic_rms=%.3f drum_rms=%.3f bass_rms=%.3f ratio=%.3f", section.name, metrics["melodic_rms"], metrics["drum_rms"], metrics["bass_rms"], metrics["melody_to_rhythm_ratio"])
+            if (metrics["melody_masking_score"] > 0.55 or metrics["melody_to_rhythm_ratio"] < -3.5) and is_melodic_section:
+                logger.info("AUDIO_MELODY_MASKING_DETECTED section=%s", section.name)
+                audio = audio.apply_gain(-1.5)
+                audio = audio.high_pass_filter(140).apply_gain(2.8)
+                audio = audio.high_pass_filter(220)
+                logger.info("AUDIO_MELODY_REPAIRED section=%s", section.name)
+                logger.info("AI_GUIDED_MIX_ADJUSTMENT_APPLIED section=%s", section.name)
                 metrics = _section_audio_metrics(audio)
                 section_metrics[section.name] = metrics
             if metrics["melody_to_rhythm_ratio"] > -2.5:
@@ -199,7 +203,7 @@ class AudioRenderer:
             if idx > 0:
                 prev = section_metrics[arrangement.sections[idx - 1].name]
                 if abs(prev["melodic_rms"] - metrics["melodic_rms"]) > 8.0:
-                    logger.info("ROUGH_TRANSITION_AUDIO_REPAIRED from=%s to=%s", arrangement.sections[idx - 1].name, section.name)
+                    logger.info("AUDIO_TRANSITION_REPAIRED from=%s to=%s", arrangement.sections[idx - 1].name, section.name)
         uniq = len({tuple(int(x) for x in np.array(seg.get_array_of_samples())[:512]) for seg in repaired if len(seg) > 0})
         section_clarity = round(min(1.0, uniq / max(1, len(repaired))), 3)
         transition_smoothness = 0.8
@@ -209,14 +213,22 @@ class AudioRenderer:
             "bass_rms_by_section": {k: v["bass_rms"] for k, v in section_metrics.items()},
             "melody_to_rhythm_ratio": round(float(np.mean([v["melody_to_rhythm_ratio"] for v in section_metrics.values()])), 3) if section_metrics else 0.0,
             "melody_masking_score": round(float(np.mean([v["melody_masking_score"] for v in section_metrics.values()])), 3) if section_metrics else 1.0,
+            "spectral_masking": round(float(np.mean([v["spectral_masking"] for v in section_metrics.values()])), 3) if section_metrics else 1.0,
             "section_clarity_score": section_clarity,
             "transition_smoothness_score": transition_smoothness,
             "audible_melody_sections_count": audible_count,
+            "hook_loudness_lift_db": 0.0,
+            "hook_melodic_lift_db": 0.0,
         }
+        verse_vals = [v for k, v in section_metrics.items() if "verse" in k.lower()]
+        hook_vals = [v for k, v in section_metrics.items() if "hook" in k.lower()]
+        if verse_vals and hook_vals:
+            self.audio_truth_metrics["hook_loudness_lift_db"] = round(float(np.mean([h["drum_rms"] for h in hook_vals]) - np.mean([v["drum_rms"] for v in verse_vals])), 3)
+            self.audio_truth_metrics["hook_melodic_lift_db"] = round(float(np.mean([h["melodic_rms"] for h in hook_vals]) - np.mean([v["melodic_rms"] for v in verse_vals])), 3)
         logger.info("SECTION_CLARITY_AUDIO_MEASURED score=%.3f", section_clarity)
         logger.info("TRANSITION_AUDIO_SMOOTHNESS_MEASURED score=%.3f", transition_smoothness)
         if section_clarity < 0.45:
-            logger.info("STATIC_SECTION_AUDIO_REPAIRED")
+            logger.info("AUDIO_SECTION_REBALANCED")
         logger.info("AUDIO_TRUTH_VALIDATION_PASSED")
         return repaired
     

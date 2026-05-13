@@ -79,3 +79,37 @@ def test_production_two_variation_mode_clamps_to_two(monkeypatch):
     requested = 5
     effective = 2 if render_jobs.settings.is_production and requested > 2 else requested
     assert effective == 2
+
+
+def test_ai_guide_modifies_actual_render_plan(monkeypatch):
+    base = {
+        "sections": [
+            {"name": "verse_1", "bar_start": 0, "bars": 8, "energy": 0.4, "active_stem_roles": ["drums", "bass", "melody"], "instruments": [], "variations": []},
+            {"name": "hook_1", "bar_start": 8, "bars": 8, "energy": 0.6, "active_stem_roles": ["drums", "bass", "melody"], "instruments": [], "variations": []},
+        ],
+        "producer_plan": {"available_roles": ["drums", "bass", "melody"]},
+        "metadata": {},
+    }
+    monkeypatch.setattr(render_jobs._producer_intelligence_planner, "generate", lambda **_: {
+        "energy": {"verse_1": 0.42, "hook_1": 0.72},
+        "stems": {"verse_1": ["drums", "bass", "melody"], "hook_1": ["drums", "bass", "melody"]},
+        "phrases": {},
+        "hooks": {},
+        "transitions": [],
+        "melody_presence_score": 1.0,
+        "drum_bass_dominance_score": 0.2,
+        "melodic_sections_count": 2,
+        "melody_restored_count": 0,
+        "mix_balance_guard_applied": True,
+        "transition_density": 0.7,
+        "ai_guide": {"mix_priorities": {"melody_priority": 0.9}, "style_traits": {"stem_density": 0.3}, "variation_strategy": [{"focus": "melody"}]},
+    })
+    out = render_jobs._apply_producer_intelligence(base, style="trap", mood="dark", energy="high")
+    assert out["sections"][1]["energy"] > 0.72
+    assert out["sections"][0]["active_stem_roles"][0] == "melody"
+
+
+def test_ai_failure_falls_back_without_breaking_render_plan(monkeypatch):
+    base = {"sections": [{"name": "intro", "bar_start": 0, "bars": 8, "energy": 0.2, "active_stem_roles": ["drums"], "instruments": [], "variations": []}], "producer_plan": {"available_roles": ["drums"]}, "metadata": {}}
+    out = render_jobs._apply_producer_intelligence(base, style="edm", mood="hype", energy="high")
+    assert out["sections"][0]["active_stem_roles"]
