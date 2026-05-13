@@ -248,13 +248,33 @@ async def upload_audio(file: UploadFile = File(...), request: Request = None, db
     }
     
     try:
-        logger.info(f"Starting audio analysis for file_key: {file_key}")
+        logger.info(
+            "Starting audio analysis — file_key=%s file_type=%s file_size_bytes=%d",
+            file_key,
+            file.content_type or "unknown",
+            len(content),
+        )
         analysis_result = await loop_analyzer.analyze_from_s3(file_key)
-        logger.info(f"Analysis complete: BPM={analysis_result.get('bpm')}, Key={analysis_result.get('key')}, Bars={analysis_result.get('bars')}, Duration={analysis_result.get('duration')}")
+        logger.info(
+            "Analysis complete — file_key=%s bpm=%s key=%s bars=%s duration=%s",
+            file_key,
+            analysis_result.get('bpm'),
+            analysis_result.get('key'),
+            analysis_result.get('bars'),
+            analysis_result.get('duration'),
+        )
     except Exception as e:
-        logger.warning(f"Audio analysis failed (non-fatal): {e}")
+        logger.warning(
+            "Audio analysis failed (non-fatal) — file_key=%s file_type=%s "
+            "file_size_bytes=%d error=%s",
+            file_key,
+            file.content_type or "unknown",
+            len(content),
+            e,
+            exc_info=True,
+        )
         logger.info("Loop will be created with null analysis fields")
-    
+
     # Create Loop database record with analysis results
     try:
         bpm_value = analysis_result.get('bpm')
@@ -525,16 +545,40 @@ async def create_loop_with_upload(
             logger.exception("Failed to ingest stem pack")
             raise HTTPException(status_code=500, detail=f"Failed to process stem pack: {str(e)}")
     
+    # Determine file metadata for logging (content/safe_filename are always set by this point)
+    _log_file_type = (file.content_type if single_file_mode and file is not None else "audio/wav") or "unknown"
+    _log_file_size = len(content)
+
     try:
-        logger.info(f"Starting audio analysis for file_key: {file_key}")
+        logger.info(
+            "Starting audio analysis — file_key=%s file_type=%s file_size_bytes=%d",
+            file_key,
+            _log_file_type,
+            _log_file_size,
+        )
         analysis_result = await loop_analyzer.analyze_from_s3(file_key)
-        logger.info(f"Analysis complete: BPM={analysis_result.get('bpm')}, Key={analysis_result.get('key')}, Bars={analysis_result.get('bars')}, Duration={analysis_result.get('duration')}")
+        logger.info(
+            "Analysis complete — file_key=%s bpm=%s key=%s bars=%s duration=%s",
+            file_key,
+            analysis_result.get('bpm'),
+            analysis_result.get('key'),
+            analysis_result.get('bars'),
+            analysis_result.get('duration'),
+        )
         if not single_file_mode:
             _validate_detected_bar_range(analysis_result)
     except Exception as e:
         if isinstance(e, HTTPException):
             raise
-        logger.warning(f"Audio analysis failed (non-fatal): {e}")
+        logger.warning(
+            "Audio analysis failed (non-fatal) — file_key=%s file_type=%s "
+            "file_size_bytes=%d error=%s",
+            file_key,
+            _log_file_type,
+            _log_file_size,
+            e,
+            exc_info=True,
+        )
         logger.info("Loop will be created with null analysis fields")
 
     # Create loop with file key and analysis results

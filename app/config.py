@@ -691,6 +691,20 @@ class Settings(BaseSettings):
     max_request_body_size_mb: int = Field(default=100, validation_alias="MAX_REQUEST_BODY_SIZE_MB")
     render_job_timeout_seconds: int = Field(default=900, validation_alias="RENDER_JOB_TIMEOUT_SECONDS")
 
+    # Audio analysis timeouts
+    # LOOP_ANALYSIS_TIMEOUT — maximum seconds to wait for the full analyze_from_s3() call
+    #   (S3 download + librosa CPU analysis combined).  If exceeded, default values are
+    #   returned (bpm=120, key='C', duration=0, bars=4) so the upload still completes.
+    #   Default: 60 seconds.
+    loop_analysis_timeout: int = Field(default=60, validation_alias="LOOP_ANALYSIS_TIMEOUT")
+    # LOOP_S3_DOWNLOAD_TIMEOUT — maximum seconds to wait for the S3 download step alone.
+    #   Default: 30 seconds.
+    loop_s3_download_timeout: int = Field(default=30, validation_alias="LOOP_S3_DOWNLOAD_TIMEOUT")
+    # LOOP_ANALYSIS_MAX_WORKERS — thread-pool size cap for CPU-bound librosa analysis.
+    #   Prevents resource exhaustion under concurrent upload load.
+    #   Default: 4 workers.
+    loop_analysis_max_workers: int = Field(default=4, validation_alias="LOOP_ANALYSIS_MAX_WORKERS")
+
     @field_validator("enable_embedded_rq_worker", mode="before")
     @classmethod
     def convert_embedded_worker_bool(cls, v: Any) -> bool:
