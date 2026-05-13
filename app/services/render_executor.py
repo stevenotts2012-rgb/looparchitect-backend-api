@@ -10,6 +10,7 @@ from pydub import AudioSegment
 from app.config import settings
 from app.services.ai_producer_guide import AIProducerGuideAdvisor
 from app.services.mastering import apply_mastering
+from app.services.musical_evolution import MusicalEvolutionOrchestrator
 from app.services.producer_event_bar_normalizer import normalize_producer_event_bar
 
 logger = logging.getLogger(__name__)
@@ -539,6 +540,18 @@ def _apply_active_path_ai_guide(render_plan: dict[str, Any]) -> dict[str, Any]:
     if guide:
         logger.info("AI_PRODUCER_GUIDE_MODIFIED_PLAN")
         logger.info("AI_PRODUCER_GUIDE_APPLIED")
+    variation_index = int((render_plan.get("metadata") or {}).get("variation_index", 0) or 0)
+    orchestrator = MusicalEvolutionOrchestrator()
+    render_plan, _, _, _ = orchestrator.apply(
+        render_plan=render_plan,
+        genre=render_plan.get("genre") or "generic",
+        mood=(render_plan.get("metadata") or {}).get("mood"),
+        energy=(render_plan.get("metadata") or {}).get("energy"),
+        variation_index=variation_index,
+        personality=(render_plan.get("metadata") or {}).get("personality"),
+        ai_guide=guide,
+        producer_story=(render_plan.get("metadata") or {}).get("producer_story"),
+    )
     return render_plan
 
 
