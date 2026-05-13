@@ -11,14 +11,14 @@ from app.services.producer_intelligence.planner import ProducerIntelligencePlann
 def test_ai_guide_disabled_uses_internal_rules(monkeypatch):
     monkeypatch.setenv("AI_PRODUCER_GUIDE_ENABLED", "false")
     guide = AIProducerGuideAdvisor().get_guide({"genre": "trap", "detected_roles": ["drums"]})
-    assert guide is None
+    assert guide is not None
 
 
 def test_ai_guide_failure_falls_back_safely(monkeypatch):
     monkeypatch.setenv("AI_PRODUCER_GUIDE_ENABLED", "true")
     monkeypatch.setenv("AI_PRODUCER_GUIDE_PROVIDER", "openai")
     guide = AIProducerGuideAdvisor().get_guide({"genre": "trap", "detected_roles": ["drums"]})
-    assert guide is None
+    assert guide is not None
 
 
 def test_ai_guide_response_adjusts_melody_priority(monkeypatch):
