@@ -404,3 +404,4 @@ def test_audio_truth_and_quality_config_logs_access(monkeypatch, tmp_path, caplo
         )
     assert "AUDIO_TRUTH_CONFIG enabled=" in caplog.text
     assert "PRODUCTION_QUALITY_REPAIR_CONFIG enabled=" in caplog.text
+

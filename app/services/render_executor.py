@@ -482,9 +482,11 @@ def _apply_active_path_ai_guide(render_plan: dict[str, Any]) -> dict[str, Any]:
     return render_plan
 
 
+
 def _audio_truth_enabled() -> bool:
     # Default enabled; allow explicit opt-out.
     return os.getenv("AUDIO_TRUTH_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+
 
 def render_from_plan(
     render_plan_json: str | dict[str, Any],
@@ -522,6 +524,7 @@ def render_from_plan(
     if render_path_used == "stem_render_executor":
         logger.info("ACTIVE_RENDER_PATH_ENTERED")
         logger.info("AUDIO_TRUTH_CONFIG enabled=%s", _audio_truth_enabled())
+
 
     # Derive source quality mode from render plan metadata.
     render_profile = render_plan.get("render_profile") or {}
@@ -658,6 +661,7 @@ def render_from_plan(
             or (_is_production_or_staging() and "PRODUCTION_QUALITY_REPAIR" not in os.environ)
         ),
     )
+
     if render_path_used == "stem_render_executor":
         logger.info("ACTIVE_RENDER_PATH_QUALITY_REPAIR_ENTERED")
     output_audio = _apply_master_headroom(output_audio, target_peak_dbfs=-1.0)
@@ -728,6 +732,7 @@ def render_from_plan(
         render_observability=render_observability,
     )
     if render_path_used == "stem_render_executor" and _audio_truth_enabled():
+
         logger.info("ACTIVE_RENDER_PATH_AUDIO_TRUTH_ENTERED")
         logger.info("AUDIO_TRUTH_ANALYSIS_STARTED")
         logger.info("AUDIO_MELODY_MEASURED")
