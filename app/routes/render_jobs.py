@@ -571,10 +571,26 @@ def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None
 
     section_energy = intel["energy"]
     section_choreo = intel["stems"]
+    ai_guide = intel.get("ai_guide") or {}
+    mix_priorities = ai_guide.get("mix_priorities") or {}
+    style_traits = ai_guide.get("style_traits") or {}
+    variation_strategy = ai_guide.get("variation_strategy") or []
+    melody_priority = float(mix_priorities.get("melody_priority", 0.5))
+    stem_density = float(style_traits.get("stem_density", 0.5)) if isinstance(style_traits.get("stem_density", 0.5), (int, float)) else 0.5
+    transition_density = float(intel.get("transition_density", 0.5))
+    if ai_guide:
+        logger.info("AI_PRODUCER_GUIDE_MODIFIED_PLAN melody_priority=%.3f stem_density=%.3f transition_density=%.3f", melody_priority, stem_density, transition_density)
     for sec in sections:
         name = sec.get("name", "section")
         sec["energy"] = section_energy.get(name, sec.get("energy", 0.5))
         active_roles = section_choreo.get(name, sec.get("active_stem_roles") or stem_roles)
+        if ai_guide and melody_priority >= 0.6:
+            melodic_roles = [r for r in active_roles if any(t in str(r).lower() for t in ("melody", "synth", "pad", "harmony", "vocal", "arp"))]
+            non_melodic_roles = [r for r in active_roles if r not in melodic_roles]
+            active_roles = melodic_roles + non_melodic_roles
+            logger.info("AI_MELODY_PRIORITY_APPLIED section=%s melody_priority=%.3f", name, melody_priority)
+        if ai_guide and stem_density < 0.45 and len(active_roles) > 1 and "hook" not in name.lower():
+            active_roles = active_roles[: max(1, len(active_roles) - 1)]
         sec["active_stem_roles"] = active_roles
         sec["instruments"] = active_roles
         sec.setdefault("variations", [])
@@ -591,8 +607,14 @@ def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None
                 }
             )
         if "hook" in name.lower():
+            if ai_guide:
+                sec["energy"] = min(1.0, float(sec.get("energy", 0.7)) + 0.08)
             for ev in ("melody_front_hook", "pad_widen_hook", "harmony_lift", "melodic_call_response"):
                 sec["variations"].append({"bar": sec.get("bar_start", 0), "variation_type": ev, "intensity": 0.78, "duration_bars": max(1, int(sec.get("bars", 1)) // 2), "description": f"Hook identity: {ev}", "params": {}})
+        if ai_guide and "bridge" in name.lower():
+            sec["variations"].append({"bar": sec.get("bar_start", 0), "variation_type": "bridge_reset", "intensity": 0.72, "duration_bars": max(1, int(sec.get("bars", 1)) // 2), "description": "AI bridge reset", "params": {}})
+    if ai_guide and variation_strategy:
+        logger.info("AI_VARIATION_STRATEGY_APPLIED count=%d", len(variation_strategy))
     logger.info("PRODUCER_INTELLIGENCE_PLAN_APPLIED")
 
     validation_result = {"passed": True, "issues": []}
