@@ -10,7 +10,7 @@ def apply(sections,state,variation_index=0):
         ev=next((val for k,val in m.items() if k in n),'bass_groove_pocket')
         intensity=0.65 if variation_index==0 else 0.82
         v.append({'variation_type':ev,'bar':s.get('bar_start',0),'duration_bars':1,'intensity':intensity,'params':{}}); state.add(s.get('name',''),ev)
-        if 'pre_hook' in n: v.append({'variation_type':'bass_tension_pullback','bar':s.get('bar_start',0),'duration_bars':1,'intensity':0.76,'params':{}}); logger.info('PREHOOK_BASS_PULLBACK')
-        if 'hook' in n: v.append({'variation_type':'bass_hook_reentry','bar':s.get('bar_start',0),'duration_bars':1,'intensity':0.85,'params':{}}); logger.info('HOOK_BASS_EXPANSION')
+        if 'pre_hook' in n: v.append({'variation_type':'bass_tension_pullback','bar':s.get('bar_start',0),'duration_bars':1,'intensity':0.76,'params':{}}); v.append({'variation_type':'bass_pause','bar':s.get('bar_start',0),'duration_bars':1,'intensity':0.8,'params':{'pause_bars':0.12}}); logger.info('PREHOOK_BASS_PULLBACK')
+        if 'hook' in n: v.append({'variation_type':'bass_hook_reentry','bar':s.get('bar_start',0),'duration_bars':1,'intensity':0.85,'params':{}}); v.append({'variation_type':'stem_gain_change','bar':s.get('bar_start',0),'duration_bars':2,'intensity':0.86,'params':{'gain_db':2.5,'stems':'bass,808,sub'}}); logger.info('HOOK_BASS_EXPANSION')
         if 'bridge' in n: logger.info('BASS_BRIDGE_DROPOUT_APPLIED')
     logger.info('BASS_EVOLUTION_APPLIED')

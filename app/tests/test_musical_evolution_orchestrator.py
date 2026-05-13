@@ -35,3 +35,8 @@ def test_variation_profiles_differ():
     i0 = [v["intensity"] for sec in s0 for v in sec.get("variations", []) if "bass_" in v["variation_type"] or "drum_" in v["variation_type"]]
     i1 = [v["intensity"] for sec in s1 for v in sec.get("variations", []) if "bass_" in v["variation_type"] or "drum_" in v["variation_type"]]
     assert sum(i1) > sum(i0)
+def test_metadata_only_events_do_not_raise_audio_truth_scores():
+    plan = {"sections": [{"name": "verse", "bar_start": 0, "bars": 8, "energy": 0.5, "active_stem_roles": ["melody"], "variations": [{"variation_type": "phrase_b_response"}]}], "metadata": {}}
+    out, _, meta, _ = MusicalEvolutionOrchestrator().apply(plan, variation_index=0)
+    assert meta["audible_success_rate"] < 0.7
+    assert out["metadata"]["musical_evolution"]["event_audio_delta_rms"] < 0.12
