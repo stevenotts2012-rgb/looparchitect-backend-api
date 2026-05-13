@@ -482,7 +482,6 @@ def _apply_active_path_ai_guide(render_plan: dict[str, Any]) -> dict[str, Any]:
     return render_plan
 
 
-
 def _audio_truth_enabled() -> bool:
     # Default enabled; allow explicit opt-out.
     return os.getenv("AUDIO_TRUTH_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
