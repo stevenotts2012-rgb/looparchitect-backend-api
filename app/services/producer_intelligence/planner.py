@@ -14,6 +14,7 @@ from .state import ProducerState
 from .style_registry import resolve_style
 from .transition_engine import plan_transitions
 from .validator import validate_plan
+from app.services.ai_producer_guide import AIProducerGuideAdvisor
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,25 @@ def _compute_melody_presence(stems_by_section: Dict[str, List[str]]) -> tuple[fl
 class ProducerIntelligencePlanner:
     """Central orchestrator for Producer Intelligence Layer V1."""
 
-    def generate(self, sections: List[str], stems: List[str], style: str | None = None, mood: str | None = None) -> Dict[str, Any]:
+    def generate(self, sections: List[str], stems: List[str], style: str | None = None, mood: str | None = None, guide_context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         state = ProducerState()
         logger.info("PRODUCER_STATE_CREATED")
 
         style_cfg = resolve_style(style, mood)
+
+        guide_input = {
+            "genre": style or "generic",
+            "mood": mood or "neutral",
+            "energy": "medium",
+            "bpm": (guide_context or {}).get("bpm", 120),
+            "key": (guide_context or {}).get("key", "C"),
+            "detected_roles": stems,
+            "loop_length": (guide_context or {}).get("loop_length", 8),
+            "current_section_plan": sections,
+            "current_producer_intelligence_plan": {},
+            "current_scores": (guide_context or {}).get("scores", {}),
+        }
+        guide = AIProducerGuideAdvisor().get_guide(guide_input)
         taste_profile = resolve_taste_profile(style_cfg.get("style_key"))
         logger.info("PRODUCER_TASTE_PROFILE_APPLIED profile=%s", style_cfg.get("style_key"))
         energies = build_energy_curve(sections, style_cfg["energy_curve"], style_cfg["energy_bias"] * taste_profile["energy_aggression"])
@@ -69,10 +84,18 @@ class ProducerIntelligencePlanner:
         # NOTE: melody audibility must be audio-validated post-render; role presence is insufficient.
         melody_presence, drum_bass_dom, melodic_sections_count, melody_restored_count = _compute_melody_presence(stems_by_section)
         logger.info("MIX_BALANCE_GUARD_APPLIED role_based_hint=%.3f", melody_presence)
+        transition_density = taste_profile["transition_density"]
+        if guide:
+            td = guide["style_traits"].get("transition_density", "")
+            if "low" in td:
+                transition_density = max(0.1, transition_density - 0.2)
+            elif any(k in td for k in ("high", "dense")):
+                transition_density = min(1.0, transition_density + 0.2)
+            logger.info("AI_STYLE_TRAITS_APPLIED")
         transitions = plan_transitions(
             sections,
             energies,
-            taste_profile["transition_density"],
+            transition_density,
             style_cfg["fx_density"],
             fill_frequency=taste_profile["fill_frequency"],
             silence_usage=taste_profile["silence_usage"],
@@ -94,6 +117,9 @@ class ProducerIntelligencePlanner:
             logger.info("HOOK_PAYOFF_MOMENT_CREATED")
 
         logger.info("SECTION_STORYTELLING_APPLIED")
+        if guide:
+            logger.info("AI_ARRANGEMENT_ADVICE_APPLIED")
+            logger.info("AI_PRODUCER_GUIDE_APPLIED")
         issues = validate_plan(sections, energies, stems_by_section, transitions, hook_levels)
         if melody_presence <= 0:
             issues.append("GENERIC_ARRANGEMENT_REJECTED")
@@ -119,4 +145,6 @@ class ProducerIntelligencePlanner:
             "melodic_sections_count": melodic_sections_count,
             "melody_restored_count": melody_restored_count,
             "mix_balance_guard_applied": True,
+            "ai_guide": guide,
+            "melody_priority": guide["mix_priorities"]["melody_priority"] if guide else 0.5,
         }
