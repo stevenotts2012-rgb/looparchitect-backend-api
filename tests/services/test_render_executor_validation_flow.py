@@ -369,3 +369,39 @@ def test_ai_guide_disabled_logs_fallback(monkeypatch, tmp_path, caplog):
             stems={"drums": AudioSegment.silent(duration=100)},
         )
     assert "AI_PRODUCER_GUIDE_FALLBACK_USED reason=disabled" in caplog.text
+
+
+def test_active_render_path_does_not_raise_nameerror(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.arrangement_jobs._render_producer_arrangement", lambda *a, **k: (AudioSegment.silent(duration=50), _minimal_timeline([{"name": "intro", "type": "intro", "applied_events": []}])))
+    monkeypatch.setattr(render_executor, "apply_mastering", lambda audio, genre=None: _MasteringResult(audio))
+    monkeypatch.setattr(render_executor, "_build_render_observability", lambda **kwargs: {"render_signatures": ["a"], "unique_render_signature_count": 2, "planned_stem_map_by_section": ["a"], "actual_stem_map_by_section": ["a"], "render_path_used": kwargs["render_path_used"], "source_quality_mode_used": kwargs["source_quality_mode_used"], "fallback_triggered_count": 0, "phrase_split_count": 1, "mastering_applied": False})
+    monkeypatch.setattr(render_executor, "_assert_producer_runtime_not_noop", lambda **kwargs: None)
+    monkeypatch.setattr(render_executor, "_assert_dynamic_arrangement", lambda **kwargs: None)
+
+    render_executor.render_from_plan(
+        render_plan_json={"bpm": 120, "key": "C", "sections": [{"name": "intro", "type": "intro", "bars": 4}], "events": [], "render_profile": {}},
+        audio_source=AudioSegment.silent(duration=100),
+        output_path=tmp_path / "out.wav",
+        stems={"drums": AudioSegment.silent(duration=100)},
+    )
+
+
+def test_audio_truth_and_quality_config_logs_access(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr("app.services.arrangement_jobs._render_producer_arrangement", lambda *a, **k: (AudioSegment.silent(duration=50), _minimal_timeline([{"name": "intro", "type": "intro", "applied_events": []}])))
+    monkeypatch.setattr(render_executor, "apply_mastering", lambda audio, genre=None: _MasteringResult(audio))
+    monkeypatch.setattr(render_executor, "_build_render_observability", lambda **kwargs: {"render_signatures": ["a"], "unique_render_signature_count": 2, "planned_stem_map_by_section": ["a"], "actual_stem_map_by_section": ["a"], "render_path_used": kwargs["render_path_used"], "source_quality_mode_used": kwargs["source_quality_mode_used"], "fallback_triggered_count": 0, "phrase_split_count": 1, "mastering_applied": False})
+    monkeypatch.setattr(render_executor, "_assert_producer_runtime_not_noop", lambda **kwargs: None)
+    monkeypatch.setattr(render_executor, "_assert_dynamic_arrangement", lambda **kwargs: None)
+    monkeypatch.delenv("PRODUCTION_QUALITY_REPAIR", raising=False)
+    monkeypatch.setattr(render_executor.settings, "is_production", True)
+
+    with caplog.at_level("INFO"):
+        render_executor.render_from_plan(
+            render_plan_json={"bpm": 120, "key": "C", "sections": [{"name": "intro", "type": "intro", "bars": 4}], "events": [], "render_profile": {}},
+            audio_source=AudioSegment.silent(duration=100),
+            output_path=tmp_path / "out.wav",
+            stems={"drums": AudioSegment.silent(duration=100)},
+        )
+    assert "AUDIO_TRUTH_CONFIG enabled=" in caplog.text
+    assert "PRODUCTION_QUALITY_REPAIR_CONFIG enabled=" in caplog.text
+
