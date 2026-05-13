@@ -15,7 +15,7 @@ from app.queue import DEFAULT_RENDER_QUEUE_NAME, get_queue
 from app.schemas.job import OutputFile, RenderJobStatusResponse
 
 logger = logging.getLogger(__name__)
-_TERMINAL_STATUSES = {"succeeded", "failed", "timeout", "missing_output"}
+_TERMINAL_STATUSES = {"succeeded", "success", "done", "completed", "failed", "timeout", "missing_output", "cancelled"}
 
 
 def _variation_context(job: RenderJob) -> tuple[Optional[int], Optional[str]]:
@@ -241,10 +241,29 @@ def update_job_status(
 
 def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
     """Fetch full job status with presigned URLs for outputs."""
-    job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
+    logger.info("JOB_STATUS_POLL_RECEIVED job_id=%s", job_id)
+    db.expire_all()
+    job = (
+        db.query(RenderJob)
+        .execution_options(populate_existing=True)
+        .filter(RenderJob.id == job_id)
+        .first()
+    )
     if not job:
         raise ValueError(f"Job {job_id} not found")
-    
+
+    variation_index, personality = _variation_context(job)
+    logger.info(
+        "JOB_STATUS_DB_RELOADED job_id=%s variation_index=%s personality=%s db_status=%s output_url_present=%s output_files_present=%s arrangement_id=%s",
+        job.id,
+        variation_index,
+        personality,
+        job.status,
+        bool(getattr(job, "output_url", None)),
+        bool(job.output_files_json),
+        job.arrangement_id,
+    )
+
     # Hard terminal guarantee: timeout long-running processing jobs.
     if job.status == "processing" and job.started_at:
         elapsed = (datetime.utcnow() - job.started_at).total_seconds()
@@ -292,7 +311,17 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
             logger.warning("Failed to parse render_metadata_json for job %s: %s", job_id, _e)
 
     if job.status in _TERMINAL_STATUSES:
-        variation_index, personality = _variation_context(job)
+        logger.info(
+            "JOB_STATUS_DB_TERMINAL_OVERRIDES_STALE job_id=%s variation_index=%s personality=%s db_status=%s returned_status=%s output_url_present=%s output_files_present=%s arrangement_id=%s",
+            job.id,
+            variation_index,
+            personality,
+            job.status,
+            job.status,
+            bool(getattr(job, "output_url", None)),
+            bool(output_files),
+            job.arrangement_id,
+        )
         logger.info(
             "VARIATION_JOB_TERMINAL_CONFIRMED job_id=%s variation_index=%s personality=%s status=%s output_url_present=%s arrangement_id=%s error_message=%s",
             job.id,
@@ -304,7 +333,7 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
             job.error_message,
         )
 
-    return RenderJobStatusResponse(
+    response = RenderJobStatusResponse(
         job_id=job.id,
         loop_id=job.loop_id,
         job_type=job.job_type,
@@ -320,6 +349,18 @@ def get_job_status(db: Session, job_id: str) -> RenderJobStatusResponse:
         render_metadata=render_metadata,
         arrangement_id=getattr(job, "arrangement_id", None),
     )
+    logger.info(
+        "JOB_STATUS_POLL_RESPONSE_SERIALIZED job_id=%s variation_index=%s personality=%s db_status=%s returned_status=%s output_url_present=%s output_files_present=%s arrangement_id=%s",
+        job.id,
+        variation_index,
+        personality,
+        job.status,
+        response.status,
+        bool(getattr(job, "output_url", None)),
+        bool(response.output_files),
+        response.arrangement_id,
+    )
+    return response
 
 
 def list_loop_jobs(db: Session, loop_id: int, limit: int = 20) -> List[RenderJobStatusResponse]:
