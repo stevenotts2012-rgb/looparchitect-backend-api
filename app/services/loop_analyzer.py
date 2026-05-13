@@ -7,15 +7,18 @@ Analyzes audio loops from S3 storage with comprehensive feature detection:
 - Duration and bar calculation
 - Async-compatible for FastAPI
 - Safe temporary file handling
+- Configurable timeouts to prevent indefinite hangs
 """
 
 import asyncio
 import logging
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict
 import boto3
+from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import ClientError
 import httpx
 
@@ -24,26 +27,52 @@ from app.services.storage import storage
 
 logger = logging.getLogger(__name__)
 
+# Default analysis result returned when analysis times out or is skipped.
+_ANALYSIS_DEFAULTS: Dict = {
+    'bpm': 120.0,
+    'key': 'C',
+    'duration': 0.0,
+    'bars': 4,
+}
+
 
 class LoopAnalyzer:
     """Production-ready service for analyzing audio loop files from S3."""
 
     def __init__(self):
-        """Initialize the loop analyzer with S3 client."""
+        """Initialize the loop analyzer with S3 client and bounded thread pool."""
         self.sample_rate = 44100  # Standard sample rate for analysis
         self.s3_client = None
-        
+
+        # Bounded executor prevents resource exhaustion under concurrent upload load.
+        # Size is configurable via LOOP_ANALYSIS_MAX_WORKERS (default: 4).
+        self._executor = ThreadPoolExecutor(
+            max_workers=settings.loop_analysis_max_workers,
+            thread_name_prefix="loop_analysis",
+        )
+
         # Initialize S3 client if credentials available
         if storage.use_s3:
             try:
+                # Apply explicit connect/read timeouts so boto3 never hangs indefinitely.
+                _s3_timeout = settings.loop_s3_download_timeout
+                _boto_cfg = BotocoreConfig(
+                    connect_timeout=_s3_timeout,
+                    read_timeout=_s3_timeout,
+                    retries={"max_attempts": 2, "mode": "standard"},
+                )
                 self.s3_client = boto3.client(
                     's3',
                     aws_access_key_id=settings.aws_access_key_id,
                     aws_secret_access_key=settings.aws_secret_access_key,
-                    region_name=settings.aws_region
+                    region_name=settings.aws_region,
+                    config=_boto_cfg,
                 )
                 self.bucket_name = settings.get_s3_bucket()
-                logger.info("S3 client initialized for loop analysis")
+                logger.info(
+                    "S3 client initialized for loop analysis "
+                    "(connect/read timeout=%ds)", _s3_timeout
+                )
             except Exception as e:
                 logger.warning(f"S3 client initialization failed: {e}")
                 self.s3_client = None
@@ -53,6 +82,9 @@ class LoopAnalyzer:
         Analyze audio loop from S3 storage (async-compatible).
 
         Downloads file temporarily, performs analysis, and cleans up.
+        The entire operation is bounded by ``settings.loop_analysis_timeout``
+        (default 60 s).  If the timeout is exceeded a warning is logged and
+        default values are returned so the upload request can still complete.
 
         Args:
             file_key: S3 key (e.g., "uploads/abc123.wav")
@@ -65,9 +97,35 @@ class LoopAnalyzer:
                 'duration': float,
                 'bars': int
             }
+        """
+        timeout = settings.loop_analysis_timeout
+        try:
+            result = await asyncio.wait_for(
+                self._analyze_from_s3_inner(file_key),
+                timeout=timeout,
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Audio analysis timed out after %ds for key=%s — "
+                "returning default values (bpm=120, key='C', duration=0, bars=4)",
+                timeout,
+                file_key,
+            )
+            return dict(_ANALYSIS_DEFAULTS)
+        except Exception as e:
+            logger.error(
+                "Audio analysis raised an unexpected error for key=%s: %s",
+                file_key,
+                e,
+                exc_info=True,
+            )
+            raise
 
-        Raises:
-            Exception: If download or analysis fails
+    async def _analyze_from_s3_inner(self, file_key: str) -> Dict:
+        """
+        Internal coroutine that performs the actual download + analysis.
+        Separated so that ``analyze_from_s3`` can wrap it with a timeout.
         """
         temp_file = None
         try:
@@ -76,9 +134,11 @@ class LoopAnalyzer:
             # Download file to temporary location
             temp_file = await self._download_from_s3_async(file_key)
 
-            # Perform analysis (CPU-bound, run in executor)
+            # Perform analysis (CPU-bound, run in bounded executor)
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, self._analyze_file, temp_file)
+            result = await loop.run_in_executor(
+                self._executor, self._analyze_file, temp_file
+            )
 
             logger.info(f"Analysis complete for {file_key}: {result}")
             return result
@@ -239,7 +299,6 @@ class LoopAnalyzer:
 
         except Exception as e:
             logger.error(f"File analysis failed for {file_path}: {e}")
-            raise Exception(f"Audio analysis failed: {e}")
             raise Exception(f"Audio analysis failed: {e}")
 
     def _detect_bpm(self, y, sr: int) -> float:
