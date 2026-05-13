@@ -572,6 +572,7 @@ def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None
     section_energy = intel["energy"]
     section_choreo = intel["stems"]
     ai_guide = intel.get("ai_guide") or {}
+    variation_index = int((render_plan.get("metadata") or {}).get("variation_index", 0) or 0)
     mix_priorities = ai_guide.get("mix_priorities") or {}
     style_traits = ai_guide.get("style_traits") or {}
     variation_strategy = ai_guide.get("variation_strategy") or []
@@ -613,6 +614,13 @@ def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None
                 sec["variations"].append({"bar": sec.get("bar_start", 0), "variation_type": ev, "intensity": 0.78, "duration_bars": max(1, int(sec.get("bars", 1)) // 2), "description": f"Hook identity: {ev}", "params": {}})
         if ai_guide and "bridge" in name.lower():
             sec["variations"].append({"bar": sec.get("bar_start", 0), "variation_type": "bridge_reset", "intensity": 0.72, "duration_bars": max(1, int(sec.get("bars", 1)) // 2), "description": "AI bridge reset", "params": {}})
+    _structure = _apply_ai_structure_advice(sections, ai_guide, mood)
+    _audio_profile = _apply_variation_personality_audio(sections, variation_index)
+    metrics = _generic_arrangement_metrics(sections)
+    if metrics["generic_arrangement_score"] > 0.65 and sections:
+        sections[-1].setdefault("variations", []).append({"bar": sections[-1].get("bar_start", 0), "variation_type": "generic_repair_transition", "intensity": 0.72, "duration_bars": 1, "description": "repair generic arrangement", "params": {}})
+        logger.info("GENERIC_ARRANGEMENT_REPAIR_APPLIED score=%.3f", metrics["generic_arrangement_score"])
+        metrics = _generic_arrangement_metrics(sections)
     if ai_guide and variation_strategy:
         logger.info("AI_VARIATION_STRATEGY_APPLIED count=%d", len(variation_strategy))
     logger.info("PRODUCER_INTELLIGENCE_PLAN_APPLIED")
@@ -632,6 +640,10 @@ def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None
         "bridge_reset": any("bridge" in s.lower() for s in section_names),
         "outro_simplification": any("outro" in s.lower() for s in section_names),
         "validation_result": validation_result,
+        "arrangement_story": {"intro": "setup", "verse": "groove", "pre_hook": "tension", "hook": "payoff", "verse_2": "evolved_groove", "hook_2": "bigger_payoff", "bridge": "reset", "outro": "resolution"},
+        "structure_advice_applied": _structure,
+        "variation_audio_profile": _audio_profile,
+        **metrics,
     }
     render_plan.setdefault("metadata", {})
     render_plan["metadata"]["producer_intelligence"] = intel_metadata
@@ -650,6 +662,86 @@ def _apply_producer_intelligence(render_plan: dict, style: str, mood: str | None
     return render_plan
 
 
+
+
+def _reindex_sections(sections: list[dict]) -> None:
+    bar = 0
+    for sec in sections:
+        sec["bar_start"] = bar
+        bar += int(sec.get("bars", 0) or 0)
+
+
+def _apply_ai_structure_advice(sections: list[dict], ai_guide: dict, personality: str | None = None) -> dict:
+    advice = (ai_guide or {}).get("arrangement_advice") or {}
+    if not advice:
+        return {"applied": False}
+
+    order_pref = [str(x).lower() for x in advice.get("section_order", []) if isinstance(x, str)]
+    if order_pref:
+        rank = {name: i for i, name in enumerate(order_pref)}
+        sections.sort(key=lambda s: rank.get(str(s.get("name", "")).lower(), 999))
+
+    for sec in sections:
+        name = str(sec.get("name", "")).lower()
+        bars = int(sec.get("bars", 4) or 4)
+        if "pre_hook" in name:
+            sec["bars"] = max(4, bars)
+            sec.setdefault("variations", []).append({"bar": sec.get("bar_start", 0), "variation_type": "pre_hook_tension_riser", "intensity": 0.86, "duration_bars": max(1, sec["bars"] // 2), "description": "AI pre-hook tension", "params": {"filter": "dark", "snare_roll": True}})
+            logger.info("AI_PREHOOK_TENSION_APPLIED section=%s bars=%s", name, sec["bars"])
+        elif "hook" in name:
+            sec["energy"] = min(1.0, float(sec.get("energy", 0.7)) + 0.12)
+            sec.setdefault("variations", []).append({"bar": sec.get("bar_start", 0), "variation_type": "hook_payoff_impact", "intensity": 0.92, "duration_bars": max(1, sec.get("bars", 4) // 2), "description": "AI hook payoff", "params": {"impact": "hard"}})
+            logger.info("AI_HOOK_PAYOFF_APPLIED section=%s energy=%.3f", name, sec["energy"])
+        elif "bridge" in name:
+            sec.setdefault("variations", []).append({"bar": sec.get("bar_start", 0), "variation_type": "bridge_reset", "intensity": 0.7, "duration_bars": max(1, sec.get("bars", 4) // 2), "description": "AI bridge reset", "params": {"strip": True}})
+            logger.info("AI_BRIDGE_RESET_STRUCTURE_APPLIED section=%s", name)
+        elif "outro" in name:
+            sec.setdefault("variations", []).append({"bar": sec.get("bar_start", 0), "variation_type": "outro_resolution", "intensity": 0.58, "duration_bars": max(1, sec.get("bars", 4)), "description": "AI outro resolution", "params": {"resolve": True}})
+            logger.info("AI_OUTRO_RESOLUTION_APPLIED section=%s", name)
+
+    _reindex_sections(sections)
+    logger.info("AI_STRUCTURE_ADVICE_APPLIED order=%s sections=%d personality=%s", order_pref, len(sections), personality)
+    logger.info("AI_SECTION_LENGTH_ADJUSTED")
+    return {"applied": True, "order": order_pref}
+
+
+def _apply_variation_personality_audio(sections: list[dict], variation_index: int) -> str:
+    profile = "clean_main" if variation_index == 0 else "dark_heavier"
+    for sec in sections:
+        lname = str(sec.get("name", "")).lower()
+        vars_ = sec.setdefault("variations", [])
+        roles = list(sec.get("active_stem_roles") or [])
+        if profile == "clean_main":
+            if "fx" in roles and len(roles) > 1:
+                roles = [r for r in roles if r != "fx"]
+            roles = sorted(roles, key=lambda r: (0 if "melody" in r.lower() else 1))
+            vars_.append({"bar": sec.get("bar_start", 0), "variation_type": "smooth_transition", "intensity": 0.55, "duration_bars": 1, "description": "clean profile", "params": {}})
+        else:
+            if "drums" in roles and "bass" in roles:
+                roles = ["drums", "bass"] + [r for r in roles if r not in ("drums", "bass")]
+            if "pre_hook" in lname:
+                vars_.append({"bar": sec.get("bar_start", 0), "variation_type": "bass_pause_before_hook", "intensity": 0.87, "duration_bars": 1, "description": "tension pause", "params": {}})
+            if "hook" in lname:
+                vars_.append({"bar": sec.get("bar_start", 0), "variation_type": "hard_hook_impact", "intensity": 0.95, "duration_bars": 2, "description": "dark hook impact", "params": {"filter": "dark"}})
+        sec["active_stem_roles"] = roles
+        sec["instruments"] = roles
+    logger.info("VARIATION_PERSONALITY_AUDIO_APPLIED variation_index=%s profile=%s", variation_index, profile)
+    logger.info("CLEAN_MAIN_AUDIO_PROFILE_APPLIED" if profile == "clean_main" else "DARK_HEAVIER_AUDIO_PROFILE_APPLIED")
+    return profile
+
+
+def _generic_arrangement_metrics(sections: list[dict]) -> dict:
+    if not sections:
+        return {"generic_arrangement_score": 1.0, "hook_payoff_score": 0.0, "section_contrast_score": 0.0, "phrase_evolution_score": 0.0, "transition_story_score": 0.0}
+    repeated = sum(1 for i in range(1, len(sections)) if sections[i].get("name") == sections[i-1].get("name"))
+    contrast = len({tuple(s.get("active_stem_roles") or []) for s in sections}) / max(1, len(sections))
+    hooks = [s for s in sections if "hook" in str(s.get("name","")).lower()]
+    verses = [s for s in sections if "verse" in str(s.get("name","")).lower()]
+    hook_payoff = max(0.0, min(1.0, (sum(float(h.get("energy",0.5)) for h in hooks)/max(1,len(hooks))) - (sum(float(v.get("energy",0.5)) for v in verses)/max(1,len(verses))) + 0.5))
+    phrase = sum(1 for s in sections if s.get("variations")) / len(sections)
+    transition = sum(1 for s in sections if any("transition" in str(v.get("variation_type","")) or "hook_payoff" in str(v.get("variation_type","")) for v in s.get("variations",[]))) / len(sections)
+    generic = max(0.0, min(1.0, (repeated/max(1,len(sections)-1))*0.4 + (1-contrast)*0.3 + (1-hook_payoff)*0.3))
+    return {"generic_arrangement_score": round(generic,3), "hook_payoff_score": round(hook_payoff,3), "section_contrast_score": round(contrast,3), "phrase_evolution_score": round(phrase,3), "transition_story_score": round(transition,3)}
 def _build_generative_render_plan(loop: Loop, params: Dict, target_bars: Optional[int] = None, seed: Optional[int] = None) -> dict:
     """Build a render plan using GenerativeProducerOrchestrator.
 
