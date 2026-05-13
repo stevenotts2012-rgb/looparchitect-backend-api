@@ -112,7 +112,7 @@ async function renderCompleted(signedUrl?: string) {
 
   // Click generate
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /generate 2 new variations/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate .* variations/i }));
   });
 
   if (signedUrl) {

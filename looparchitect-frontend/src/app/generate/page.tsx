@@ -6,7 +6,7 @@
  * After the user clicks "Generate Arrangement" this page:
  * 1. Calls POST /api/v1/loops/{loop_id}/render-async  (async render queue)
  * 2. Stores the returned jobs[] metadata
- * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds for the primary job
+ * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds for the first job in jobs[]
  * 4. Maps backend states → UI states:
  *      queued      → "Queued"
  *      processing  → "Processing"
