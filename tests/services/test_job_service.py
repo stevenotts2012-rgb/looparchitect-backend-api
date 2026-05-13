@@ -284,3 +284,57 @@ def test_list_loop_jobs_respects_limit(db, test_loop):
 def test_list_loop_jobs_empty_for_unknown_loop(db):
     results = list_loop_jobs(db, loop_id=999999)
     assert results == []
+
+
+def test_get_job_status_terminal_db_overrides_stale_processing_identity_map(db, test_loop):
+    job = _make_job(db, test_loop.id, status="processing")
+    job.params_json = json.dumps({"variation_index": 1, "personality": "bold"})
+    db.commit()
+
+    stale = db.query(RenderJob).filter(RenderJob.id == job.id).first()
+    assert stale.status == "processing"
+
+    other_session = db.__class__(bind=db.get_bind())
+    try:
+        fresh_job = other_session.query(RenderJob).filter(RenderJob.id == job.id).first()
+        fresh_job.status = "succeeded"
+        fresh_job.output_url = "https://example.com/output.wav"
+        fresh_job.output_files_json = json.dumps([
+            {"name": "output.wav", "s3_key": "outputs/x.wav", "content_type": "audio/wav"}
+        ])
+        fresh_job.arrangement_id = 123
+        other_session.commit()
+    finally:
+        other_session.close()
+
+    with patch("app.services.storage.storage.create_presigned_get_url", return_value="https://signed.example.com/x.wav"):
+        response = get_job_status(db, job.id)
+
+    assert response.status == "succeeded"
+    assert response.output_files is not None
+    assert len(response.output_files) == 1
+    assert response.output_files[0].name == "output.wav"
+    assert response.arrangement_id == 123
+
+
+def test_get_job_status_terminal_variation_one_logs_confirmation(db, test_loop, caplog):
+    job = _make_job(db, test_loop.id, status="succeeded")
+    job.params_json = json.dumps({"variation_index": 1, "personality": "dark"})
+    job.output_url = "https://example.com/final.wav"
+    job.output_files_json = json.dumps([
+        {"name": "final.wav", "s3_key": "outputs/final.wav", "content_type": "audio/wav"}
+    ])
+    job.arrangement_id = 777
+    db.commit()
+
+    with patch("app.services.storage.storage.create_presigned_get_url", return_value="https://signed.example.com/final.wav"):
+        with caplog.at_level("INFO"):
+            response = get_job_status(db, job.id)
+
+    assert response.status == "succeeded"
+    assert any("VARIATION_JOB_TERMINAL_CONFIRMED" in rec.message and "variation_index=1" in rec.message for rec in caplog.records)
+
+
+def test_terminal_aliases_are_treated_as_terminal_statuses():
+    expected = {"succeeded", "success", "done", "completed", "failed", "timeout", "missing_output", "cancelled"}
+    assert expected.issubset(job_service._TERMINAL_STATUSES)
