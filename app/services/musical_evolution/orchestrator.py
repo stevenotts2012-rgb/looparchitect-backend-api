@@ -30,7 +30,6 @@ class MusicalEvolutionOrchestrator:
         render_plan['metadata']['musical_evolution']=evo
         logger.info('MUSICAL_EVOLUTION_APPLIED')
         return render_plan, sections, evo, state.mutation_events_by_section
-
     def _classify_events(self, sections):
         real={"stem_gain_change","stem_filter","hook_drum_density","add_impact","widen_role","silence_drop","pre_hook_mute","bass_pause","final_hook_expansion"}
         weak={"melody_hook_lift","melody_verse2_variation","bass_hook_power","drum_hook_density_lift","drum_verse2_hat_variation","hook2_bigger_payoff","bridge_reset","melody_bridge_reset"}
