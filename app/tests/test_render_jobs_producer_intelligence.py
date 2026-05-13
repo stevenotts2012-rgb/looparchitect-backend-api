@@ -113,3 +113,62 @@ def test_ai_failure_falls_back_without_breaking_render_plan(monkeypatch):
     base = {"sections": [{"name": "intro", "bar_start": 0, "bars": 8, "energy": 0.2, "active_stem_roles": ["drums"], "instruments": [], "variations": []}], "producer_plan": {"available_roles": ["drums"]}, "metadata": {}}
     out = render_jobs._apply_producer_intelligence(base, style="edm", mood="hype", energy="high")
     assert out["sections"][0]["active_stem_roles"]
+
+def test_ai_advice_changes_section_plan_order_and_lengths(monkeypatch):
+    base = {
+        "sections": [
+            {"name": "hook_1", "bar_start": 0, "bars": 8, "energy": 0.6, "active_stem_roles": ["drums", "bass", "melody"], "instruments": [], "variations": []},
+            {"name": "pre_hook", "bar_start": 8, "bars": 2, "energy": 0.5, "active_stem_roles": ["drums", "bass"], "instruments": [], "variations": []},
+            {"name": "bridge", "bar_start": 10, "bars": 8, "energy": 0.4, "active_stem_roles": ["pad"], "instruments": [], "variations": []},
+        ],
+        "producer_plan": {"available_roles": ["drums", "bass", "melody", "pad"]},
+        "metadata": {"variation_index": 1},
+    }
+    monkeypatch.setattr(render_jobs._producer_intelligence_planner, "generate", lambda **_: {
+        "energy": {"hook_1": 0.7, "pre_hook": 0.55, "bridge": 0.45},
+        "stems": {"hook_1": ["drums", "bass", "melody"], "pre_hook": ["drums", "bass"], "bridge": ["pad"]},
+        "phrases": {}, "hooks": {}, "transitions": [],
+        "melody_presence_score": 0.8, "drum_bass_dominance_score": 0.7, "melodic_sections_count": 1, "melody_restored_count": 0,
+        "mix_balance_guard_applied": True, "transition_density": 0.8,
+        "ai_guide": {"arrangement_advice": {"section_order": ["pre_hook", "hook_1", "bridge"]}, "variation_strategy": [{"focus": "impact"}]},
+    })
+    out = render_jobs._apply_producer_intelligence(base, style="trap", mood="dark", energy="high")
+    assert [s["name"] for s in out["sections"]][:2] == ["pre_hook", "hook_1"]
+    assert out["sections"][0]["bars"] >= 4
+
+
+def test_variation_personality_profiles_produce_different_events():
+    s1 = [{"name": "pre_hook", "bar_start": 0, "bars": 4, "active_stem_roles": ["drums", "bass", "fx"], "variations": []}]
+    s2 = [{"name": "pre_hook", "bar_start": 0, "bars": 4, "active_stem_roles": ["drums", "bass", "fx"], "variations": []}]
+    p1 = render_jobs._apply_variation_personality_audio(s1, 0)
+    p2 = render_jobs._apply_variation_personality_audio(s2, 1)
+    assert p1 != p2
+    assert any(v["variation_type"] == "bass_pause_before_hook" for v in s2[0]["variations"])
+
+
+def test_generic_repair_and_story_metrics_present(monkeypatch):
+    base = {
+        "sections": [{"name": "verse", "bar_start": i*4, "bars": 4, "energy": 0.5, "active_stem_roles": ["drums"], "instruments": [], "variations": []} for i in range(4)],
+        "producer_plan": {"available_roles": ["drums"]},
+        "metadata": {"variation_index": 0},
+    }
+    monkeypatch.setattr(render_jobs._producer_intelligence_planner, "generate", lambda **_: {
+        "energy": {"verse": 0.5}, "stems": {"verse": ["drums"]}, "phrases": {}, "hooks": {}, "transitions": [],
+        "melody_presence_score": 0.2, "drum_bass_dominance_score": 0.9, "melodic_sections_count": 0, "melody_restored_count": 0,
+        "mix_balance_guard_applied": True, "transition_density": 0.2, "ai_guide": {}
+    })
+    out = render_jobs._apply_producer_intelligence(base, style="edm", mood="flat", energy="low")
+    meta = out["metadata"]["producer_intelligence"]
+    assert "generic_arrangement_score" in meta
+    assert "arrangement_story" in meta
+
+
+def test_processing_job_forced_to_timeout_terminal_state(db_session):
+    from app.models.job import RenderJob
+    from datetime import datetime, timedelta
+    from app.services.job_service import get_job_status
+    j = RenderJob(id="jid", loop_id=1, status="processing", started_at=datetime.utcnow()-timedelta(seconds=9999))
+    db_session.add(j)
+    db_session.commit()
+    res = get_job_status(db_session, "jid")
+    assert res.status in {"timeout", "failed", "succeeded", "missing_output"}
