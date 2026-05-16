@@ -5,8 +5,8 @@
  *
  * After the user clicks "Generate Arrangement" this page:
  * 1. Calls POST /api/v1/loops/{loop_id}/render-async  (async render queue)
- * 2. Stores the returned job_id
- * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds (real job endpoint)
+ * 2. Stores the returned jobs[] metadata
+ * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds for each returned job
  * 4. Maps backend states → UI states:
  *      queued      → "Queued"
  *      processing  → "Processing"
@@ -14,7 +14,7 @@
  *      failed      → "Failed"
  * 5. Stops polling automatically when status is "completed" or "failed"
  * 6. Shows an audio preview player using the signed URL from output_files
- * 7. Allows WAV and DAW export (ZIP) downloads when completed
+ * 7. Allows WAV downloads when completed and output exists
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,9 +22,6 @@ import { useSearchParams } from "next/navigation";
 import {
   renderAsync,
   getJobStatus,
-  downloadArrangement,
-  getDawExportInfo,
-  downloadDawExport,
   isTerminalJobStatus,
   BACKEND_BASE_URL,
   type RenderAsyncResponse,
@@ -110,9 +107,6 @@ export default function GeneratePage() {
 
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const [pollErrors, setPollErrors] = useState<Record<string, string>>({});
-
-  const [isDawExporting, setIsDawExporting] = useState(false);
-  const [dawExportError, setDawExportError] = useState<string | null>(null);
 
   const [isDownloading, setIsDownloading] = useState<Record<string, boolean>>({});
   const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
@@ -254,22 +248,6 @@ export default function GeneratePage() {
         return;
       }
 
-      // Fallback: blob endpoint (requires arrangement_id; not available in
-      // the render-async flow but kept for backward-compat with old sessions)
-      if (generateResponse && "arrangement_id" in generateResponse &&
-          (generateResponse as { arrangement_id?: number | null }).arrangement_id) {
-        const arrId = (generateResponse as { arrangement_id: number }).arrangement_id;
-        console.log("[download] falling back to blob endpoint, arrangement_id:", arrId);
-        const blob = await downloadArrangement(arrId);
-        const objectUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = objectUrl;
-        a.download = `arrangement-${arrId}.wav`;
-        a.click();
-        URL.revokeObjectURL(objectUrl);
-        return;
-      }
-
       throw new Error(
         "Audio file URL not available. Please wait for the render to complete or try again."
       );
@@ -280,61 +258,6 @@ export default function GeneratePage() {
       setDownloadErrors((prev) => ({ ...prev, [jobId]: message }));
     } finally {
       setIsDownloading((prev) => ({ ...prev, [jobId]: false }));
-    }
-  };
-
-  // ---------------------------------------------------------------------------
-  // DAW export handler
-  // ---------------------------------------------------------------------------
-
-  const handleDawExport = async () => {
-    if (isDawExporting) return;
-
-    setIsDawExporting(true);
-    setDawExportError(null);
-
-    // DAW export requires an arrangement_id — not present in the render-async flow.
-    const arrId =
-      generateResponse && "arrangement_id" in generateResponse
-        ? (generateResponse as { arrangement_id?: number | null }).arrangement_id
-        : null;
-
-    if (!arrId) {
-      setDawExportError("DAW export is not available for this render job.");
-      setIsDawExporting(false);
-      return;
-    }
-
-    try {
-      const info = await getDawExportInfo(arrId);
-      if (!info.ready_for_export) {
-        throw new Error(info.message ?? "Arrangement is not ready for DAW export.");
-      }
-
-      if (info.download_url) {
-        const resolvedUrl = info.download_url.startsWith("http")
-          ? info.download_url
-          : `${BACKEND_BASE_URL}${info.download_url}`;
-        const a = document.createElement("a");
-        a.href = resolvedUrl;
-        a.download = `arrangement-${arrId}-daw-export.zip`;
-        a.click();
-        return;
-      }
-
-      const blob = await downloadDawExport(arrId);
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = `arrangement-${arrId}-daw-export.zip`;
-      a.click();
-      URL.revokeObjectURL(objectUrl);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to download DAW export.";
-      setDawExportError(message);
-    } finally {
-      setIsDawExporting(false);
     }
   };
 
@@ -578,15 +501,46 @@ export default function GeneratePage() {
             const isCompleted = currentStatus === "completed";
             const isFailed = currentStatus === "failed";
             const isInProgress = currentStatus === "queued" || currentStatus === "processing";
+            const audioSrc =
+              status?.output_files?.find(
+                (file) => file.content_type?.startsWith("audio") && file.signed_url
+              )?.signed_url ?? null;
+            const resolvedAudioSrc = audioSrc
+              ? audioSrc.startsWith("http")
+                ? audioSrc
+                : `${BACKEND_BASE_URL}${audioSrc}`
+              : null;
             return (
               <div key={job.job_id} className="border rounded p-4 space-y-2">
                 <h2 className="font-semibold text-lg">Variation {job.variation_index + 1}</h2>
                 <p className="text-sm text-gray-500">Job ID: <code className="font-mono">{job.job_id}</code></p>
+                <p className="text-sm text-gray-500">Polling: <code className="font-mono">/api/v1/jobs/{job.job_id}</code></p>
                 {currentStatus ? <div className="flex items-center gap-2"><StatusBadge status={currentStatus} /><span className="text-sm">{uiStatus[currentStatus] ?? currentStatus}</span></div> : <p className="text-sm text-gray-500">Loading…</p>}
                 {isInProgress && status ? <div className="w-full bg-gray-200 rounded h-2"><div className="bg-blue-500 h-2 rounded transition-all" style={{ width: `${status.progress}%` }} /></div> : null}
+                {status?.progress_message ? <p className="text-sm text-gray-600">{status.progress_message}</p> : null}
                 {pollErrors[job.job_id] ? <p className="text-sm text-red-500">Poll error: {pollErrors[job.job_id]}</p> : null}
                 {isFailed && status?.error_message ? <p className="text-sm text-red-600">{status.error_message}</p> : null}
-                {isCompleted ? <button onClick={() => handleDownload(job.job_id)} disabled={!!isDownloading[job.job_id]} className="w-full bg-green-600 text-white py-2 rounded disabled:opacity-50">{isDownloading[job.job_id] ? "Downloading…" : "Download Arrangement (WAV)"}</button> : null}
+                {isCompleted && !resolvedAudioSrc ? (
+                  <p className="text-sm text-amber-700">
+                    Render completed, but no downloadable audio file is available for this job.
+                  </p>
+                ) : null}
+                {isCompleted && resolvedAudioSrc ? (
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-sm font-medium mb-1">Preview</p>
+                      <audio
+                        controls
+                        src={resolvedAudioSrc}
+                        className="w-full"
+                        preload="metadata"
+                      >
+                        Your browser does not support the audio element.
+                      </audio>
+                    </div>
+                    <button onClick={() => handleDownload(job.job_id)} disabled={!!isDownloading[job.job_id]} className="w-full bg-green-600 text-white py-2 rounded disabled:opacity-50">{isDownloading[job.job_id] ? "Downloading…" : "Download Arrangement (WAV)"}</button>
+                  </div>
+                ) : null}
                 {downloadErrors[job.job_id] ? <p className="text-sm text-red-600">{downloadErrors[job.job_id]}</p> : null}
               </div>
             );

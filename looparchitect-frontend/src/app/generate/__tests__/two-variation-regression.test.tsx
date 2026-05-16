@@ -48,8 +48,8 @@ describe("2-variation production lock", () => {
     await waitFor(() => expect(client.renderAsync).toHaveBeenCalled());
     expect(vi.mocked(client.renderAsync).mock.calls[0][1]).toMatchObject({ variation_count: 2 });
 
-    expect(screen.getByText(/variation 1/i)).toBeInTheDocument();
-    expect(screen.getByText(/variation 2/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/variation 1/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/variation 2/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/variation 3/i)).not.toBeInTheDocument();
     expect(screen.getByText(/status: failed/i)).toBeInTheDocument();
   });
