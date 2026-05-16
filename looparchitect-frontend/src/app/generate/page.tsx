@@ -6,7 +6,7 @@
  * After the user clicks "Generate Arrangement" this page:
  * 1. Calls POST /api/v1/loops/{loop_id}/render-async  (async render queue)
  * 2. Stores the returned jobs[] metadata
- * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds for the first job in jobs[]
+ * 3. Polls GET /api/v1/jobs/{job_id} every 2 seconds for each returned job
  * 4. Maps backend states → UI states:
  *      queued      → "Queued"
  *      processing  → "Processing"
@@ -105,29 +105,32 @@ export default function GeneratePage() {
   const [generateResponse, setGenerateResponse] =
     useState<RenderAsyncResponse | null>(null);
 
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null);
-  const [pollError, setPollError] = useState<string | null>(null);
+  const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
+  const [pollErrors, setPollErrors] = useState<Record<string, string>>({});
 
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [isDownloading, setIsDownloading] = useState<Record<string, boolean>>({});
+  const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
 
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollIntervalsRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   // ---------------------------------------------------------------------------
   // Polling logic
   // ---------------------------------------------------------------------------
 
   const startPolling = useCallback((id: string) => {
-    if (pollIntervalRef.current !== null) {
-      clearInterval(pollIntervalRef.current);
-    }
+    if (pollIntervalsRef.current[id]) clearInterval(pollIntervalsRef.current[id]);
 
     const poll = async () => {
       try {
         const status = await getJobStatus(id);
-        setJobStatus(status);
-        setPollError(null);
+        setJobStatuses((prev) => {
+          const existing = prev[id];
+          if (existing && isTerminalJobStatus(existing.status as JobStatus) && !isTerminalJobStatus(status.status as JobStatus)) {
+            return prev;
+          }
+          return { ...prev, [id]: status };
+        });
+        setPollErrors((prev) => ({ ...prev, [id]: "" }));
 
         if (process.env.NODE_ENV !== "production") {
           console.debug("[render_job_poll_status]", {
@@ -138,26 +141,25 @@ export default function GeneratePage() {
         }
 
         if (isTerminalJobStatus(status.status as JobStatus)) {
-          if (pollIntervalRef.current !== null) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
+          if (pollIntervalsRef.current[id]) {
+            clearInterval(pollIntervalsRef.current[id]);
+            delete pollIntervalsRef.current[id];
           }
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setPollError(message);
+        setPollErrors((prev) => ({ ...prev, [id]: message }));
       }
     };
 
     poll();
-    pollIntervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
+    pollIntervalsRef.current[id] = setInterval(poll, POLL_INTERVAL_MS);
   }, []);
 
   useEffect(() => {
     return () => {
-      if (pollIntervalRef.current !== null) {
-        clearInterval(pollIntervalRef.current);
-      }
+      Object.values(pollIntervalsRef.current).forEach(clearInterval);
+      pollIntervalsRef.current = {};
     };
   }, []);
 
@@ -175,9 +177,8 @@ export default function GeneratePage() {
     setIsGenerating(true);
     setGenerateError(null);
     setGenerateResponse(null);
-    setJobId(null);
-    setJobStatus(null);
-    setPollError(null);
+    setJobStatuses({});
+    setPollErrors({});
 
     // Store seed used for potential re-roll
     const resolvedSeed = seed ?? form.variationSeed ?? undefined;
@@ -196,11 +197,9 @@ export default function GeneratePage() {
 
       setGenerateResponse(response);
 
-      const primaryJob = response.jobs?.[0];
-      if (primaryJob?.job_id) {
-        setJobId(primaryJob.job_id);
-        startPolling(primaryJob.job_id);
-      }
+      response.jobs?.slice(0, 2).forEach((job) => {
+        if (job?.job_id) startPolling(job.job_id);
+      });
     } catch (err) {
       setGenerateError(
         err instanceof Error ? err.message : "An unexpected error occurred."
@@ -223,16 +222,16 @@ export default function GeneratePage() {
   // Download handler
   // ---------------------------------------------------------------------------
 
-  const handleDownload = async () => {
-    if (isDownloading) return;
+  const handleDownload = async (jobId: string) => {
+    if (isDownloading[jobId]) return;
 
-    setIsDownloading(true);
-    setDownloadError(null);
+    setIsDownloading((prev) => ({ ...prev, [jobId]: true }));
+    setDownloadErrors((prev) => ({ ...prev, [jobId]: "" }));
 
-    const filename = `arrangement-${jobId ?? "render"}.wav`;
+    const filename = `arrangement-${jobId}.wav`;
 
     try {
-      const signedUrl = jobStatus?.output_files?.find(
+      const signedUrl = jobStatuses[jobId]?.output_files?.find(
         (f) => f.content_type?.startsWith("audio") && f.signed_url
       )?.signed_url;
 
@@ -256,9 +255,9 @@ export default function GeneratePage() {
       const message =
         err instanceof Error ? err.message : "Download failed. Please try again.";
       console.error("[download] failed:", message);
-      setDownloadError(message);
+      setDownloadErrors((prev) => ({ ...prev, [jobId]: message }));
     } finally {
-      setIsDownloading(false);
+      setIsDownloading((prev) => ({ ...prev, [jobId]: false }));
     }
   };
 
@@ -266,33 +265,14 @@ export default function GeneratePage() {
   // Derived UI state
   // ---------------------------------------------------------------------------
 
-  const uiStatus: Record<JobStatus, string> = {
+  const anyInProgress = Object.values(jobStatuses).some((s) => s.status === "queued" || s.status === "processing");
+
+  const uiStatus: Partial<Record<JobStatus, string>> = {
     queued: "Queued",
     processing: "Processing",
     completed: "Completed",
     failed: "Failed",
   };
-
-  const currentStatus = jobStatus?.status as JobStatus | undefined;
-  const isCompleted = currentStatus === "completed";
-  const isFailed = currentStatus === "failed";
-  const isInProgress =
-    currentStatus === "queued" || currentStatus === "processing";
-
-  const audioSrc: string | null = (() => {
-    if (!isCompleted) return null;
-    const signedUrl = jobStatus?.output_files?.find(
-      (f) => f.content_type?.startsWith("audio") && f.signed_url
-    )?.signed_url;
-    if (signedUrl) {
-      return signedUrl.startsWith("http")
-        ? signedUrl
-        : `${BACKEND_BASE_URL}${signedUrl}`;
-    }
-    return null;
-  })();
-
-  const expectedDurationLabel: string | null = null;
 
   // Section preview not available in render-async flow
   const sectionPreview: unknown[] = [];
@@ -440,7 +420,7 @@ export default function GeneratePage() {
         <div className="flex gap-2">
           <button
             onClick={handleGenerate}
-            disabled={isGenerating || isInProgress}
+            disabled={isGenerating || anyInProgress}
             className="flex-1 bg-blue-600 text-white py-2 rounded disabled:opacity-50"
           >
             {isGenerating ? "Requesting…" : "Generate 2 New Variations"}
@@ -448,7 +428,7 @@ export default function GeneratePage() {
 
           <button
             onClick={handleReRoll}
-            disabled={isGenerating || isInProgress}
+            disabled={isGenerating || anyInProgress}
             title="Regenerate with a new random seed"
             className="px-4 bg-indigo-500 text-white py-2 rounded disabled:opacity-50"
           >
@@ -512,98 +492,62 @@ export default function GeneratePage() {
         </section>
       ) : null}
 
-      {/* Job status */}
-      {jobId && (
-        <section className="border rounded p-4 space-y-2">
-          <h2 className="font-semibold text-lg">Job Status</h2>
-          <p className="text-sm text-gray-500">
-            Job ID: <code className="font-mono">{jobId}</code>
-          </p>
-          <p className="text-sm text-gray-500">
-            Polling: <code className="font-mono">/api/v1/jobs/{jobId}</code>
-          </p>
-
-          {jobStatus ? (
-            <>
-              {currentStatus && (
-                <div className="flex items-center gap-2">
-                  <StatusBadge status={currentStatus} />
-                  <span className="text-sm">
-                    {uiStatus[currentStatus] ?? currentStatus}
-                  </span>
-                </div>
-              )}
-
-              {isInProgress && (
-                <div className="w-full bg-gray-200 rounded h-2">
-                  <div
-                    className="bg-blue-500 h-2 rounded transition-all"
-                    style={{ width: `${jobStatus.progress}%` }}
-                  />
-                </div>
-              )}
-
-              {isInProgress && expectedDurationLabel && (
-                <p className="text-sm text-gray-500">
-                  Expected duration: {expectedDurationLabel}
-                </p>
-              )}
-
-              {jobStatus.progress_message && (
-                <p className="text-sm text-gray-600">
-                  {jobStatus.progress_message}
-                </p>
-              )}
-
-              {isFailed && jobStatus.error_message && (
-                <p className="text-sm text-red-600">{jobStatus.error_message}</p>
-              )}
-            </>
-          ) : pollError ? (
-            <p className="text-sm text-red-500">Poll error: {pollError}</p>
-          ) : (
-            <p className="text-sm text-gray-500">Loading…</p>
-          )}
-        </section>
-      )}
-
-      {isCompleted && !audioSrc && (
-        <section className="space-y-2">
-          <p className="text-sm text-amber-700">
-            Render completed, but no downloadable audio file is available for this job.
-          </p>
-        </section>
-      )}
-
-      {/* Download — only shown when completed and output exists */}
-      {isCompleted && audioSrc && (
+      {/* Job status + downloads per variation */}
+      {generateResponse?.jobs?.length ? (
         <section className="space-y-3">
-          <div>
-            <p className="text-sm font-medium mb-1">
-              Preview{expectedDurationLabel ? ` (${expectedDurationLabel})` : ""}
-            </p>
-            <audio
-              controls
-              src={audioSrc}
-              className="w-full"
-              preload="metadata"
-            >
-              Your browser does not support the audio element.
-            </audio>
-          </div>
-
-          <button
-            onClick={handleDownload}
-            disabled={isDownloading}
-            className="w-full bg-green-600 text-white py-2 rounded disabled:opacity-50"
-          >
-            {isDownloading ? "Downloading…" : "Download Arrangement (WAV)"}
-          </button>
-          {downloadError && (
-            <p className="text-sm text-red-600">{downloadError}</p>
-          )}
+          {generateResponse.jobs.slice(0, 2).map((job) => {
+            const status = jobStatuses[job.job_id];
+            const currentStatus = status?.status as JobStatus | undefined;
+            const isCompleted = currentStatus === "completed";
+            const isFailed = currentStatus === "failed";
+            const isInProgress = currentStatus === "queued" || currentStatus === "processing";
+            const audioSrc =
+              status?.output_files?.find(
+                (file) => file.content_type?.startsWith("audio") && file.signed_url
+              )?.signed_url ?? null;
+            const resolvedAudioSrc = audioSrc
+              ? audioSrc.startsWith("http")
+                ? audioSrc
+                : `${BACKEND_BASE_URL}${audioSrc}`
+              : null;
+            return (
+              <div key={job.job_id} className="border rounded p-4 space-y-2">
+                <h2 className="font-semibold text-lg">Variation {job.variation_index + 1}</h2>
+                <p className="text-sm text-gray-500">Job ID: <code className="font-mono">{job.job_id}</code></p>
+                <p className="text-sm text-gray-500">Polling: <code className="font-mono">/api/v1/jobs/{job.job_id}</code></p>
+                {currentStatus ? <div className="flex items-center gap-2"><StatusBadge status={currentStatus} /><span className="text-sm">{uiStatus[currentStatus] ?? currentStatus}</span></div> : <p className="text-sm text-gray-500">Loading…</p>}
+                {isInProgress && status ? <div className="w-full bg-gray-200 rounded h-2"><div className="bg-blue-500 h-2 rounded transition-all" style={{ width: `${status.progress}%` }} /></div> : null}
+                {status?.progress_message ? <p className="text-sm text-gray-600">{status.progress_message}</p> : null}
+                {pollErrors[job.job_id] ? <p className="text-sm text-red-500">Poll error: {pollErrors[job.job_id]}</p> : null}
+                {isFailed && status?.error_message ? <p className="text-sm text-red-600">{status.error_message}</p> : null}
+                {isCompleted && !resolvedAudioSrc ? (
+                  <p className="text-sm text-amber-700">
+                    Render completed, but no downloadable audio file is available for this job.
+                  </p>
+                ) : null}
+                {isCompleted && resolvedAudioSrc ? (
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-sm font-medium mb-1">Preview</p>
+                      <audio
+                        controls
+                        src={resolvedAudioSrc}
+                        className="w-full"
+                        preload="metadata"
+                      >
+                        Your browser does not support the audio element.
+                      </audio>
+                    </div>
+                    <button onClick={() => handleDownload(job.job_id)} disabled={!!isDownloading[job.job_id]} className="w-full bg-green-600 text-white py-2 rounded disabled:opacity-50">{isDownloading[job.job_id] ? "Downloading…" : "Download Arrangement (WAV)"}</button>
+                  </div>
+                ) : null}
+                {downloadErrors[job.job_id] ? <p className="text-sm text-red-600">{downloadErrors[job.job_id]}</p> : null}
+              </div>
+            );
+          })}
         </section>
-      )}
+      ) : null}
+
     </main>
   );
 }
@@ -613,7 +557,7 @@ export default function GeneratePage() {
 // ---------------------------------------------------------------------------
 
 function StatusBadge({ status }: { status: JobStatus }) {
-  const colors: Record<JobStatus, string> = {
+  const colors: Partial<Record<JobStatus, string>> = {
     queued: "bg-yellow-100 text-yellow-800",
     processing: "bg-blue-100 text-blue-800",
     completed: "bg-green-100 text-green-800",
@@ -621,7 +565,7 @@ function StatusBadge({ status }: { status: JobStatus }) {
   };
   return (
     <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${colors[status]}`}
+      className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${colors[status] ?? "bg-gray-100 text-gray-700"}`}
     >
       {status}
     </span>

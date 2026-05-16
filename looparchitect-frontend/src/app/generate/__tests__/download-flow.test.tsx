@@ -98,10 +98,29 @@ function makeCompletedStatus(signedUrl?: string): client.JobStatusResponse {
   };
 }
 
+function makeFailedStatus(jobId: string): client.JobStatusResponse {
+  return {
+    job_id: jobId,
+    loop_id: 1,
+    job_type: "render",
+    status: "failed" as client.JobStatus,
+    progress: 100,
+    progress_message: "Failed",
+    created_at: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+    output_files: [],
+    error_message: "boom",
+    retry_count: 0,
+  };
+}
+
 /** Drive the component to the "completed" state. */
 async function renderCompleted(signedUrl?: string) {
   vi.mocked(client.renderAsync).mockResolvedValue(makeRenderAsyncResponse());
-  vi.mocked(client.getJobStatus).mockResolvedValue(makeCompletedStatus(signedUrl));
+  vi.mocked(client.getJobStatus).mockImplementation(async (jobId: string) =>
+    jobId === JOB_ID ? makeCompletedStatus(signedUrl) : makeFailedStatus(jobId)
+  );
 
   render(<GeneratePage />);
 
